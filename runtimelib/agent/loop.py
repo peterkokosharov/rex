@@ -156,19 +156,28 @@ Current workspace: {Path.cwd()}
         messages = [ChatMessage(role="system", content=self.system_prompt)]
         messages.extend(self.state.messages)
 
-        # For the first step with a simple question, don't offer tools
-        # Only enable tools if we have previous context or it's a multi-step task
-        enable_tools = len(self.state.messages) > 1 or self.state.step > 1
+        # Tool choice logic:
+        # - First turn: no tools (tool_choice="none") unless user explicitly asks for action
+        # - Subsequent turns: tools enabled
+        # - Detect explicit action requests in user message
+        is_first_turn = self.state.step == 1
+        user_msg = self.state.messages[-1].content if self.state.messages else ""
+
+        # Check if user explicitly asks for tool use
+        action_keywords = ["run", "execute", "create", "write", "edit", "delete", "search", "find", "list", "git", "commit", "push", "pull", "test", "build", "install", "fix", "debug"]
+        explicit_action = any(kw in user_msg.lower() for kw in action_keywords)
+
+        # Enable tools if: not first turn, OR user explicitly asks for action
+        enable_tools = not is_first_turn or explicit_action
 
         # Stream response
         full_content = ""
         tool_calls: dict[int, ToolCall] = {}
-        current_tool_call: Optional[ToolCall] = None
 
         stream = self.llm.chat_completion(
             messages=messages,
             tools=self.tool_schemas if (self.tool_schemas and enable_tools) else None,
-            tool_choice="auto" if (self.tool_schemas and enable_tools) else None,
+            tool_choice="auto" if (self.tool_schemas and enable_tools) else "none",
             stream=True,
         )
 
@@ -203,12 +212,10 @@ Current workspace: {Path.cwd()}
 
             # Handle finish reason
             if chunk.finish_reason == "tool_calls":
-                # Tool calls complete, will be processed below
                 pass
 
         # Build response message
         if tool_calls:
-            # Sort by index to maintain order
             sorted_calls = [tool_calls[i] for i in sorted(tool_calls.keys())]
             msg = ChatMessage(role="assistant", content=full_content, tool_calls=sorted_calls)
         else:
