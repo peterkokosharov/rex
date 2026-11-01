@@ -311,3 +311,14 @@ def get_guard_client(config: Optional[Config] = None) -> GuardClient:
 
 
 _guard_client: Optional[GuardClient] = None
+
+
+# Import sandbox module
+from .sandbox import (
+    SandboxManager,
+    MountSpec,
+    WorktreeHandle,
+    FileMergeLock,
+    RedisMergeLock,
+    get_sandbox_manager,
+)
