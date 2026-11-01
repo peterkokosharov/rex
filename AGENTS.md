@@ -1,39 +1,39 @@
 # AGENTS.md
 
-## Правила за агенти
+## Agent Rules
 
-### 1. Език за комуникация с човека
-- **Отговаряй на български с кирилица** — Всички отговори към човека трябва да са на български език, записани с кирилица.
-- **Код, коментари в код, документация (техническа)** — на английски.
-- **Човекът е на конзолата (терминал)** — иска кратки, по-същински отговори. Без излишни разяснения, без "предистория".
+### 1. Language for Human Communication
+- **Reply in English** — All responses to the human must be in English.
+- **Code, code comments, documentation (technical)** — in English.
+- **Human is on console (terminal)** — wants short, substantive answers. No unnecessary explanations, no "backstory".
 
-### 2. Работна директория
-- **Не излизаш от папката** — Всички файлове и операции трябва да останат в работната директория `/home/petark/runtime-ai`. Не достъпвай файлове извън тази папка.
+### 2. Working Directory
+- **Don't leave the folder** — All files and operations must stay in the working directory `/home/petark/runtime-ai`. Don't access files outside this folder.
 
-### 3. Git като инструмент (Internal Workflow)
-- **След всеки завършен task** — прави се `git commit` локално.
-- **Commit message** — краток, по-сущиност: какво се промени, защо.
-- **Цел**: Екипът (оркестраторът) да знае къде да вземе резултатите. Историята на промените = контекст за състоянието.
-- **Не push-ваш** — само локални commit-и. Push-ва човекът когато реши.
+### 3. Git as a Tool (Internal Workflow)
+- **After every completed task** — make a local `git commit`.
+- **Commit message** — short, substantive: what changed, why.
+- **Purpose**: The team (orchestrator) knows where to get results. Change history = context for state.
+- **Don't push** — local commits only. Human pushes when they decide.
 
-### 4. Инструменти
-- **Bash** — за команди, скриптове, проверки
-- **File read/write/edit** — за код, конфигурация, документация
-- **Git** — за commit на всяка завършена задача
-- **Web search** — само когато е необходимо за актуална информация
+### 4. Tools
+- **Bash** — for commands, scripts, checks
+- **File read/write/edit** — for code, config, documentation
+- **Git** — for commit on every completed task
+- **Web search** — only when needed for current information
 
-### 5. Стил на работа
-- **Практичен, не теоретичен** — пиши код, тествай, итерирай.
-- **Тестове paralelno с кода** — всеки нов модул има тест.
-- **Mock/stub за външни зависимости** — тестовете да са бързи и изолирани.
-- **Кратки отговори** — човекът е в терминал, не чете есета.
+### 5. Work Style
+- **Practical, not theoretical** — write code, test, iterate.
+- **Tests parallel with code** — every new module has a test.
+- **Mock/stub for external dependencies** — tests must be fast and isolated.
+- **Short answers** — human is in terminal, doesn't read essays.
 
-### 6. Планиране vs Изпълнение
-- **Плануваш** — само когато е необходимо (много файлове, архитектурно решение).
-- **Изпълняваш** — по подразбиране. Планът е в кода и commit-ите.
+### 6. Planning vs Execution
+- **Plan** — only when necessary (many files, architectural decision).
+- **Execute** — by default. The plan is in the code and commits.
 
 ---
 
-## Кратко: Какво правиш сега
+## Summary: What You Do Now
 
-1. Пишеш код → 2. Пускаш тестове → 3. `git commit` → 4. Кратък отговор на човека какво стана.
+1. Write code → 2. Run tests → 3. `git commit` → 4. Short answer to human what happened.
