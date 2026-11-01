@@ -1,4 +1,9 @@
 # SPDX-License-Identifier: MIT
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 """File operations tool using guard client."""
 
 from __future__ import annotations

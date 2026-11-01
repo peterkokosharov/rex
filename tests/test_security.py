@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 """Test security module."""
 
 from runtimelib.security import PromptSanitizer, InputValidator, StructuredPromptBuilder, PromptZone

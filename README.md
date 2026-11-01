@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 # Runtime AI
 
 A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built on a modular stdlib-only foundation (`kikolib`) with Docker Guard sandboxing for all tool execution.

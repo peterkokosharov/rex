@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 # kikolib
 
 Small, standard-library-only library for kiko-lite (a stdlib proxy so Claude Code can talk to

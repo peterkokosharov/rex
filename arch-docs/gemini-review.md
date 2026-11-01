@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 ## CRITICAL ISSUES (must fix before implementation)
 - [ ] Section 5.4 specifies mounting `.worktrees/{agent_id}` as a writeable path, but Docker bind mounts require the host path to exist *before* container startup. The runtime must explicitly ensure `Path(source).mkdir(parents=True, exist_ok=True)` in Python *prior* to invoking the Docker API, or the container will fail to start with a generic filesystem error.
 - [ ] Section 9.1's `StructuredPromptBuilder` includes a `TOOL_OUTPUT` zone that formats tool results into `tool` role messages, but it completely omits handling for OpenAI/LiteLLM `tool_call_id` correlation or assistant `tool_calls` history arrays. Without matching assistant tool call IDs to tool response messages, API calls to LiteLLM will throw 400 Bad Request errors.

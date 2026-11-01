@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 # AGENTS.md
 
 ## Agent Rules
@@ -8,7 +14,7 @@
 - **Human is on console (terminal)** — wants short, substantive answers. No unnecessary explanations, no "backstory".
 
 ### 2. Working Directory
-- **Don't leave the folder** — All files and operations must stay in the working directory `/home/petark/runtime-ai`. Don't access files outside this folder.
+- **Don't leave the folder** — All files and operations must stay in the working directory (the project root). Don't access files outside this folder.
 
 ### 3. Git as a Tool (Internal Workflow)
 - **After every completed task** — make a local `git commit`.

@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 # Gemini Review Procedure
 
 ## Overview
@@ -33,11 +39,10 @@ Keys are in `~/.kiko/.env`:
 
 ## Review Script
 
-**Location:** `/home/petark/runtime-ai/scripts/review_architecture.py`
+**Location:** `scripts/review_architecture.py` (relative to project root)
 
-**Usage:**
+**Usage (from project root):**
 ```bash
-cd /home/petark/runtime-ai
 .venv/bin/python scripts/review_architecture.py
 ```
 
@@ -46,7 +51,7 @@ cd /home/petark/runtime-ai
 ## What the Script Does
 
 ### 1. Loads the Architecture Document
-- Reads `/home/petark/runtime-ai/arch-docs/role-based-agent-architecture.md`
+- Reads `arch-docs/role-based-agent-architecture.md` (relative to project root)
 
 ### 2. Builds Review Prompt
 Structured prompt asking for:
@@ -69,7 +74,7 @@ Structured prompt asking for:
 
 ### 5. Output
 - Prints response to stdout
-- Saves to `/home/petark/runtime-ai/arch-docs/gemini-review.md`
+- Saves to `arch-docs/gemini-review.md` (relative to project root)
 - Exit code: 0 = success, 1 = all models failed
 
 ---

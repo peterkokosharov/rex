@@ -1,4 +1,9 @@
 # SPDX-License-Identifier: MIT
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 """Configuration system using kikolib.yaml_lite and kikolib.dotenv."""
 
 from __future__ import annotations

@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 """Test AgentLoop tool_choice fix - verify no tools called for simple questions."""
 
 import sys
-sys.path.insert(0, "/home/petark/runtime-ai")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from runtimelib.agent import create_agent_loop
 from runtimelib.config import Config

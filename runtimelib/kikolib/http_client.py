@@ -1,4 +1,9 @@
 # SPDX-License-Identifier: MIT
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 # Author: Peter Kokosharov <peter.kokosharov@gmail.com>
 """Blocking, thread-safe HTTP/1.1 client on http.client + ssl (no asyncio, no gzip, no HTTP/2).
 

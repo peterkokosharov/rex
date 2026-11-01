@@ -1,4 +1,9 @@
 # SPDX-License-Identifier: MIT
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 # Author: Peter Kokosharov <peter.kokosharov@gmail.com>
 """Threaded HTTP/1.1 server and router for kiko-proxy (http.server + threads, no asyncio).
 

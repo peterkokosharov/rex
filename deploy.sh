@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
 # Deploy script - push changes to GitHub
 # Run this after making changes and committing locally
 
@@ -6,7 +9,7 @@ set -e
 
 REPO="peterkokosharov/rex"
 
-cd /home/petark/runtime-ai
+cd "$(dirname "$0")"
 
 # Check for uncommitted changes
 if ! git diff --quiet || ! git diff --cached --quiet; then

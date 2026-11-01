@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 # Task: Build a Claude-like Runtime for OpenAI-compatible Models via LiteLLM Proxy
 
 ## Objective

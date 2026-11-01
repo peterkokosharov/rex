@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+LLM: nvidia nemotron ultra
+Licensed under MIT License
+-->
+
 # How to Generate HTML Documentation with Mermaid Diagrams
 
 ## Overview
@@ -81,10 +87,10 @@ Make sure each `.mermaid` div has a unique `id` attribute.
 ## Viewing
 
 ```bash
-# Open in browser
-xdg-open /home/petark/runtime-ai/ocs/architecture.html
+# Open in browser (from project root)
+xdg-open ocs/architecture.html
 # or
-open /home/petark/runtime-ai/ocs/architecture.html  # macOS
+open ocs/architecture.html  # macOS
 ```
 
 ## Features

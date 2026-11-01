@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: nvidia nemotron ultra
+# Licensed under MIT License
+
 """Review architecture document using kiko-lite proxy (Gemini Flash / Flash-Lite)."""
 
 import json
@@ -8,7 +13,8 @@ import time
 from pathlib import Path
 
 # Add runtimelib to path
-sys.path.insert(0, "/home/petark/runtime-ai")
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from runtimelib.llm import LiteLLMClient
 from runtimelib.config import Config
@@ -82,7 +88,7 @@ def query_model(client: LiteLLMClient, model: str, prompt: str, max_retries: int
 
 
 def main():
-    doc_path = Path("/home/petark/runtime-ai/arch-docs/role-based-agent-architecture.md")
+    doc_path = PROJECT_ROOT / "arch-docs" / "role-based-agent-architecture.md"
     if not doc_path.exists():
         print(f"Document not found: {doc_path}")
         sys.exit(1)
@@ -116,7 +122,7 @@ def main():
         result = query_model(client, model_id, prompt)
         if result:
             print(f"✅ {model_name} responded ({len(result)} chars)")
-            output_path = Path("/home/petark/runtime-ai/arch-docs/gemini-review.md")
+            output_path = PROJECT_ROOT / "arch-docs" / "gemini-review.md"
             output_path.write_text(result, encoding="utf-8")
             print(f"📝 Review saved to: {output_path}")
             print("\n" + "=" * 60)
