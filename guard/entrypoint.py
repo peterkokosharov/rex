@@ -254,6 +254,129 @@ def create_server(workspace: Path) -> JSONRPCServer:
         except Exception as e:
             raise GuardError(-32013, f"Network fetch failed: {e}")
 
+    # --- Git methods ---
+
+    @server.register("git.status")
+    def git_status(cwd: str = ".") -> dict[str, Any]:
+        """Get git status."""
+        work_dir = _safe_path(workspace, cwd)
+        try:
+            proc = subprocess.run(
+                ["git", "status", "--porcelain"], cwd=work_dir,
+                capture_output=True, text=True, timeout=10
+            )
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32020, f"Git status failed: {e}")
+
+    @server.register("git.diff")
+    def git_diff(cwd: str = ".", staged: bool = False, files: list[str] | None = None) -> dict[str, Any]:
+        """Get git diff."""
+        work_dir = _safe_path(workspace, cwd)
+        cmd = ["git", "diff"]
+        if staged:
+            cmd.append("--cached")
+        if files:
+            cmd.extend(["--"] + files)
+        try:
+            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32021, f"Git diff failed: {e}")
+
+    @server.register("git.add")
+    def git_add(files: list[str], cwd: str = ".") -> dict[str, Any]:
+        """Stage files for commit."""
+        work_dir = _safe_path(workspace, cwd)
+        cmd = ["git", "add"] + files
+        try:
+            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32022, f"Git add failed: {e}")
+
+    @server.register("git.commit")
+    def git_commit(message: str, cwd: str = ".", author: str | None = None) -> dict[str, Any]:
+        """Create a commit."""
+        work_dir = _safe_path(workspace, cwd)
+        cmd = ["git", "commit", "-m", message]
+        if author:
+            cmd.extend(["--author", author])
+        try:
+            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32023, f"Git commit failed: {e}")
+
+    @server.register("git.log")
+    def git_log(cwd: str = ".", max_count: int = 10, oneline: bool = True) -> dict[str, Any]:
+        """Get git log."""
+        work_dir = _safe_path(workspace, cwd)
+        cmd = ["git", "log"]
+        if oneline:
+            cmd.append("--oneline")
+        cmd.extend(["-n", str(max_count)])
+        try:
+            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32024, f"Git log failed: {e}")
+
+    @server.register("git.branch")
+    def git_branch(cwd: str = ".", all_branches: bool = False) -> dict[str, Any]:
+        """List branches."""
+        work_dir = _safe_path(workspace, cwd)
+        cmd = ["git", "branch"]
+        if all_branches:
+            cmd.append("-a")
+        try:
+            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32025, f"Git branch failed: {e}")
+
+    @server.register("git.checkout")
+    def git_checkout(branch: str, create: bool = False, cwd: str = ".") -> dict[str, Any]:
+        """Checkout or create branch."""
+        work_dir = _safe_path(workspace, cwd)
+        cmd = ["git", "checkout"]
+        if create:
+            cmd.append("-b")
+        cmd.append(branch)
+        try:
+            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except Exception as e:
+            raise GuardError(-32026, f"Git checkout failed: {e}")
+
     return server
 
 

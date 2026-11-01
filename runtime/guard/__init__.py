@@ -236,6 +236,48 @@ class GuardClient:
             "timeout": timeout,
         })
 
+    # --- Git Methods ---
+
+    def git_status(self, cwd: str = ".") -> dict[str, Any]:
+        return self._send_request("git.status", {"cwd": cwd}, timeout=15)
+
+    def git_diff(self, cwd: str = ".", staged: bool = False, files: list[str] | None = None) -> dict[str, Any]:
+        return self._send_request("git.diff", {
+            "cwd": cwd,
+            "staged": staged,
+            "files": files,
+        }, timeout=15)
+
+    def git_add(self, files: list[str], cwd: str = ".") -> dict[str, Any]:
+        return self._send_request("git.add", {"files": files, "cwd": cwd}, timeout=15)
+
+    def git_commit(self, message: str, cwd: str = ".", author: str | None = None) -> dict[str, Any]:
+        return self._send_request("git.commit", {
+            "message": message,
+            "cwd": cwd,
+            "author": author,
+        }, timeout=15)
+
+    def git_log(self, cwd: str = ".", max_count: int = 10, oneline: bool = True) -> dict[str, Any]:
+        return self._send_request("git.log", {
+            "cwd": cwd,
+            "max_count": max_count,
+            "oneline": oneline,
+        }, timeout=15)
+
+    def git_branch(self, cwd: str = ".", all_branches: bool = False) -> dict[str, Any]:
+        return self._send_request("git.branch", {
+            "cwd": cwd,
+            "all_branches": all_branches,
+        }, timeout=15)
+
+    def git_checkout(self, branch: str, create: bool = False, cwd: str = ".") -> dict[str, Any]:
+        return self._send_request("git.checkout", {
+            "branch": branch,
+            "create": create,
+            "cwd": cwd,
+        }, timeout=15)
+
     def stop(self) -> None:
         """Stop the guard container."""
         with self._lock:

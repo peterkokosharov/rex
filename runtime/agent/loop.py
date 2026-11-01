@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 
 from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
-from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool
+from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool
 from ..tools.base import Tool
 from ..guard import get_guard_client
 
@@ -85,6 +85,7 @@ class AgentLoop:
         self.tools["bash"] = BashTool(self.config)
         self.tools["task"] = TaskSpawnTool()
         self.tools["websearch"] = WebSearchTool()
+        self.tools["git"] = GitTool(self.config)
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with tool descriptions."""
@@ -164,6 +165,10 @@ Current workspace: {Path.cwd()}
         messages = [ChatMessage(role="system", content=self.system_prompt)]
         messages.extend(self.state.messages)
 
+        # For the first step with a simple question, don't offer tools
+        # Only enable tools if we have previous context or it's a multi-step task
+        enable_tools = len(self.state.messages) > 1 or self.state.step > 1
+
         # Stream response
         full_content = ""
         tool_calls: dict[int, ToolCall] = {}
@@ -171,8 +176,8 @@ Current workspace: {Path.cwd()}
 
         stream = self.llm.chat_completion(
             messages=messages,
-            tools=self.tool_schemas if self.tool_schemas else None,
-            tool_choice="auto" if self.tool_schemas else None,
+            tools=self.tool_schemas if (self.tool_schemas and enable_tools) else None,
+            tool_choice="auto" if (self.tool_schemas and enable_tools) else None,
             stream=True,
         )
 

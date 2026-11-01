@@ -30,6 +30,72 @@
     .component-title { font-weight: bold; color: #312e81; margin-bottom: 8px; }
     .data-flow { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin: 16px 0; }
     .data-flow-title { font-weight: bold; color: #166534; margin-bottom: 8px; }
+
+    /* SVG Fullscreen Modal */
+    .mermaid-svg { cursor: zoom-in; transition: transform 0.2s; }
+    .mermaid-svg:hover { transform: scale(1.01); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+
+    .svg-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.9);
+      z-index: 10000;
+      overflow: auto;
+      align-items: center;
+      justify-content: center;
+    }
+    .svg-modal.open { display: flex; }
+    .svg-modal-content {
+      position: relative;
+      max-width: 95vw;
+      max-height: 95vh;
+      transform-origin: center center;
+      transition: transform 0.1s;
+    }
+    .svg-modal-content img {
+      display: block;
+      max-width: 100%;
+      max-height: 95vh;
+    }
+    .svg-modal-close {
+      position: absolute;
+      top: -50px; right: 0;
+      background: #fff;
+      color: #333;
+      border: none;
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      font-size: 24px;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .svg-modal-close:hover { background: #f0f0f0; }
+    .zoom-controls {
+      position: absolute;
+      bottom: -60px; left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      background: rgba(255,255,255,0.1);
+      padding: 8px 16px;
+      border-radius: 24px;
+      backdrop-filter: blur(4px);
+    }
+    .zoom-btn {
+      background: #fff;
+      color: #333;
+      border: none;
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .zoom-btn:hover { background: #f0f0f0; }
+    .zoom-level { color: #fff; font-family: monospace; align-self: center; min-width: 50px; text-align: center; }
   </style>
 </head>
 <body>
@@ -92,10 +158,20 @@
     <div class="component">
       <div class="component-title"><span class="tag orch">ORCH</span> Orchestration — agent/subagent.py, agent/comms.py, agent/background.py, session.py</div>
       <ul>
-        <li><strong>Subagent:</strong> Nov процес/thread с собствен Agent Loop, наследява контекст (read-only), има лимит на стъпки/токени. Връща структуриран резултат.</li>
+        <li><strong>Subagent:</strong> Нов процес/thread с собствен Agent Loop, наследява контекст (read-only), има лимит на стъпки/токени. Връща структуриран резултат.</li>
         <li><strong>Communication:</strong> <code>send_message(agent_id, content)</code>, <code>broadcast(content)</code>, <code>shared_context</code> (immutable view на parent history).</li>
         <li><strong>Background Tasks:</strong> Вътрешен scheduler (asyncio/threading), не system cron. Task queue с persist. <code>notify_when_idle</code> pattern.</li>
         <li><strong>Session:</strong> JSONL format (append-only): <code>{type, timestamp, data}</code>. Checkpoint на всеки N стъпки. Resume от последния checkpoint.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag orch">ORCH</span> Workflow Engine — workflow/engine.py, workflow/skills/*.yaml</div>
+      <ul>
+        <li><strong>Pipeline Skills:</strong> <code>plan</code> (Opus), <code>research</code> (Sonnet), <code>implement</code> (Sonnet), <code>test-gen</code> (LLM), <code>test-fix</code> (Haiku), <code>review</code> (Sonnet).</li>
+        <li><strong>Context Isolation:</strong> Всяка стъпка получава само нужния input (plan, code, tests), не пълната история.</li>
+        <li><strong>Human-in-the-loop:</strong> Plan стъпка генерира HTML с Mermaid UML → consumer approve/rewrite → continue.</li>
+        <li><strong>SKILLS.md:</strong> Един файл за research + task handoff. Structured: <code># Research\n...\n# Task\n...</code>.</li>
       </ul>
     </div>
 
@@ -115,19 +191,34 @@ permissions:
     pattern: "readonly"
 auto_mode: false
 depends: ["other-skill@^1.0"]</pre></li>
-        <li><strong>Registry:</strong> Local index (JSON), remote index (GitHub releases / HTTP JSON). <code>install</code> → fetch → validate → link. Dependency resolution (semver).</li>
+        <li><strong>Registry:</strong> Local index (<code>~/.config/runtime/skills/index.json</code>), remote index (GitHub releases / HTTP JSON). <code>install</code> → fetch → validate → link. Dependency resolution (semver).</li>
         <li><strong>Auto Mode:</strong> Policy engine: <code>allow(auto_mode_skills, tools, paths)</code>. Default: deny. Configurable per skill/tool/path.</li>
         <li><strong>Built-in Skills:</strong> Всяка в <code>skills/builtin/{name}/skill.yaml</code> + implementation. Bundled в package.</li>
       </ul>
     </div>
 
     <div class="component">
-      <div class="component-title"><span class="tag orch">ORCH</span> Workflow Engine — workflow/engine.py, workflow/skills/*.yaml</div>
+      <div class="component-title"><span class="tag infra">INFRA</span> Session & Persistence — session.py</div>
       <ul>
-        <li><strong>Pipeline Skills:</strong> <code>plan</code> (Opus), <code>research</code> (Sonnet), <code>implement</code> (Sonnet), <code>test-gen</code> (LLM), <code>test-fix</code> (Haiku), <code>review</code> (Sonnet).</li>
-        <li><strong>Context Isolation:</strong> Всяка стъпка получава само нужния input (plan, code, tests), не пълната история.</li>
-        <li><strong>Human-in-the-loop:</strong> Plan стъпка генерира HTML с Mermaid UML → consumer approve/rewrite → continue.</li>
-        <li><strong>SKILLS.md:</strong> Един файл за research + task handoff. Structured: <code># Research\n...\n# Task\n...</code>.</li>
+        <li><strong>Format:</strong> JSONL (append-only): <code>{type, timestamp, data}</code> за stream append.</li>
+        <li><strong>Checkpoints:</strong> На всеки N стъпки / tool call. Resume от последния checkpoint.</li>
+        <li><strong>Agent Tree:</strong> Съхранява цялата йерархия: chat → agents → subagents.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag infra">INFRA</span> Permissions & Hooks — permissions.py, hooks.py</div>
+      <ul>
+        <li><strong>Permissions:</strong> Tool-level, path-pattern, command-pattern. Modes: ask/allow/deny. Persist decisions.</li>
+        <li><strong>Hooks:</strong> pre/post: tool_call, tool_result, agent_spawn, slash_command, session_start, session_end, error. Sync + async.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag infra">INFRA</span> UI / Status Line — ui/statusline.py, ui/formatting.py</div>
+      <ul>
+        <li><strong>Status Line:</strong> Configurable: model, tokens, cost, session time, agent tree, git branch.</li>
+        <li><strong>Formatting:</strong> ANSI colors, markdown rendering, diff rendering, syntax highlight (regex-based, stdlib).</li>
       </ul>
     </div>
   </div>
@@ -137,17 +228,17 @@ depends: ["other-skill@^1.0"]</pre></li>
 
     <div class="data-flow">
       <div class="data-flow-title">📥 Data Flow: User Prompt → Response</div>
-      <div class="mermaid-svg"><img src="03-architecture-diagram2.svg" alt="Diagram 2" style="max-width:100%;height:auto;"></div>
+      <div class="mermaid-svg"><img src="03-architecture-diagram2.svg" alt="Data Flow 1" style="max-width:100%;height:auto;"></div>
     </div>
 
     <div class="data-flow">
       <div class="data-flow-title">🔄 Data Flow: Subagent Spawn & Communication</div>
-      <div class="mermaid-svg"><img src="03-architecture-diagram3.svg" alt="Diagram 3" style="max-width:100%;height:auto;"></div>
+      <div class="mermaid-svg"><img src="03-architecture-diagram3.svg" alt="Data Flow 2" style="max-width:100%;height:auto;"></div>
     </div>
 
     <div class="data-flow">
       <div class="data-flow-title">🛠️ Data Flow: Skill Execution (Auto Mode)</div>
-      <div class="mermaid-svg"><img src="03-architecture-diagram4.svg" alt="Diagram 4" style="max-width:100%;height:auto;"></div>
+      <div class="mermaid-svg"><img src="03-architecture-diagram4.svg" alt="Data Flow 3" style="max-width:100%;height:auto;"></div>
     </div>
   </div>
 
@@ -193,7 +284,8 @@ runtime/
 │   ├── bash.py              # Bash via Guard RPC
 │   ├── taskspawn.py         # Subagent launcher tool
 │   ├── websearch.py         # DuckDuckGo + readability
-│   └── mcp.py               # MCP client (stdio/SSE)
+│   ├── mcp.py               # MCP client (stdio/SSE)
+│   └── git.py               # Git operations via Guard
 ├── skills/
 │   ├── __init__.py
 │   ├── schema.yaml          # Skill YAML schema
@@ -217,6 +309,7 @@ runtime/
 │   ├── statusline.py        # Configurable status line
 │   └── formatting.py        # ANSI, markdown, diff rendering
 ├── guard/
+│   ├── __init__.py          # GuardClient (JSON-RPC over stdio)
 │   ├── entrypoint.py        # JSON-RPC server (stdio)
 │   ├── handlers/
 │   │   ├── __init__.py
@@ -357,6 +450,13 @@ logging:
 # - fs.glob {pattern, root}
 # - fs.grep {pattern, path, include, exclude}
 # - net.fetch {url, method, headers, body, timeout}  # only if network policy allows
+# - git.status {cwd}
+# - git.diff {cwd, staged, files}
+# - git.add {files, cwd}
+# - git.commit {message, cwd, author}
+# - git.log {cwd, max_count, oneline}
+# - git.branch {cwd, all_branches}
+# - git.checkout {branch, create, cwd}
 </pre>
   </div>
 
@@ -398,6 +498,107 @@ logging:
     </table>
   </div>
 
-  
+  <!-- SVG Modal for Fullscreen Diagrams -->
+  <div id="svgModal" class="svg-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="svg-modal-content">
+      <button class="svg-modal-close" aria-label="Затвори">&times;</button>
+      <img id="modalImage" src="" alt="Diagram" />
+      <div class="zoom-controls">
+        <button class="zoom-btn" data-zoom="0.5" aria-label="Zoom out 50%">−</button>
+        <button class="zoom-btn" data-zoom="1" aria-label="Reset zoom 100%">⟲</button>
+        <button class="zoom-btn" data-zoom="2" aria-label="Zoom in 200%">+</button>
+        <button class="zoom-btn" data-zoom="4" aria-label="Zoom in 400%">++</button>
+        <span class="zoom-level" id="zoomLevel">100%</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // SVG Modal functionality
+    const modal = document.getElementById('svgModal');
+    const modalImg = document.getElementById('modalImage');
+    const zoomLevelEl = document.getElementById('zoomLevel');
+    let currentZoom = 1;
+    let currentSrc = '';
+    let isPanning = false;
+    let startX, startY, translateX = 0, translateY = 0;
+
+    // Click on any mermaid-svg image to open modal
+    document.querySelectorAll('.mermaid-svg img').forEach(img => {
+      img.style.cursor = 'zoom-in';
+      img.addEventListener('click', function(e) {
+        e.stopPropagation();
+        currentSrc = this.src;
+        modalImg.src = currentSrc;
+        currentZoom = 1;
+        modalImg.style.transform = 'scale(1)';
+        zoomLevelEl.textContent = '100%';
+        modal.classList.add('open');
+        document.body.style.overflow = 'hidden';
+      });
+    });
+
+    // Close modal
+    function closeModal() {
+      modal.classList.remove('open');
+      document.body.style.overflow = '';
+    }
+
+    modal.querySelector('.svg-modal-close').addEventListener('click', closeModal);
+    modal.addEventListener('click', function(e) {
+      if (e.target === modal) closeModal();
+    });
+
+    // ESC key to close
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && modal.classList.contains('open')) {
+        closeModal();
+      }
+    });
+
+    // Zoom controls
+    document.querySelectorAll('.zoom-btn').forEach(btn => {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const zoom = parseFloat(this.dataset.zoom);
+        currentZoom = zoom;
+        modalImg.style.transform = `scale(${zoom})`;
+        zoomLevelEl.textContent = `${Math.round(zoom * 100)}%`;
+      });
+    });
+
+    // Pan with mouse drag
+    modalImg.addEventListener('mousedown', function(e) {
+      if (currentZoom > 1) {
+        isPanning = true;
+        startX = e.clientX - translateX;
+        startY = e.clientY - translateY;
+        modalImg.style.cursor = 'grabbing';
+      }
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (isPanning) {
+        translateX = e.clientX - startX;
+        translateY = e.clientY - startY;
+        modalImg.style.transform = `scale(${currentZoom}) translate(${translateX}px, ${translateY}px)`;
+      }
+    });
+
+    document.addEventListener('mouseup', function() {
+      isPanning = false;
+      modalImg.style.cursor = currentZoom > 1 ? 'grab' : 'zoom-in';
+    });
+
+    // Mouse wheel zoom
+    modal.addEventListener('wheel', function(e) {
+      if (!modal.classList.contains('open')) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      currentZoom = Math.max(0.5, Math.min(4, currentZoom * delta));
+      modalImg.style.transform = `scale(${currentZoom}) translate(${translateX}px, ${translateY}px)`;
+      zoomLevelEl.textContent = `${Math.round(currentZoom * 100)}%`;
+    }, { passive: false });
+  </script>
 </body>
 </html>
