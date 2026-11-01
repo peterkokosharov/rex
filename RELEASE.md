@@ -8,17 +8,9 @@ Runtime AI is a dual-mode execution runtime for AI agents, designed as a tool pr
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      ARCHEО (Product)                       │
-│  • KB: GitHub + Confluence + Jira → local analysis          │
-│  • Legacy auditor: docs, tickets, bugs, dead code, tests    │
-│  • Runs ON: REX (vibe coding mode)                          │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ uses as tool provider
-┌──────────────────────────▼──────────────────────────────────┐
 │                       RONI (Orchestrator)                    │
 │  • Task decomposition → DAG                                  │
 │  • Multi-agent delegation (Opus→Sonnet→Haiku→Sonnet)        │
-│  • Doesn't remember 20k pages → asks Archeo                 │
 │  • Runs ON: REX (tool provider)                             │
 └──────────────────────────┬──────────────────────────────────┘
                            │ uses as tool provider
