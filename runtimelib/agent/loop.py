@@ -16,6 +16,9 @@ from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
+from ..session import SessionManager, create_session_manager
+from ..hooks import HookEngine, HookEvent, get_hook_engine
+from ..agent.state import CheckpointManager
 
 
 @dataclass
@@ -43,6 +46,12 @@ class AgentLoop:
         on_tool_start: Optional[Callable[[str, dict], None]] = None,
         on_tool_end: Optional[Callable[[ToolResult], None]] = None,
         on_thinking: Optional[Callable[[str], None]] = None,
+        session_manager: Optional[SessionManager] = None,
+        hook_engine: Optional[HookEngine] = None,
+        checkpoint_manager: Optional[CheckpointManager] = None,
+        agent_id: str = "default",
+        role: str = "CODER",
+        depth: int = 0,
     ) -> None:
         self.config = config
         self.llm = llm_client or LiteLLMClient.from_config(config)
@@ -66,9 +75,22 @@ class AgentLoop:
         # System prompt
         self.system_prompt = self._build_system_prompt()
 
+        # Session, hooks, checkpoints
+        self.session_manager = session_manager or create_session_manager()
+        self.hook_engine = hook_engine or get_hook_engine()
+        self.checkpoint_manager = checkpoint_manager
+        self.agent_id = agent_id
+        self.role = role
+        self.depth = depth
+
         # Interrupt handling
         self._interrupt_event = threading.Event()
         signal.signal(signal.SIGINT, self._handle_interrupt)
+
+        # Emit session start
+        self.hook_engine.trigger(HookEvent.SESSION_START, session_id=self.session_manager.session_id)
+        self.hook_engine.trigger(HookEvent.AGENT_START,
+            session_id=self.session_manager.session_id, agent_id=agent_id, role=role, depth=depth)
 
     def _init_default_tools(self) -> None:
         """Initialize default tools."""
@@ -112,6 +134,9 @@ Current workspace: {Path.cwd()}
         """Handle Ctrl+C interrupt."""
         self._interrupt_event.set()
         self.state.interrupted = True
+        self.hook_engine.trigger(HookEvent.AGENT_ERROR,
+            session_id=self.session_manager.session_id, agent_id=self.agent_id,
+            role=self.role, error="Interrupted by user")
         print("\n[Прекъснато]", file=sys.stderr)
 
     def run(self, prompt: str) -> str:
@@ -119,8 +144,20 @@ Current workspace: {Path.cwd()}
         # Add user message
         self.state.messages.append(ChatMessage(role="user", content=prompt))
 
+        # Record user message in session
+        self.session_manager.append("user_message", {"prompt": prompt, "agent_id": self.agent_id})
+
         while self.state.step < self.state.max_steps and not self.state.interrupted:
             self.state.step += 1
+
+            # Emit step start
+            self.hook_engine.trigger(HookEvent.AGENT_STEP,
+                session_id=self.session_manager.session_id, agent_id=self.agent_id,
+                role=self.role, metadata={"step": self.state.step})
+
+            # Checkpoint if needed
+            if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(self.state.step):
+                self.checkpoint_manager.save_checkpoint(self._get_agent_state())
 
             # Get LLM response
             response = self._get_llm_response()
@@ -135,6 +172,11 @@ Current workspace: {Path.cwd()}
 
             # Regular text response
             if response.content:
+                # Record assistant response
+                self.session_manager.append("assistant_message", {"content": response.content, "agent_id": self.agent_id})
+                self.hook_engine.trigger(HookEvent.AGENT_END,
+                    session_id=self.session_manager.session_id, agent_id=self.agent_id,
+                    role=self.role, metadata={"output": response.content})
                 return response.content
 
             # If no content and no tool calls, continue
@@ -146,6 +188,9 @@ Current workspace: {Path.cwd()}
             return "[Изпълнението е прекъснато от потребителя]"
 
         if self.state.step >= self.state.max_steps:
+            self.hook_engine.trigger(HookEvent.AGENT_END,
+                session_id=self.session_manager.session_id, agent_id=self.agent_id,
+                role=self.role, metadata={"output": f"[Достигнат е максимум от {self.state.max_steps} стъпки]"})
             return f"[Достигнат е максимум от {self.state.max_steps} стъпки]"
 
         return ""
@@ -246,7 +291,16 @@ Current workspace: {Path.cwd()}
                     args_str = tc.function.get("arguments", "{}")
                     args = json.loads(args_str) if args_str else {}
 
-                    # Notify tool start
+                    # Add role and agent context for permission checking
+                    args["_role"] = self.role
+                    args["_agent_id"] = self.agent_id
+
+                    # Emit tool start hook
+                    self.hook_engine.trigger(HookEvent.TOOL_START,
+                        session_id=self.session_manager.session_id, agent_id=self.agent_id,
+                        role=self.role, tool_name=tool_name, tool_args=args)
+
+                    # Notify tool start callback
                     self.on_tool_start(tool_name, args)
 
                     # Execute tool
@@ -270,8 +324,23 @@ Current workspace: {Path.cwd()}
                         error=f"Tool execution failed: {e}"
                     )
 
-            # Notify tool end
+            # Emit tool end hook
+            self.hook_engine.trigger(HookEvent.TOOL_END,
+                session_id=self.session_manager.session_id, agent_id=self.agent_id,
+                role=self.role, tool_name=tool_name, tool_result=result)
+
+            # Notify tool end callback
             self.on_tool_end(result)
+
+            # Record tool call in session
+            self.session_manager.append("tool_call", {
+                "tool": tool_name,
+                "args": args,
+                "success": result.success,
+                "result": result.result if result.success else None,
+                "error": result.error,
+                "agent_id": self.agent_id
+            })
 
             # Add tool result to messages
             result_content = json.dumps(
@@ -283,6 +352,22 @@ Current workspace: {Path.cwd()}
                 content=result_content,
                 tool_call_id=tc.id
             ))
+
+            # Emit tool end callback
+            self.on_tool_end(result)
+
+    def _get_agent_state(self) -> "AgentState":
+        """Get current agent state for checkpointing."""
+        return self.state
+
+    def _handle_interrupt(self, signum: int, frame: Any) -> None:
+        """Handle Ctrl+C interrupt."""
+        self._interrupt_event.set()
+        self.state.interrupted = True
+        self.hook_engine.trigger(HookEvent.AGENT_ERROR,
+            session_id=self.session_manager.session_id, agent_id=self.agent_id,
+            role=self.role, error="Interrupted by user")
+        print("\n[Прекъснато]", file=sys.stderr)
 
 
 def create_agent_loop(config: Optional[Config] = None, **kwargs) -> AgentLoop:

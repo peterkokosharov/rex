@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Callable, Optional
 
 from ..tools.base import ToolResult
-from ..agent.loop import AgentState
+from ..agent.state import AgentState
 
 
 class HookEvent(Enum):
@@ -44,6 +44,9 @@ class HookContext:
     """Context passed to hooks."""
     event: HookEvent
     session_id: str
+    agent_id: str = ""
+    role: str = ""
+    depth: int = 0
     agent_state: Optional[AgentState] = None
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
@@ -122,7 +125,8 @@ class HookEngine:
         """Trigger hooks for event."""
         if not self._enabled:
             return []
-        context = HookContext(event=event, session_id=kwargs.get("session_id", ""), **kwargs)
+        session_id = kwargs.pop("session_id", "")
+        context = HookContext(event=event, session_id=session_id, **kwargs)
         return self.registry.trigger(context)
 
     # Convenience methods
