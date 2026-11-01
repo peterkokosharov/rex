@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.config import Config
+from runtimelib.config import Config
 
 
 def test_config_load_yaml():

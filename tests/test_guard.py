@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.guard import GuardClient
+from runtimelib.guard import GuardClient
 
 
 def test_guard_client_creation():
