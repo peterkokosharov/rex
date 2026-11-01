@@ -20,6 +20,9 @@ from .llm.models import ModelRegistry, ModelInfo, ModelClass, get_registry
 # Guard
 from .guard import GuardClient, get_guard_client
 
+# REX
+from .rex import REX, AgentRole, AgentContext, AgentResult, SubagentHandle, Subscription
+
 # Tools
 from .tools import Tool, ToolSchema, ToolResult, ToolRegistry, ToolExecutor
 from .tools.fileops import FileOpsTool, create_fileops_tool
@@ -85,6 +88,14 @@ __all__ = [
     # Guard
     "GuardClient",
     "get_guard_client",
+
+    # REX
+    "REX",
+    "AgentRole",
+    "AgentContext",
+    "AgentResult",
+    "SubagentHandle",
+    "Subscription",
 
     # Tools
     "Tool",
