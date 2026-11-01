@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture: Runtime System Design</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; max-width: 1400px; margin: 0 auto; padding: 20px; background: #fafafa; color: #1a1a1a; }
+    h1, h2, h3 { color: #0d1b2a; }
+    h1 { border-bottom: 3px solid #7c3aed; padding-bottom: 10px; }
+    h2 { border-left: 4px solid #7c3aed; padding-left: 12px; margin-top: 40px; }
+    .card { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .card h3 { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { border: 1px solid #e5e7eb; padding: 10px 12px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 600; }
+    tr:nth-child(even) td { background: #f9fafb; }
+    .mermaid { background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; overflow-x: auto; }
+    .tag { display: inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin: 2px; }
+    .tag.core { background: #e0e7ff; color: #3730a3; }
+    .tag.guard { background: #fce7f3; color: #9d174d; }
+    .tag.orch { background: #dcfce7; color: #166534; }
+    .tag.skills { background: #fef3c7; color: #92400e; }
+    .tag.infra { background: #d1fae5; color: #065f46; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; overflow-x: auto; }
+    .section { margin-bottom: 40px; }
+    .component { border: 1px solid #c7d2fe; border-radius: 8px; background: #fafbff; padding: 16px; margin: 16px 0; }
+    .component-title { font-weight: bold; color: #312e81; margin-bottom: 8px; }
+    .data-flow { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .data-flow-title { font-weight: bold; color: #166534; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Architecture: Runtime System Design</h1>
+  <p><strong>Дата:</strong> 2026-10-31 | <strong>Версия:</strong> 1.0 | <strong>Статус:</strong> За ревю и имплементация</p>
+
+  <div class="section">
+    <h2>1. High-Level System Architecture</h2>
+    <p>Runtime е изграден от 4 основни слоя, които комуникират през добре дефинирани интерфейси. Всичко работи в един процес (host) освен Docker Guard, който е изолиран контейнер.</p>
+
+    <div class="mermaid-svg"><img src="03-architecture-diagram1.svg" alt="Diagram 1" style="max-width:100%;height:auto;"></div>
+  </div>
+
+  <div class="section">
+    <h2>2. Component Deep-Dive</h2>
+
+    <div class="component">
+      <div class="component-title"><span class="tag core">CORE</span> CLI Layer — runtime/__main__.py, commands.py, config.py</div>
+      <ul>
+        <li><strong>Entry Point:</strong> <code>python -m runtime</code> или <code>runtime</code> (console_scripts). Аргументи: subcommands, flags, positional prompt.</li>
+        <li><strong>Readline:</strong> Tab completion за slash commands, history (<code>~/.config/runtime/history</code>), Ctrl+C handling.</li>
+        <li><strong>Config:</strong> Priority: CLI args > env vars > <code>~/.config/runtime/config.yaml</code> > defaults. Schema валидация чрез <code>yaml_lite</code>.</li>
+        <li><strong>Slash Commands:</strong> Dynamic registry — core commands + skills може да регистрират свои. Pattern: <code>/namespace:command</code>.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag core">CORE</span> Agent Loop — agent/loop.py, agent/streaming.py</div>
+      <ul>
+        <li><strong>ReAct Loop:</strong> <code>while not done: think → act → observe</code>. Максимум стъпки конфигурируемо (<code>MAX_STEPS</code>).</li>
+        <li><strong>Context Management:</strong> Sliding window (последни N съобщения) + summary за стари (опционално). Token budget enforcement.</li>
+        <li><strong>Streaming:</strong> Token-by-token към stdout. Tool calls се stream-ват като JSON partials. <code>Ctrl+C</code> → сигнал към guard за abort.</li>
+        <li><strong>Thinking Blocks:</strong> Ако LLM поддържа <code>thinking</code> blocks (Anthropic format), се показват в статус линията.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag core">CORE</span> LiteLLM Client — llm/client.py (wraps kikolib.http_client)</div>
+      <ul>
+        <li><strong>Endpoint:</strong> <code>POST {base_url}/v1/chat/completions</code> с OpenAI format.</li>
+        <li><strong>Auth:</strong> <code>Authorization: Bearer {api_key}</code> от config/env/keystore.</li>
+        <li><strong>Streaming:</strong> <code>Accept: text/event-stream</code>, парсване на SSE data: линии чрез <code>kikolib.sse</code>.</li>
+        <li><strong>Tool Calling:</strong> OpenAI <code>tools</code> array + <code>tool_choice</code>. Response parsing: <code>tool_calls</code> → internal format.</li>
+        <li><strong>Retry:</strong> <code>kikolib.retry.RetryPolicy</code> за 429, 5xx, timeouts. Exponential backoff + jitter.</li>
+        <li><strong>Model Routing:</strong> LiteLLM proxy handle-ва routing; client само подава <code>model</code> name.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag guard">GUARD</span> Docker Guard — guard/entrypoint.py, Dockerfile, docker-compose.yml</div>
+      <ul>
+        <li><strong>Architecture:</strong> JSON-RPC 2.0 over stdio. Host ↔ Container = request/response + notifications.</li>
+        <li><strong>Methods:</strong> <code>bash.exec</code>, <code>fs.read</code>, <code>fs.write</code>, <code>fs.edit</code>, <code>fs.list</code>, <code>fs.glob</code>, <code>fs.grep</code>, <code>net.fetch</code>.</li>
+        <li><strong>Security:</strong> chroot към workspace; read-only mounts за config/secrets; no network по подразбиране (policy); pids limit; CPU/memory cgroups.</li>
+        <li><strong>Pooling:</strong> Persistent container; connection pool в host за low latency. Health check ping/pong.</li>
+        <li><strong>Image:</strong> <code>python:3.11-slim</code> + kikolib + runtime tools код. Multi-stage build за размер.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag orch">ORCH</span> Orchestration — agent/subagent.py, agent/comms.py, agent/background.py, session.py</div>
+      <ul>
+        <li><strong>Subagent:</strong> Nov процес/thread с собствен Agent Loop, наследява контекст (read-only), има лимит на стъпки/токени. Връща структуриран резултат.</li>
+        <li><strong>Communication:</strong> <code>send_message(agent_id, content)</code>, <code>broadcast(content)</code>, <code>shared_context</code> (immutable view на parent history).</li>
+        <li><strong>Background Tasks:</strong> Вътрешен scheduler (asyncio/threading), не system cron. Task queue с persist. <code>notify_when_idle</code> pattern.</li>
+        <li><strong>Session:</strong> JSONL format (append-only): <code>{type, timestamp, data}</code>. Checkpoint на всеки N стъпки. Resume от последния checkpoint.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag skills">SKILLS</span> Skills System — skills/schema.yaml, skills/registry.py, skills/auto_mode.py</div>
+      <ul>
+        <li><strong>Format (skill.yaml):</strong> <pre>name: string
+version: semver
+description: string
+entrypoint: "module:function"
+schema: JSONSchema  # args validation
+hooks:
+  - event: "pre_tool_call"
+    handler: "module:hook_fn"
+permissions:
+  - tool: "bash"
+    pattern: "readonly"
+auto_mode: false
+depends: ["other-skill@^1.0"]</pre></li>
+        <li><strong>Registry:</strong> Local index (JSON), remote index (GitHub releases / HTTP JSON). <code>install</code> → fetch → validate → link. Dependency resolution (semver).</li>
+        <li><strong>Auto Mode:</strong> Policy engine: <code>allow(auto_mode_skills, tools, paths)</code>. Default: deny. Configurable per skill/tool/path.</li>
+        <li><strong>Built-in Skills:</strong> Всяка в <code>skills/builtin/{name}/skill.yaml</code> + implementation. Bundled в package.</li>
+      </ul>
+    </div>
+
+    <div class="component">
+      <div class="component-title"><span class="tag orch">ORCH</span> Workflow Engine — workflow/engine.py, workflow/skills/*.yaml</div>
+      <ul>
+        <li><strong>Pipeline Skills:</strong> <code>plan</code> (Opus), <code>research</code> (Sonnet), <code>implement</code> (Sonnet), <code>test-gen</code> (LLM), <code>test-fix</code> (Haiku), <code>review</code> (Sonnet).</li>
+        <li><strong>Context Isolation:</strong> Всяка стъпка получава само нужния input (plan, code, tests), не пълната история.</li>
+        <li><strong>Human-in-the-loop:</strong> Plan стъпка генерира HTML с Mermaid UML → consumer approve/rewrite → continue.</li>
+        <li><strong>SKILLS.md:</strong> Един файл за research + task handoff. Structured: <code># Research\n...\n# Task\n...</code>.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>3. Data Flow Diagrams</h2>
+
+    <div class="data-flow">
+      <div class="data-flow-title">📥 Data Flow: User Prompt → Response</div>
+      <div class="mermaid-svg"><img src="03-architecture-diagram2.svg" alt="Diagram 2" style="max-width:100%;height:auto;"></div>
+    </div>
+
+    <div class="data-flow">
+      <div class="data-flow-title">🔄 Data Flow: Subagent Spawn & Communication</div>
+      <div class="mermaid-svg"><img src="03-architecture-diagram3.svg" alt="Diagram 3" style="max-width:100%;height:auto;"></div>
+    </div>
+
+    <div class="data-flow">
+      <div class="data-flow-title">🛠️ Data Flow: Skill Execution (Auto Mode)</div>
+      <div class="mermaid-svg"><img src="03-architecture-diagram4.svg" alt="Diagram 4" style="max-width:100%;height:auto;"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4. Directory Structure</h2>
+    <pre>
+runtime/
+├── __main__.py              # Entry point
+├── __init__.py
+├── cli.py                   # Argument parsing, readline
+├── config.py                # Config loading (yaml_lite + dotenv)
+├── commands.py              # Slash command registry
+├── kikolib/                 # Copied from ~/kiko/kiko/kikolib/
+│   ├── __init__.py
+│   ├── http_client.py
+│   ├── keystore.py
+│   ├── factory.py
+│   ├── retry.py
+│   ├── posix_utils.py
+│   ├── server.py
+│   ├── yaml_lite.py
+│   ├── dotenv.py
+│   ├── tokens.py
+│   └── sse.py
+├── llm/
+│   ├── __init__.py
+│   └── client.py            # LiteLLM OpenAI-compatible wrapper
+├── agent/
+│   ├── __init__.py
+│   ├── loop.py              # ReAct loop
+│   ├── streaming.py         # SSE handling, token streaming
+│   ├── subagent.py          # Subagent spawning
+│   ├── comms.py             # Inter-agent messaging
+│   ├── background.py        # Background task scheduler
+│   └── workflow.py          # Orchestrator workflow engine
+├── session.py               # Session persistence (JSONL)
+├── permissions.py           # Permission manager
+├── hooks.py                 # Hooks engine
+├── tools/
+│   ├── __init__.py
+│   ├── base.py              # Tool base class, schema
+│   ├── fileops.py           # Read/Write/Edit/List/Glob/Grep
+│   ├── bash.py              # Bash via Guard RPC
+│   ├── taskspawn.py         # Subagent launcher tool
+│   ├── websearch.py         # DuckDuckGo + readability
+│   └── mcp.py               # MCP client (stdio/SSE)
+├── skills/
+│   ├── __init__.py
+│   ├── schema.yaml          # Skill YAML schema
+│   ├── registry.py          # Local/remote registry
+│   ├── auto_mode.py         # Policy engine
+│   ├── loader.py            # Dynamic import
+│   └── builtin/
+│       ├── code-review/
+│       ├── simplify/
+│       ├── test-gen/
+│       ├── doc-gen/
+│       ├── security-review/
+│       ├── fewer-permission-prompts/
+│       ├── plan/
+│       └── research/
+├── mcp/
+│   ├── __init__.py
+│   └── client.py            # MCP client implementation
+├── ui/
+│   ├── __init__.py
+│   ├── statusline.py        # Configurable status line
+│   └── formatting.py        # ANSI, markdown, diff rendering
+├── guard/
+│   ├── entrypoint.py        # JSON-RPC server (stdio)
+│   ├── handlers/
+│   │   ├── __init__.py
+│   │   ├── bash.py
+│   │   ├── fs.py
+│   │   └── net.py
+│   └── policy.py            # Network/fs policies
+├── utils/
+│   ├── __init__.py
+│   ├── logging.py
+│   └── i18n.py              # Bulgarian messages
+└── workflow/
+    ├── __init__.py
+    └── engine.py            # Pipeline executor
+
+guard/
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
+└── requirements.txt         # Empty (stdlib only)
+
+ocs/
+├── 01-research.html
+├── 02-plan.html
+├── 03-architecture.html
+└── assets/
+
+tests/
+├── unit/
+├── integration/
+└── benchmarks/
+
+docs/
+├── user-guide.bg.md
+├── user-guide.en.md
+├── developer-guide.md
+├── skills-authoring.md
+└── architecture.md
+
+man/
+└── runtime.1
+
+completion/
+└── runtime.bash
+
+pyproject.toml
+README.md
+LICENSE
+</pre>
+  </div>
+
+  <div class="section">
+    <h2>5. Configuration Schema</h2>
+    <pre>
+# ~/.config/runtime/config.yaml
+liteLLM:
+  base_url: "http://localhost:4000"
+  api_key: "${LITELLM_API_KEY}"  # resolved from env or keystore
+  model: "gpt-4o"
+  timeout: 60
+  max_retries: 5
+  extra_headers: {}
+
+docker_guard:
+  enabled: true
+  image: "runtime/guard:latest"
+  cpus: "2.0"
+  memory: "4g"
+  pids_limit: 100
+  network_mode: "none"  # or "bridge" with policy
+  read_only_rootfs: true
+  workspace_mount: "/workspace"
+
+permissions:
+  default_mode: "ask"  # ask | allow | deny
+  allowlist:
+    - tool: "fileops.read"
+      paths: ["**"]
+    - tool: "bash"
+      patterns: ["ls *", "cat *", "grep *"]
+  denylist:
+    - tool: "bash"
+      patterns: ["rm -rf *", "sudo *", "dd *"]
+  persist_decisions: true
+
+skills:
+  paths:
+    - "~/.config/runtime/skills"
+    - "./.runtime/skills"
+  auto_install: false
+  trusted_publishers: []
+
+hooks:
+  pre_tool_call: []
+  post_tool_call: []
+  pre_agent_spawn: []
+  post_agent_spawn: []
+  session_start: []
+  session_end: []
+  error: []
+
+ui:
+  language: "bg"
+  statusline_format: "{model} | {tokens} | {cost} | {session_time} | {agent_tree}"
+  colors: true
+  markdown_render: true
+  syntax_highlight: true
+
+logging:
+  level: "INFO"
+  file: "~/.config/runtime/runtime.log"
+  max_size_mb: 10
+  max_files: 5
+</pre>
+  </div>
+
+  <div class="section">
+    <h2>6. JSON-RPC Protocol (Host ↔ Guard)</h2>
+    <pre>
+# Request (Host → Guard)
+{"jsonrpc": "2.0", "id": 1, "method": "bash.exec", "params": {"command": "ls -la", "timeout": 30, "cwd": "/workspace", "env": {}}}
+
+# Response (Guard → Host)
+{"jsonrpc": "2.0", "id": 1, "result": {"exit_code": 0, "stdout": "...", "stderr": "", "duration_ms": 45}}
+
+# Error Response
+{"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "timeout", "data": {"timeout": 30}}}
+
+# Notification (Guard → Host, async)
+{"jsonrpc": "2.0", "method": "guard.log", "params": {"level": "info", "message": "started"}}
+
+# Methods:
+# - bash.exec {command, timeout, cwd, env}
+# - fs.read {path, encoding}
+# - fs.write {path, content, mode}
+# - fs.edit {path, old_str, new_str, replace_all}
+# - fs.list {path, recursive}
+# - fs.glob {pattern, root}
+# - fs.grep {pattern, path, include, exclude}
+# - net.fetch {url, method, headers, body, timeout}  # only if network policy allows
+</pre>
+  </div>
+
+  <div class="section">
+    <h2>7. Security Model</h2>
+    <table>
+      <thead><tr><th>Layer</th><th>Protection</th><th>Mechanism</th></tr></thead>
+      <tbody>
+        <tr><td>Host Process</td><td>No direct syscalls</td><td>Всички I/O през Guard RPC</td></tr>
+        <tr><td>Guard Container</td><td>Filesystem isolation</td><td>chroot + read-only mounts + workspace RW only</td></tr>
+        <tr><td>Guard Container</td><td>Network isolation</td><td>network_mode=none / egress policy (allowlist domains)</td></tr>
+        <tr><td>Guard Container</td><td>Resource limits</td><td>cgroups: CPU, memory, pids, disk quota</td></tr>
+        <tr><td>Guard Container</td><td>No privilege escalation</td><td>user namespace, no new privs, drop all caps</td></tr>
+        <tr><td>Permissions</td><td>Tool-level gates</td><td>Allowlist/denylist + interactive prompt + persist</td></tr>
+        <tr><td>Secrets</td><td>API keys</td><td>OS keystore (kikolib.keystore) + env vars, never in logs</td></tr>
+        <tr><td>Skills</td><td>Supply chain</td><td>Checksum verification, signed indexes, trusted publishers</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>8. Mermaid: Component Interaction Overview</h2>
+    <div class="mermaid-svg"><img src="03-architecture-diagram5.svg" alt="Diagram 5" style="max-width:100%;height:auto;"></div>
+  </div>
+
+  <div class="section">
+    <h2>9. Extension Points</h2>
+    <table>
+      <thead><tr><th>Extension Point</th><th>Mechanism</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>New Tool</td><td>Subclass <code>BaseTool</code>, register в <code>tools/__init__.py</code></td><td>Database tool, Kubernetes tool</td></tr>
+        <tr><td>New Skill</td><td>Add <code>skill.yaml</code> в <code>skills/builtin/</code> или remote index</td><td>Migration generator, API client generator</td></tr>
+        <tr><td>New Slash Command</td><td>Decorator <code>@command("/my:cmd")</code> в skill или plugin</td><td>/db:migrate, /k8s:deploy</td></tr>
+        <tr><td>New Hook</td><td>Register в config.yaml под <code>hooks.*</code></td><td>Audit log, metrics push, notification</td></tr>
+        <tr><td>New LLM Provider</td><td>Implement <code>LLMClient</code> protocol, register в factory</td><td>Local llama.cpp, custom proxy</td></tr>
+        <tr><td>New Guard Handler</td><td>Add handler в <code>guard/handlers/</code>, register в entrypoint</td><td>Docker exec, WASM sandbox</td></tr>
+        <tr><td>UI Theme</td><td>Config <code>ui.colors</code> + ANSI templates</td><td>Dracula, Solarized, High contrast</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  
+</body>
+</html>

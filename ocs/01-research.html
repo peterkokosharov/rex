@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Research: Open Source AI Coding Agents Comparison</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; max-width: 1200px; margin: 0 auto; padding: 20px; background: #fafafa; color: #1a1a1a; }
+    h1, h2, h3 { color: #0d1b2a; }
+    h1 { border-bottom: 3px solid #2563eb; padding-bottom: 10px; }
+    h2 { border-left: 4px solid #2563eb; padding-left: 12px; margin-top: 40px; }
+    .card { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .card h3 { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { border: 1px solid #e5e7eb; padding: 10px 12px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 600; }
+    tr:nth-child(even) td { background: #f9fafb; }
+    .mermaid { background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; overflow-x: auto; }
+    .tag { display: inline-block; background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin: 2px; }
+    .tag.python { background: #e0e7ff; color: #3730a3; }
+    .tag.cli { background: #fef3c7; color: #92400e; }
+    .tag.agent { background: #dcfce7; color: #166534; }
+    .highlight { background: #fef08a; padding: 2px 6px; border-radius: 3px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; overflow-x: auto; }
+    .section { margin-bottom: 40px; }
+    .gap { background: #fee2e2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .gap-title { color: #991b1b; font-weight: bold; margin-bottom: 8px; }
+    .claude-extra { background: #e0e7ff; border: 1px solid #c7d2fe; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .claude-extra-title { color: #312e81; font-weight: bold; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Research: Open Source AI Coding Agents — Сравнителен Анализ</h1>
+  <p><strong>Дата:</strong> 2026-10-31 | <strong>Цел:</strong> Определение на best practices и gap-ове за изграждане на <code>runtime</code> (Claude Code-like) за OpenAI-компатибилни модели през LiteLLM proxy</p>
+
+  <div class="section">
+    <h2>1. Проучени Open Source Проекти</h2>
+    <div class="card">
+      <h3>Проектът Aider (Aider-AI/aider) — 25k+ ⭐</h3>
+      <span class="tag python">Python</span> <span class="tag cli">CLI</span> <span class="tag agent">Agent</span>
+      <ul>
+        <li><strong>Архитектура:</strong> Модулен дизайн с <code>coders/</code> (20+ coder класове: Architect, EditBlock, UDiff, WholeFile, Patch, Search/Replace)</li>
+        <li><strong>LLM интеграция:</strong> <code>llm.py</code> — поддържа OpenAI, Anthropic, OpenRouter, Ollama, Gemini, DeepSeek, Vertex, Bedrock, Azure</li>
+        <li><strong>Repo Map:</strong> <code>repomap.py</code> — семантично индексиране на кодовата база (ctags + tree-sitter), контекст за LLM</li>
+        <li><strong>Инструменти:</strong> Read/Write/Edit/Grep/Glob/LS/Bash — изпълнявани през <code>shell.py</code> с permission system</li>
+        <li><strong>Git интеграция:</strong> Автоматични commit-и, diff preview, undo</li>
+        <li><strong>Voice/Voice-to-code:</strong> <code>voice.py</code> — Whisper интеграция</li>
+        <li><strong>Benchmark suite:</strong> <code>benchmark/</code> — SWE-bench, HumanEval, custom tasks</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Проектът learn-claude-code (shareAI-lab/learn-claude-code) — 79k+ ⭐</h3>
+      <span class="tag python">Python</span> <span class="tag cli">CLI</span> <span class="tag agent">Agent Harness</span>
+      <ul>
+        <li><strong>Философия:</strong> "Bash is all you need" — минимализен agent harness, изграден от 0</li>
+        <li><strong>Структура:</strong> 17 стъпкови модула (s01_agent_loop → s17_goal_loop)</li>
+        <li><strong>Ключови модули:</strong>
+          <ul>
+            <li><code>s01_agent_loop</code> — основен ReAct loop</li>
+            <li><code>s03_permission</code> — permission system за tools</li>
+            <li><code>s04_hooks</code> — pre/post tool hooks</li>
+            <li><code>s06_subagent</code> — subagent spawning</li>
+            <li><code>s07_skill_loading</code> — dynamic skill loading</li>
+            <li><code>s08_context_compact</code> — context compaction/summarization</li>
+            <li><code>s10_task_system</code> — background task system</li>
+            <li><code>s13_agent_teams</code> — multi-agent teams</li>
+            <li><code>s14_mcp_plugin</code> — MCP integration</li>
+            <li><code>s16_workflow_runtime</code> — workflow execution</li>
+          </ul>
+        </li>
+        <li><strong>Skills:</strong> <code>skills/</code> — agent-builder, code-review, mcp-builder, pdf</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Проектът CoreCoder (he-yufeng/CoreCoder) — 1.8k+ ⭐</h3>
+      <span class="tag python">Python</span> <span class="tag cli">CLI</span> <span class="tag agent">Minimal Agent (~1000 LOC)</span>
+      <ul>
+        <li><strong>Философия:</strong> "NanoGPT for coding agents" — минимализъм, чистота</li>
+        <li><strong>Компоненти:</strong> <code>agent.py</code>, <code>cli.py</code>, <code>config.py</code>, <code>context.py</code>, <code>hooks.py</code>, <code>llm.py</code>, <code>mcp.py</code>, <code>permissions.py</code>, <code>session.py</code>, <code>shell.py</code></li>
+        <li><strong>Tools:</strong> В <code>tools/</code> — file ops, bash, search, web</li>
+        <li><strong>Checkpoints:</strong> <code>checkpoints.py</code> — session state persistence</li>
+        <li><strong>LLM:</strong> Поддържа всякакъв LLM чрез OpenAI-компатибилен API</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Проектът pydantic-deepagents (vstorm-co/pydantic-deepagents) — 1.1k+ ⭐</h3>
+      <span class="tag python">Python</span> <span class="tag cli">Framework</span> <span class="tag agent">PydanticAI-based</span>
+      <ul>
+        <li><strong>Философия:</strong> "Open-source, self-hosted Claude Code" на PydanticAI</li>
+        <li><strong>Особености:</strong> Tool-calling, sandboxed execution, multi-agent teams, skills, checkpoints, unlimited context</li>
+        <li><strong>Архитектура:</strong> <code>agent.py</code>, <code>subagents.py</code>, <code>goal.py</code>, <code>spec.py</code>, <code>features/</code>, <code>bundled_skills/</code>, <code>mcp/</code></li>
+        <li><strong>Деплой:</strong> <code>install.sh</code>, Docker, <code>apps/</code> за web/desktop frontends</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Проектът Nano (pnegahdar/nano) — 180 ⭐</h3>
+      <span class="tag python">Python</span> <span class="tag cli">Single-file</span>
+      <ul>
+        <li><strong>Философия:</strong> "One file. Under 200 lines. Zero dependencies. It's a coding agent."</li>
+        <li><strong>Инструмент:</strong> Само <code>execute_shell</code> — всичко през shell</li>
+        <li><strong>Approval:</strong> Interactive (y/a/n) + <code>NANO_APPROVE=all</code> за auto-mode</li>
+        <li><strong>Model:</strong> OpenAI Responses API, <code>OPENAI_MODEL</code> env var</li>
+        <li><strong>Sessions:</strong> JSON persistence в <code>~/.nano_sessions.json</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>2. Сравнителна Таблица</h2>
+    <table>
+      <thead>
+        <tr><th>Feature</th><th>Aider</th><th>learn-claude-code</th><th>CoreCoder</th><th>pydantic-deepagents</th><th>Nano</th><th>Claude Code</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Language</td><td>Python</td><td>Python</td><td>Python</td><td>Python</td><td>Python</td><td>TypeScript (native)</td></tr>
+        <tr><td>LOC</td><td>~15k</td><td>~5k (modular)</td><td>~1k</td><td>~8k</td><td><200</td><td>Closed source</td></tr>
+        <tr><td>Multi-model support</td><td>✅ Excellent</td><td>✅ Via OpenAI API</td><td>✅ Any OpenAI-compat</td><td>✅ PydanticAI</td><td>✅ OpenAI only</td><td>✅ Anthropic only</td></tr>
+        <tr><td>Agent loop (ReAct)</td><td>✅</td><td>✅ (s01)</td><td>✅</td><td>✅</td><td>✅ (minimal)</td><td>✅ Advanced</td></tr>
+        <tr><td>Subagents</td><td>❌</td><td>✅ (s06, s13)</td><td>❌</td><td>✅</td><td>❌</td><td>✅ Hierarchical</td></tr>
+        <tr><td>Skills/Plugins</td><td>❌</td><td>✅ (s07, skills/)</td><td>❌</td><td>✅ (bundled_skills)</td><td>❌</td><td>✅ Rich ecosystem</td></tr>
+        <tr><td>Hooks</td><td>❌</td><td>✅ (s04)</td><td>✅</td><td>✅</td><td>❌</td><td>✅ Extensive</td></tr>
+        <tr><td>Permission System</td><td>✅ Basic</td><td>✅ (s03)</td><td>✅</td><td>✅</td><td>✅ (y/a/n)</td><td>✅ Granular</td></tr>
+        <tr><td>MCP Support</td><td>❌</td><td>✅ (s14)</td><td>✅</td><td>✅</td><td>❌</td><td>✅ Native</td></tr>
+        <tr><td>Context Compaction</td><td>✅ (repo map)</td><td>✅ (s08)</td><td>❌</td><td>✅ (unlimited)</td><td>❌</td><td>✅ Advanced</td></tr>
+        <tr><td>Background Tasks</td><td>❌</td><td>✅ (s10, s11, s12)</td><td>❌</td><td>✅</td><td>❌</td><td>✅</td></tr>
+        <tr><td>Session Persistence</td><td>✅ Git-based</td><td>✅</td><td>✅ (checkpoints)</td><td>✅</td><td>✅ (JSON)</td><td>✅</td></tr>
+        <tr><td>Repo Intelligence</td><td>✅ Repomap (ctags)</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅ Semantic</td></tr>
+        <tr><td>Slash Commands</td><td>✅ /commands</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td><td>✅ Extensible</td></tr>
+        <tr><td>Status Line</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td><td>✅ Configurable</td></tr>
+        <tr><td>Docker Sandbox</td><td>✅ (docker/)</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td><td>❌ (local only)</td></tr>
+        <tr><td>Web Search</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td><td>❌</td><td>✅ Native</td></tr>
+        <tr><td>Voice Input</td><td>✅ Whisper</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+        <tr><td>Benchmark/Tests</td><td>✅ SWE-bench</td><td>✅ (tests/)</td><td>✅</td><td>✅</td><td>❌</td><td>Internal</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>3. Mermaid Диаграма: Feature Coverage Matrix</h2>
+    <div class="mermaid-svg"><img src="01-research-diagram1.svg" alt="Diagram 1" style="max-width:100%;height:auto;"></div>
+  </div>
+
+  <div class="section">
+    <h2>4. Какво НЕ има в Open Source проектите (Claude Code Extras)</h2>
+    <div class="claude-extra">
+      <div class="claude-extra-title">🔍 Gap Analysis: Какво предлага Claude Code ВЪВНАДЛЕЗНО</div>
+      <ul>
+        <li><strong>Native Anthropic Integration:</strong> Пряк достъп до Claude модели без proxy, оптимизирани промпти, кеширане на промпти (prompt caching)</li>
+        <li><strong>Semantic Code Intelligence:</strong> In-process AST parsing, symbol navigation, call graphs, refactoring tools — не само grep/ctags</li>
+        <li><strong>Advanced Context Management:</strong> Автоматично сумиране на стари разговори, priority-based context retention, cross-session memory</li>
+        <li><strong>Rich UI/UX:</strong> Syntax highlighting в терминал, diff rendering, progress indicators, streaming thinking blocks, markdown rendering</li>
+        <li><strong>Built-in Skills Marketplace:</strong> Официален екосистем от skills, auto-update, versioning, dependency resolution</li>
+        <li><strong>Enterprise Features:</strong> SSO, audit logs, policy enforcement, data residency, admin console</li>
+        <li><strong>IDE Integration:</strong> VS Code, JetBrains plugins с bidirectional sync</li>
+        <li><strong>Multi-modal:</strong> Image input, screenshot analysis, diagram generation</li>
+        <li><strong>Custom Model Fine-tuning:</strong> Enterprise customers могат да fine-tune-ват модели за техния код</li>
+        <li><strong>Managed Infrastructure:</strong> Не trzря да хостваш proxy, sandbox, monitoring — всичко е managed</li>
+      </ul>
+    </div>
+
+    <div class="gap">
+      <div class="gap-title">⚠️ Gap: Docker Sandbox в Open Source</div>
+      <p>Само <strong>Aider</strong> и <strong>pydantic-deepagents</strong> имат Docker поддръжка. Няма стандартна "guard" архитектура като при Codex, където <strong>ВСИЧКИ</strong> инструменти (bash, file ops, network) минават през контейнер с JSON-RPC/stdio интерфейс.</p>
+    </div>
+
+    <div class="gap">
+      <div class="gap-title">⚠️ Gap: Hierarchical Agent Orchestration</div>
+      <p><strong>learn-claude-code</strong> (s13) и <strong>pydantic-deepagents</strong> имат subagents, но нямат пълна иерархия: chat → agent → subagent → sub-subagent с message passing, shared context, wait-for-idle, delegation patterns.</p>
+    </div>
+
+    <div class="gap">
+      <div class="gap-title">⚠️ Gap: Standardized Skills Format</div>
+      <p>Всеки проект има свой формат. Няма общ стандарт за: YAML/JSON schema, hooks declaration, auto_mode, permissions, dependencies, versioning, marketplace index.</p>
+    </div>
+
+    <div class="gap">
+      <div class="gap-title">⚠️ Gap: Orchestrator-Driven Dev Workflow</div>
+      <p>Няма инструмент, който да моделира <strong>Opus→Sonnet→Haiku→Sonnet pipeline</strong> с context isolation, SKILLS.md handoff, Plan-to-HTML с Mermaid UML, human-in-the-loop approval.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>5. Ключови Уроци за Нашия Runtime</h2>
+    <div class="card">
+      <h3>Вземаме най-доброто от всеки проект</h3>
+      <table>
+        <thead><tr><th>От проект</th><th>Какво вземаме</th></tr></thead>
+        <tbody>
+          <tr><td>Aider</td><td>Multi-model routing, Repomap (repo intelligence), Git integration, Benchmark suite, Voice input</td></tr>
+          <tr><td>learn-claude-code</td><td>Modular agent harness architecture, Hooks system, Permission system, Subagent spawning, MCP plugin, Background tasks/cron, Workflow runtime, Skills structure</td></tr>
+          <tr><td>CoreCoder</td><td>Minimalist architecture, Clean LLM abstraction, Checkpoint system, MCP integration, Any OpenAI-compat model</td></tr>
+          <tr><td>pydantic-deepagents</td><td>PydanticAI-based tool calling, Sandboxed execution, Multi-agent teams, Skills bundling, Unlimited context, Docker deploy</td></tr>
+          <tr><td>Nano</td><td>Radical simplicity, Single-tool philosophy (execute_shell), Auto-approve mode, Session persistence</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Нашата уникална стойност (The "MORE")</h3>
+      <ol>
+        <li><strong>LiteLLM Proxy Native:</strong> Първокласна поддръжка за LiteLLM — model routing, fallback, cost tracking, load balancing</li>
+        <li><strong>Docker Guard Architecture:</strong> Всички инструменти през sandbox container с JSON-RPC/stdio — Codex-inspired</li>
+        <li><strong>Orchestrator Workflow Engine:</strong> Вграден engine за Opus/Sonnet/Haiku pipeline с SKILLS.md, Plan-to-HTML, Mermaid UML</li>
+        <li><strong>Standard Skills Format:</strong> Единен стандарт за skills с hooks, auto_mode, permissions, marketplace</li>
+        <li><strong>Kikolib Foundation:</strong> Zero-deps, stdlib-only, stable Linux native wrappers (OpenSSL, libsecret, systemd)</li>
+        <li><strong>Bulgarian-first UI:</strong> Цялостна локализация на кирилица, български съобщения, грешки, help</li>
+      </ol>
+    </div>
+  </div>
+
+  
+</body>
+</html>

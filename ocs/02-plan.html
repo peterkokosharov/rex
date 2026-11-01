@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plan: Runtime Architecture & Implementation Phases</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; max-width: 1200px; margin: 0 auto; padding: 20px; background: #fafafa; color: #1a1a1a; }
+    h1, h2, h3 { color: #0d1b2a; }
+    h1 { border-bottom: 3px solid #059669; padding-bottom: 10px; }
+    h2 { border-left: 4px solid #059669; padding-left: 12px; margin-top: 40px; }
+    .card { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .card h3 { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { border: 1px solid #e5e7eb; padding: 10px 12px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 600; }
+    tr:nth-child(even) td { background: #f9fafb; }
+    .mermaid { background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; overflow-x: auto; }
+    .tag { display: inline-block; background: #d1fae5; color: #065f46; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin: 2px; }
+    .tag.phase1 { background: #d1fae5; color: #065f46; }
+    .tag.phase2 { background: #dbeafe; color: #1e40af; }
+    .tag.phase3 { background: #fef3c7; color: #92400e; }
+    .tag.phase4 { background: #e0e7ff; color: #3730a3; }
+    .tag.phase5 { background: #fce7f3; color: #9d174d; }
+    .phase-box { border: 2px solid; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .phase1-box { border-color: #059669; background: #f0fdf4; }
+    .phase2-box { border-color: #2563eb; background: #eff6ff; }
+    .phase3-box { border-color: #d97706; background: #fffbeb; }
+    .phase4-box { border-color: #7c3aed; background: #f5f3ff; }
+    .phase5-box { border-color: #db2777; background: #fdf2f8; }
+    .phase-title { font-weight: bold; font-size: 1.1em; margin-bottom: 8px; }
+    .milestone { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; padding: 12px; margin: 8px 0; }
+    .milestone-title { font-weight: 600; color: #065f46; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; overflow-x: auto; }
+    .section { margin-bottom: 40px; }
+    .decision { background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .decision-title { color: #92400e; font-weight: bold; margin-bottom: 8px; }
+    .risk { background: #fee2e2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .risk-title { color: #991b1b; font-weight: bold; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Plan: Runtime Architecture & Implementation Phases</h1>
+  <p><strong>Дата:</strong> 2026-10-31 | <strong>Версия:</strong> 1.0 | <strong>Статус:</strong> За човешко одобрение</p>
+
+  <div class="section">
+    <h2>Общ Преглед на Планът</h2>
+    <p>Планът е разделен на 5 фази, всяка с ясни deliverables, criteria за приемане и рискове. Използва се <strong>Orchestrator-Driven Workflow</strong> с context isolation между моделите (Opus→Sonnet→Haiku→Sonnet).</p>
+
+    <div class="mermaid-svg"><img src="02-plan-diagram1.svg" alt="Diagram 1" style="max-width:100%;height:auto;"></div>
+  </div>
+
+  <div class="section">
+    <h2>Фаза 1: Foundation (22 дни)</h2>
+    <div class="phase-box phase1-box">
+      <div class="phase-title"><span class="tag phase1">Phase 1</span> Цел: Работен CLI scaffold с LiteLLM proxy клиент и Docker guard основа</div>
+      <table>
+        <thead><tr><th>Задача</th><th>Описание</th><th>Deliverable</th><th>Criteria</th></tr></thead>
+        <tbody>
+          <tr><td>1.1 Kikolib Integration</td><td>Копиране/линкване на ~/kiko/kiko/kikolib/ в runtime кодовата база. Factory registration за http, keystore, server, retry.</td><td><code>runtime/kikolib/</code> + tests</td><td>Всички 10 модула импортват и работят; factory.choose() за всеки kind</td></tr>
+          <tr><td>1.2 CLI Scaffold</td><td>Entry point <code>runtime/__main__.py</code>, argument parsing (argparse/stdin), config loading (yaml_lite + dotenv), logging setup.</td><td><code>runtime</code> command</td><td><code>runtime --help</code> работи; конфиг се чете от <code>~/.config/runtime/config.yaml</code></td></tr>
+          <tr><td>1.3 Config System</td><td>Schema: liteLLM base_url, api_key, model, timeout, proxy; docker guard settings; skills paths; permissions.</td><td><code>config.yaml</code> + <code>.env</code></td><td>Валидация на schema; env vars override YAML</td></tr>
+          <tr><td>1.4 LiteLLM HTTP Client</td><td>Wrapper над kikolib.http_client за OpenAI Chat Completions API: /v1/chat/completions, streaming, tool calling format, retry policy.</td><td><code>runtime/llm/client.py</code></td><td>Streaming chunk-ове работят; tool calls се десериализират; retry на 429/5xx</td></tr>
+          <tr><td>1.5 Docker Guard Scaffold</td><td>Dockerfile (python:3.11-slim + kikolib), docker-compose.yml, entrypoint.py (JSON-RPC over stdio), socket activation.</td><td><code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>guard/entrypoint.py</code></td><td><code>docker compose up</code> стартира guard; JSON-RPC ping/pong работи</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="milestone">
+      <div class="milestone-title">✅ Milestone 1: Foundation Ready</div>
+      <code>runtime --version</code> извежда версия; <code>runtime config show</code> показва конфиг; guard container отвеча на RPC.
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Фаза 2: Core Agent Loop (17 дни)</h2>
+    <div class="phase-box phase2-box">
+      <div class="phase-title"><span class="tag phase2">Phase 2</span> Цел: Пълен ReAct loop с tools, streaming, permissions, hooks</div>
+      <table>
+        <thead><tr><th>Задача</th><th>Описание</th><th>Deliverable</th><th>Criteria</th></tr></thead>
+        <tbody>
+          <tr><td>2.1 ReAct Loop</td><td>Основен цикъл: user input → LLM → tool calls → execution → results → LLM → response. Context management (sliding window).</td><td><code>runtime/agent/loop.py</code></td><td>Мulti-turn conversation работи; context не расте безкрайно</td></tr>
+          <tr><td>2.2 Built-in Tools</td><td>FileOps (read/write/edit/list/glob/grep), Bash (via guard RPC), TaskSpawn (subagent), WebSearch (ddg/html scrape), MCP client.</td><td><code>runtime/tools/</code></td><td>Всяко tool има schema, permission, hook points; тестове за всяко</td></tr>
+          <tr><td>2.3 Streaming & SSE</td><td>Token-by-token streaming от LLM → stdout; thinking blocks; tool call streaming; cancel наCtrl+C.</td><td><code>runtime/agent/streaming.py</code></td><td>Нетърпеливо извеждане; Ctrl+C прекъсва текущия tool call</td></tr>
+          <tr><td>2.4 Permission System</td><td>Granular: tool-level, path-level, command-pattern. Config: allowlist/denylist, prompt modes (ask/allow/deny). Persist decisions.</td><td><code>runtime/permissions.py</code></td><td>Permission prompt се появява; "allow all" за сесия работи; persist в ~/.config/runtime/permissions.json</td></tr>
+          <tr><td>2.5 Hooks Engine</td><td>Pre/post: tool_call, tool_result, agent_spawn, slash_command, session_start, session_end, error. Sync + async hooks.</td><td><code>runtime/hooks.py</code></td><td>Hooks се изпълняват в ред; exceptions не чупят main loop; hook timeout</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="milestone">
+      <div class="milestone-title">✅ Milestone 2: Agent Loop Functional</div>
+      <p>Можеш да кажеш <code>runtime "прочети main.py и ми кажи какво прави"</code> — agent чете, анализира, отговаря. Streaming работает. Permissions запитват. Hooks се логват.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Фаза 3: Orchestration (15 дни)</h2>
+    <div class="phase-box phase3-box">
+      <div class="phase-title"><span class="tag phase3">Phase 3</span> Цел: Hierarchical agents, inter-agent communication, background tasks, persistence</div>
+      <table>
+        <thead><tr><th>Задача</th><th>Описание</th><th>Deliverable</th><th>Criteria</th></tr></thead>
+        <tbody>
+          <tr><td>3.1 Subagent Spawning</td><td><code>Task</code> tool: spawn agent с свой prompt, tools, context limit, parent reference. Returns agent_id.</td><td><code>runtime/agent/subagent.py</code></td><td>Subagent стартира, връща резултат; parent чака (wait-for-idle) или continue</td></tr>
+          <tr><td>3.2 Agent Communication</td><td>Message passing: send_message(to, content), broadcast, shared context (read-only parent context), delegation patterns.</td><td><code>runtime/agent/comms.py</code></td><td>Agent A изпраща съобщение до Agent B; B отговаря; context sharing работи</td></tr>
+          <tr><td>3.3 Background Tasks</td><td>Cron-like scheduler (вътрешен, не system cron), task queue, notify-when-idle, task status polling.</td><td><code>runtime/agent/background.py</code></td><td>Можеш да spawn-неш background task; получаваш notification при completion</td></tr>
+          <tr><td>3.4 Session Persistence</td><td>Save/load conversation history, agent tree, tool call log, checkpoints. Format: JSONL за streaming append.</td><td><code>runtime/session.py</code></td><td><code>runtime session save</code> / <code>load</code> работи; resume от checkpoint</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="milestone">
+      <div class="milestone-title">✅ Milestone 3: Orchestration Works</div>
+      <p>Chat създава agent → agent spawn-ва subagent → subagent връща резултат → chat получава summary. Background tasks работят. Сесии се запазват/възстановяват.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Фаза 4: Skills & Extensibility (19 дни)</h2>
+    <div class="phase-box phase4-box">
+      <div class="phase-title"><span class="tag phase4">Phase 4</span> Цел: Standard skills format, registry, auto-mode, built-in skills, slash commands</div>
+      <table>
+        <thead><tr><th>Задача</th><th>Описание</th><th>Deliverable</th><th>Criteria</th></tr></thead>
+        <tbody>
+          <tr><td>4.1 Skills Format Spec</td><td>YAML schema: name, version, description, entrypoint (python module:function), schema (JSON Schema за args), hooks[], permissions[], auto_mode: bool, dependencies[].</td><td><code>runtime/skills/schema.yaml</code></td><td>Валидация на skill.yaml пасва; примери за всеки тип skill</td></tr>
+          <tr><td>4.2 Skills Registry</td><td>Local index (<code>~/.config/runtime/skills/index.json</code>), remote index (GitHub/HTTP), install/update/remove, version resolution, dependency graph.</td><td><code>runtime/skills/registry.py</code></td><td><code>runtime skill install <url></code> сваля и регистрира; version conflict resolution</td></tr>
+          <tr><td>4.3 Auto Mode Engine</td><td>Policy-based auto-execution: skills с auto_mode=true се изпълняват без prompt ако permissions allow. Policy: per-skill, per-tool, per-path.</td><td><code>runtime/skills/auto_mode.py</code></td><td>Skill с auto_mode=true стартира без prompt; policy block прави fallback на prompt</td></tr>
+          <tr><td>4.4 Built-in Skills</td><td>code-review, simplify, test-gen, doc-gen, security-review, fewer-permission-prompts, plan, research. Всяка в apart directory с skill.yaml.</td><td><code>runtime/skills/builtin/</code></td><td>Всяка skill има tests; <code>runtime skill run code-review</code> работи</td></tr>
+          <tr><td>4.5 Slash Commands</td><td>Dynamic command registry: /help, /config, /skill, /session, /agent, /doctor, /plan. Extensible via skills.</td><td><code>runtime/commands.py</code></td><td>Tab completion (readline); /help показва всичко; skills могат да добавят commands</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="milestone">
+      <div class="milestone-title">✅ Milestone 4: Skills System Live</div>
+      <p>Можеш да инсталираш skill от URL, да го стартираш, auto_mode работи за trusted skills, slash commands са разширими.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Фаза 5: Polish & Docs (16 дни)</h2>
+    <div class="phase-box phase5-box">
+      <div class="phase-title"><span class="tag phase5">Phase 5</span> Цел: Production-ready UX, web search, MCP, benchmarks, документация</div>
+      <table>
+        <thead><tr><th>Задача</th><th>Описание</th><th>Deliverable</th><th>Criteria</th></tr></thead>
+        <tbody>
+          <tr><td>5.1 Status Line & UX</td><td>Configurable status line: model, tokens, cost, session time, agent tree, git branch. Colors, format string. Rich formatting (markdown, diffs, syntax highlight via ANSI).</td><td><code>runtime/ui/statusline.py</code></td><td>Status line се обновява реално време; конфигурируем формат</td></tr>
+          <tr><td>5.2 Web Search & MCP</td><td>WebSearch tool (DuckDuckGo HTML + readability), MCP client (stdio + SSE transports), server capability negotiation.</td><td><code>runtime/tools/web_search.py</code>, <code>runtime/mcp/client.py</code></td><td>Web search връща резултати; MCP tools се извеждат в /tools</td></tr>
+          <tr><td>5.3 Benchmarks & Tests</td><td>Integration tests за всеки tool, agent loop scenarios, orchestration scenarios. Benchmark suite (SWE-bench subset, custom tasks). CI pipeline.</td><td><code>tests/</code>, <code>benchmarks/</code>, <code>.github/workflows/</code></td><td>CI зелени; benchmark базови метрики (success rate, latency, token usage)</td></tr>
+          <tr><td>5.4 Documentation</td><td>User guide, developer guide, skills authoring guide, architecture docs (HTML от ocs/), man pages, bash completion script.</td><td><code>docs/</code>, <code>man/</code>, <code>completion/</code></td><td>Всички публични APIs документирани; quickstart < 5 мин</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="milestone">
+      <div class="milestone-title">✅ Milestone 5: v1.0 Release Ready</div>
+      <p>Binary/package публикуван; документация онлайн; CI/CD работещи; примери за skills и workflows.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Архитектурни Решения (Decisions)</h2>
+    <div class="decision">
+      <div class="decision-title">📋 Decision: Stdlib-only + kikolib</div>
+      <p><strong>Context:</strong> Искане за zero external deps.<br>
+      <strong>Decision:</strong> Всичко на Python stdlib + kikolib (вътрешен, копиран в repo). Никакви pip packages.<br>
+      <strong>Consequences:</strong> По-малко features out-of-the-box (няма rich, textual, click), но zero supply chain risk, бърз старт, лесен Docker image.</p>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">📋 Decision: Docker Guard за ВСИЧКИ инструменти</div>
+      <p><strong>Context:</strong> Codex model — sandbox за всичко.<br>
+      <strong>Decision:</strong> Всички tool executions (bash, file ops, network) минават през guard container през JSON-RPC над stdio.<br>
+      <strong>Consequences:</strong> Допълнителна latency (~10-50ms/call), но пълна изоляция, resource limits, network policies. Host machine остава чист.</p>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">📋 Decision: Orchestrator Workflow Engine Вграден</div>
+      <p><strong>Context:</strong> Потребителски workflow: Opus→Sonnet→Haiku→Sonnet с SKILLS.md и Plan-to-HTML.<br>
+      <strong>Decision:</strong> Вграден workflow engine в runtime (не отделен инструмент). Skills: plan, research, implement, test, review.<br>
+      <strong>Consequences:</strong> Runtime става self-improving; може да си пише и рефакторира свой код.</p>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">📋 Decision: Bulgarian-first UI</div>
+      <p><strong>Context:</strong> Изрично изискване.<br>
+      <strong>Decision:</strong> Всички user-facing strings на български (кирилица). Internal code/comments на английски.<br>
+      <strong>Consequences:</strong> Уникално diferentiation; нужно е i18n infrastructure дори за един език.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Рискове и Митигация</h2>
+    <div class="risk">
+      <div class="risk-title">🔴 Risk: Docker Guard Latency</div>
+      <p>Всяко tool извикване минава през container boundary. За file ops и bash това добавя latency.</p>
+      <p><strong>Mitigation:</strong> Connection pooling в guard; batch file ops; async RPC; опционален "unsafe mode" за локална разработка (без guard).</p>
+    </div>
+
+    <div class="risk">
+      <div class="risk-title">🟡 Risk: Stdlib-only Limitation</div>
+      <p>Няма rich/textual за TUI, няма click за CLI, няма pydantic за validation.</p>
+      <p><strong>Mitigation:</strong> kikolib.yaml_lite за config, argparse/stdin за CLI, custom ANSI formatting за UI. Приемлива сложност за v1.</p>
+    </div>
+
+    <div class="risk">
+      <div class="risk-title">🟡 Risk: LiteLLM Proxy Compatibility</div>
+      <p>LiteLLM proxy може да има специфични headers, routing rules, error formats.</p>
+      <strong>Mitigation:</strong> Тестове срещу реален LiteLLM instance в CI; flexible client config за custom headers/routing.</p>
+    </div>
+
+    <div class="risk">
+      <div class="risk-title">🟡 Risk: Skills Format Adoption</div>
+      <p>Ако форматът не се заимства от общността, екосистемът остава празен.</p>
+      <strong>Mitigation:</strong> Форматът да е максимално близък доClaude Code skills + MCP tool schema; export/import tools.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Definition of Done (v1.0)</h2>
+    <ul>
+      <li>✅ <code>runtime</code> инсталира се с <code>pipx install .</code> или <code>docker pull</code></li>
+      <li>✅ <code>runtime "напиши ми hello world на python"</code> работи end-to-end</li>
+      <li>✅ Subagents spawn-ват и връщат резултати</li>
+      <li>✅ Docker guard intercept-ва всички bash/file/net calls</li>
+      <li>✅ Skills се инсталират от URL и се изпълняват (вкл. auto_mode)</li>
+      <li>✅ Slash commands работят с tab completion</li>
+      <li>✅ Session save/load/resume работи</li>
+      <li>✅ WebSearch и MCP client функционални</li>
+      <li>✅ CI/CD pipeline зелени; benchmark baseline записани</li>
+      <li>✅ Документация на български и английски</li>
+    </ul>
+  </div>
+
+  
+</body>
+</html>

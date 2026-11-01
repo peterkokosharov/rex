@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT
+# Docker Compose for Guard Container
+
+services:
+  guard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: runtime/guard:latest
+    container_name: runtime-guard
+    # Security: no network by default, enable via GUARD_ALLOWED_DOMAINS
+    network_mode: "none"
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "4G"
+          pids: 100
+    # Read-only rootfs, workspace is RW
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+    volumes:
+      - .:/workspace:rw
+      - ~/.config/runtime:/home/guarduser/.config/runtime:ro
+      - ~/.kiko:/home/guarduser/.kiko:ro
+    environment:
+      - GUARD_WORKSPACE=/workspace
+      - GUARD_ALLOWED_DOMAINS=api.openai.com,api.anthropic.com,localhost
+      - KIKO_DB_PATH=/home/guarduser/.kiko/kiko.db
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "1000:1000"
+    stdin_open: true
+    tty: true
+    restart: "unless-stopped"
+
+  # LiteLLM proxy (optional, for local development)
+  litellm:
+    image: ghcr.io/berriai/litellm:main
+    container_name: runtime-litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    environment:
+      - LITELLM_CONFIG=/app/config.yaml
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    restart: "unless-stopped"
+    profiles:
+      - proxy
