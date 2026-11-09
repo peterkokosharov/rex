@@ -10,7 +10,7 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 
 ---
 
-## What Is Completed
+## What Is Done
 
 ### Core Infrastructure (`runtimelib/`)
 
@@ -23,12 +23,50 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 | **Docker Guard** | ✅ Done | JSON-RPC 2.0 over stdio, bash/fs/net/git methods, cgroups, network policies |
 | **Tool Framework** | ✅ Done | Base `Tool`, `ToolSchema`, `ToolRegistry`, `ToolExecutor` (timeout, retry) |
 | **Concrete Tools** | ✅ Done | `fileops`, `bash`, `git`, `task` (stub), `websearch` (stub) |
-| **Agent Loop** | ⚠️ Partial | ReAct pattern implemented, **but tool_choice logic broken** (LLM calls tools infinitely) |
-| **Session Manager** | ✅ Done | JSONL persistence, checkpoints, history reconstruction |
+| **Agent Loop** | ✅ Done | ReAct pattern with streaming; smart tool_choice (disabled for simple questions, action-keyword detection) |
+| **Session Manager** | ✅ Done | JSONL persistence, checkpoints, history reconstruction, wired into AgentLoop |
 | **Hooks Engine** | ✅ Done | `HookEngine`, `HookRegistry`, event types (pre/post tool, agent, session, LLM) |
+| **Permissions** | ✅ Done | Role-based permissions (ORCHESTRATOR/CODER/TESTER/…), fnmatch matching, ALLOW/DENY/ASK |
+| **SandboxManager** | ✅ Done | Git worktree isolation per agent, explicit RW/RO mount resolution, FileMergeLock/RedisMergeLock |
+| **REX API** | ✅ Done | `run_agent()`, `spawn_subagent()`, `create_worktree()`, `commit_and_merge()`, `subscribe_hooks()` |
+| **Security** | ✅ Done | `InputValidator` (structural validation), `StructuredPromptBuilder` (zone separation), defense-in-depth |
 | **Skills System** | ✅ Done | YAML schema, entrypoints, hooks integration, auto_mode, permissions |
 | **MCP Client** | ✅ Done | Stdio transport, initialize, list_tools/resources/prompts, call_tool |
 | **Logging/Audit** | ✅ Done | Structured JSON logging, `AuditLogger` for security events |
+
+### Implemented Phases
+
+#### P0 — AgentLoop (Core)
+- ReAct pattern with streaming
+- Smart tool_choice: disabled for simple questions, enabled for action requests
+- Action keyword detection (run, execute, create, write, edit, delete, search, test, build, etc.)
+
+#### P1 — PermissionPolicy
+- Role-based permissions (ORCHESTRATOR, ARCHITECT, CODER, TESTER, REVIEWER, RESEARCHER, DEBUGGER)
+- fnmatch-based operation/pattern matching
+- PermissionResult: ALLOW / DENY / ASK
+- PermissionCheckingExecutor wrapper
+
+#### P2 — SandboxManager
+- Git worktree isolation per agent
+- Docker Guard container with explicit mount resolution (no globs)
+- FileMergeLock (fcntl) + RedisMergeLock (distributed)
+- Explicit RW/RO mount resolution
+
+#### P3 — REX API
+- Dual mode: Vibe Coding (CLI) + Tool Provider (Python API)
+- `run_agent()`, `spawn_subagent()`, `create_worktree()`, `commit_and_merge()`
+- `subscribe_hooks()` for observability
+
+#### P4 — Session + Hooks
+- JSONL session persistence with checkpoints wired into AgentLoop
+- HookEngine: SESSION_START, AGENT_START, AGENT_STEP, AGENT_END, TOOL_START, TOOL_END, AGENT_ERROR
+- CheckpointManager: automatic checkpoints every N steps
+
+#### P5 — Security (PromptSanitizer)
+- InputValidator: structural validation (control chars, zero-width, unicode norm, length, JSON schema)
+- StructuredPromptBuilder: zone separation (SYSTEM/CONTEXT/USER/TOOL_OUTPUT)
+- Defense-in-depth: structural only, no content filtering
 
 ### Architecture Design (`arch-docs/`)
 
@@ -49,79 +87,18 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 
 ---
 
-## What Is NOT Working (Blockers)
+## Plan
 
-### 1. Agent Loop Tool Calling (CRITICAL)
-```python
-# In runtimelib/agent/loop.py:_get_llm_response()
-# Problem: LLM calls tools even for simple questions like "2+2"
-# Current fix attempt: enable_tools = len(messages) > 1  # DOESN'T WORK
-# Root cause: tool_choice="auto" + streaming tool call parsing fragile
-```
-**Impact:** Cannot test any agent functionality.
-
-### 2. No Permissions Integration
-- `ToolExecutor` executes tools directly without permission checks
-- `PermissionPolicy` / `RoleRegistry` designed but not implemented
-
-### 3. No Session Persistence in Agent Loop
-- `SessionManager` exists but not wired into `AgentLoop.run()`
-
-### 4. No Hooks in Agent Loop
-- `HookEngine` exists but not called from loop (pre/post tool, agent events)
-
-### 5. TaskSpawnTool is Stub
-- Returns `{"status": "delegated", ...}` instead of spawning real subagent
-
----
-
-## Immediate Next Steps (Priority Order)
-
-### P0: Fix Agent Loop Tool Calling
-```python
-# runtimelib/agent/loop.py
-# Options:
-# 1. tool_choice="none" for first turn, enable only after explicit user request
-# 2. Add "think" tool that must be called before any action tool
-# 3. Fix streaming tool call parsing (current delta aggregation may be buggy)
-# 4. Add debug logging to see raw LLM responses
-```
-
-### P1: Implement Permissions System
-```
-runtimelib/permissions/
-├── __init__.py
-├── policy.py          # PermissionPolicy, PermissionRule, PermissionResult
-├── registry.py        # RoleRegistry (loads from ~/.config/runtime/roles/*.yaml)
-└── executor.py        # PermissionCheckingToolExecutor wraps ToolExecutor
-```
-
-### P2: Wire Session + Hooks into Agent Loop
-```python
-# In AgentLoop.run():
-# 1. session.append("user_message", ...)
-# 2. hook_engine.pre_tool(...)
-# 3. tool_executor.execute(...)
-# 4. hook_engine.post_tool(...)
-# 5. session.append("tool_result", ...)
-# 6. checkpoint every N steps
-```
-
-### P3: Implement SandboxManager + Git Worktrees
-```
-runtimelib/guard/
-├── sandbox.py         # SandboxManager, create_worktree(), commit_and_merge()
-└── mounts.py          # Explicit RW/RO mount resolution
-```
-
-### P4: Real TaskSpawnTool
-- Spawn new `AgentLoop` in new sandbox with role config
-- Pass context as structured JSON
-- Return structured result to parent
-
-### P5: Orchestrator Pipeline
-- Opus → Sonnet → Haiku → Sonnet workflow
+### P6 — Orchestrator Pipeline
+- Opus → Sonnet → Haiku → Sonnet pipeline execution
 - Parallel CODER + TESTER with worktree sync
+- Automated PR creation and review
+
+### P7 — Production Hardening
+- Web UI for session visualization
+- Packaging (pip, docker, deb)
+- Documentation site
+- CI/CD pipeline
 
 ---
 
@@ -139,9 +116,8 @@ curl http://127.0.0.1:4000/v1/models
 
 ### Run Tests
 ```bash
-cd /home/petark/runtime-ai
+cd runtime-ai
 .venv/bin/python -m pytest tests/ -v
-# 10 tests pass (config + guard)
 ```
 
 ### Run CLI
@@ -162,27 +138,31 @@ cd /home/petark/runtime-ai
 ## Project Structure
 
 ```
-/home/petark/runtime-ai/
+runtime-ai/
 ├── runtimelib/                 # Core library (reusable)
 │   ├── cli/                    # Command registry, readline, parser
 │   ├── config/                 # Config, schema, sources
 │   ├── llm/                    # LiteLLM client, messages, models
-│   ├── guard/                  # GuardClient (JSON-RPC to Docker)
+│   ├── guard/                  # GuardClient (JSON-RPC to Docker) + SandboxManager
 │   ├── tools/                  # Tool framework + concrete tools
 │   ├── agent/                  # AgentLoop, state, callbacks
 │   ├── session/                # SessionManager, checkpoints
 │   ├── hooks/                  # HookEngine, events
+│   ├── permissions/            # PermissionPolicy, executor
+│   ├── security/               # PromptSanitizer, InputValidator
 │   ├── skills/                 # SkillRegistry, schema, auto_mode
 │   ├── mcp/                    # MCP client
 │   ├── logging/                # Structured logging, audit
-│   └── kikolib/                # Stdlib-only foundation (copied from ~/kiko)
+│   ├── kikolib/                # Stdlib-only foundation (copied from ~/kiko)
+│   └── rex.py                  # REX API class
 ├── runtime/                    # App-specific (thin wrapper)
 │   ├── __main__.py             # CLI entry point
 │   └── commands.py             # /guard, /agent, /tool, /history
 ├── guard/                      # Docker Guard container (Dockerfile, entrypoint)
 ├── arch-docs/                  # Architecture documents
+├── ocs/                        # Architecture docs (HTML + Mermaid)
 ├── scripts/                    # Utility scripts (review_architecture.py)
-├── tests/                      # Unit tests (config, guard)
+├── tests/                      # Unit tests
 ├── .venv/                      # Virtual environment
 └── pyproject.toml              # Package config
 ```
