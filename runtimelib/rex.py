@@ -256,12 +256,12 @@ class REX:
         return tools
 
     def _emit_tool_start(self, context: AgentContext, name: str, args: dict):
-        self.hook_engine.trigger(HookEvent.TOOL_START,
+        self.hook_engine.trigger(HookEvent.PRE_TOOL,
             session_id=context.session_id, agent_id=context.agent_id,
             role=context.role.name, tool_name=name, tool_args=args)
 
     def _emit_tool_end(self, context: AgentContext, result: ToolResult):
-        self.hook_engine.trigger(HookEvent.TOOL_END,
+        self.hook_engine.trigger(HookEvent.POST_TOOL,
             session_id=context.session_id, agent_id=context.agent_id,
             role=context.role.name, tool_name=result.tool_name, tool_result=result)
 

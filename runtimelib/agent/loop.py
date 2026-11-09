@@ -77,8 +77,9 @@ class AgentLoop:
         # Tool schemas for LLM
         self.tool_schemas = [t.to_openai() for t in self.tools.values()]
 
-        # System prompt
-        self.system_prompt = self._build_system_prompt()
+        # System prompts: with and without tools
+        self.system_prompt = self._build_system_prompt(include_tools=True)
+        self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
 
         # Session, hooks, checkpoints
         self.session_manager = session_manager or create_session_manager()
@@ -105,20 +106,21 @@ class AgentLoop:
         self.tools["websearch"] = WebSearchTool()
         self.tools["git"] = GitTool(self.config)
 
-    def _build_system_prompt(self) -> str:
-        """Build system prompt with tool descriptions."""
-        tool_descs = []
-        for tool in self.tools.values():
-            schema = tool.schema
-            params = schema.parameters.get("properties", {})
-            param_descs = []
-            for name, info in params.items():
-                desc = info.get("description", "")
-                required = name in schema.parameters.get("required", [])
-                param_descs.append(f"  {name}{' (required)' if required else ''}: {desc}")
-            tool_descs.append(f"{tool.name}: {tool.description}\n" + "\n".join(param_descs))
+    def _build_system_prompt(self, include_tools: bool = True) -> str:
+        """Build system prompt, optionally with tool descriptions."""
+        if include_tools:
+            tool_descs = []
+            for tool in self.tools.values():
+                schema = tool.schema
+                params = schema.parameters.get("properties", {})
+                param_descs = []
+                for name, info in params.items():
+                    desc = info.get("description", "")
+                    required = name in schema.parameters.get("required", [])
+                    param_descs.append(f"  {name}{' (required)' if required else ''}: {desc}")
+                tool_descs.append(f"{tool.name}: {tool.description}\n" + "\n".join(param_descs))
 
-        return f"""You are Runtime, a coding agent that helps users with software development tasks.
+            return f"""You are Runtime, a coding agent that helps users with software development tasks.
 
 You have access to the following tools:
 {chr(10).join(tool_descs)}
@@ -131,6 +133,11 @@ Guidelines:
 - If you need to use a tool, call it. Don't describe what you would do.
 - You can chain multiple tool calls in one response.
 - Maximum steps: {self.state.max_steps}
+
+Current workspace: {Path.cwd()}
+"""
+        else:
+            return f"""You are Runtime, a helpful assistant. Answer questions concisely and accurately.
 
 Current workspace: {Path.cwd()}
 """
@@ -184,10 +191,10 @@ Current workspace: {Path.cwd()}
                     role=self.role, metadata={"output": response.content})
                 return response.content
 
-            # If no content and no tool calls, continue
+            # If no content and no tool calls, return empty response instead of looping
             if not response.content and not response.tool_calls:
                 self.state.messages.append(ChatMessage(role="assistant", content=""))
-                continue
+                return ""
 
         if self.state.interrupted:
             return "[Изпълнението е прекъснато от потребителя]"
@@ -203,13 +210,6 @@ Current workspace: {Path.cwd()}
     def _get_llm_response(self) -> ChatMessage:
         """Get response from LLM with streaming."""
         # Prepare messages
-        messages = [ChatMessage(role="system", content=self.system_prompt)]
-        messages.extend(self.state.messages)
-
-        # Tool choice logic:
-        # - First turn: no tools (tool_choice="none") unless user explicitly asks for action
-        # - Subsequent turns: tools enabled
-        # - Detect explicit action requests in user message
         is_first_turn = self.state.step == 1
         user_msg = self.state.messages[-1].content if self.state.messages else ""
 
@@ -219,6 +219,11 @@ Current workspace: {Path.cwd()}
 
         # Enable tools if: not first turn, OR user explicitly asks for action
         enable_tools = not is_first_turn or explicit_action
+
+        # Use appropriate system prompt based on whether tools are enabled
+        system_prompt = self.system_prompt if enable_tools else self.system_prompt_no_tools
+        messages = [ChatMessage(role="system", content=system_prompt)]
+        messages.extend(self.state.messages)
 
         # Stream response
         full_content = ""
@@ -301,7 +306,7 @@ Current workspace: {Path.cwd()}
                     args["_agent_id"] = self.agent_id
 
                     # Emit tool start hook
-                    self.hook_engine.trigger(HookEvent.TOOL_START,
+                    self.hook_engine.trigger(HookEvent.PRE_TOOL,
                         session_id=self.session_manager.session_id, agent_id=self.agent_id,
                         role=self.role, tool_name=tool_name, tool_args=args)
 
@@ -330,7 +335,7 @@ Current workspace: {Path.cwd()}
                     )
 
             # Emit tool end hook
-            self.hook_engine.trigger(HookEvent.TOOL_END,
+            self.hook_engine.trigger(HookEvent.POST_TOOL,
                 session_id=self.session_manager.session_id, agent_id=self.agent_id,
                 role=self.role, tool_name=tool_name, tool_result=result)
 

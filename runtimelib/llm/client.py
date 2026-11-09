@@ -56,11 +56,12 @@ class ToolCall:
 
 @dataclass
 class ChatCompletionChunk:
-    id: str
-    model: str
-    choices: list[dict[str, Any]]
-    created: int
+    id: str = ""
+    model: str = ""
+    choices: list[dict[str, Any]] = field(default_factory=list)
+    created: int = 0
     object: str = "chat.completion.chunk"
+    error: Any = None
 
     @property
     def delta(self) -> dict[str, Any]:
