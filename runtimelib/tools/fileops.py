@@ -160,6 +160,11 @@ class FileOpsTool(Tool):
         if operation == "glob":
             pattern = kwargs["pattern"]
             root = kwargs.get("root", ".")
+            try:
+                from ..native import glob as native_glob
+                return {"matches": native_glob(root, pattern)}
+            except Exception:
+                pass
             matches = globmod.glob(os.path.join(root, pattern), recursive=True)
             return {"matches": sorted(matches)}
         if operation == "grep":
@@ -169,6 +174,11 @@ class FileOpsTool(Tool):
             include = kwargs.get("include")
             exclude = kwargs.get("exclude")
             rx = re.compile(pattern)
+            try:
+                from ..native import grep as native_grep
+                return {"matches": native_grep(path, pattern, include=include, exclude=exclude, max_matches=200)}
+            except Exception:
+                pass
             matches = []
             for dirpath, _, fnames in os.walk(path):
                 for fn in fnames:

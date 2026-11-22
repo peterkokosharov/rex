@@ -153,6 +153,13 @@ class LiteLLMClient:
         if not line.startswith("data: "):
             return None
         data = line[6:].strip()
+        try:
+            from ..native import parse_sse_data
+            parsed = parse_sse_data(line)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            data = parsed
         if data == "[DONE]":
             return {"done": True}
         try:

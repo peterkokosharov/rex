@@ -11,3 +11,7 @@ build/
 
 # Runtime specific
 .runtimelib/
+librex_native.so
+librex_native.dylib
+rex_native.dll
+librex_native.dll
