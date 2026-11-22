@@ -39,6 +39,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=None, help="Model alias/id to use")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--jsonl", "--ui-jsonl", action="store_true", dest="jsonl", help="JSON-lines stdio bridge for external UIs (e.g. Layka)")
+    parser.add_argument("--acp", action="store_true", help="Agent Client Protocol server for editors (JetBrains AI Assistant, VS Code ACP clients)")
     parser.add_argument("--no-stream", action="store_true", help="Disable token streaming")
     parser.add_argument("--verbose", action="store_true", help="Show verbose tool output")
     parser.add_argument("--quiet", action="store_true", help="Reduce non-essential output")
@@ -48,8 +49,15 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    argv = sys.argv[1:]
+    # `rex acp ...` is the form used in editor configs. Keep the old flat CLI
+    # intact; this only takes over when "acp" is the very first argument.
+    if argv and argv[0] == "acp":
+        from runtimelib.acp import main as acp_main
+        return acp_main(argv[1:])
+
     parser = create_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Load config
     if args.config or args.env_file:
@@ -64,9 +72,12 @@ def main() -> int:
     config.set("cli.verbose", bool(args.verbose))
     config.set("cli.quiet", bool(args.quiet))
     config.set("cli.unsafe_local_tools", bool(args.unsafe_local_tools))
-    if args.unsafe_local_tools and not args.jsonl:
-        import sys
+    if args.unsafe_local_tools and not (args.jsonl or args.acp):
         print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
+
+    if args.acp:
+        from runtimelib.acp import run_acp
+        return run_acp(config, model=args.model, local_tools=args.unsafe_local_tools)
 
     if args.jsonl:
         from runtimelib.cli import run_jsonl

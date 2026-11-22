@@ -121,7 +121,7 @@ def create_runtime_schema() -> ConfigSchema:
 
     # agent section
     agent = ConfigSchema()
-    agent.add_field("max_steps", Field(type=int, default=20, description="Max agent steps"))
+    agent.add_field("max_steps", Field(type=int, default=60, description="Max agent steps"))
     agent.add_field("model", Field(type=str, default="sonnet", description="Default model"))
     agent.add_field("temperature", Field(type=float, default=0.1, description="Temperature"))
     agent.add_field("system_prompt", Field(type=str, default="", description="Custom system prompt"))

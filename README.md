@@ -210,6 +210,38 @@ Outgoing lines (rex → UI):
 Changing `model` updates the live loop; changing the workspace is done by starting rex in that directory (the UI passes
 it as the child process cwd). `--ui-jsonl` is an alias of `--jsonl`.
 
+### Agent Client Protocol (`rex acp`)
+
+Editors that speak [ACP](https://agentclientprotocol.com/) can add rex next to Claude, Codex or Gemini.
+JetBrains AI Assistant (2026.1+) reads `agent_servers` from its AI Assistant settings:
+
+```json
+{
+  "agent_servers": {
+    "rex": {
+      "command": "/usr/bin/python3",
+      "args": ["-m", "runtime", "acp", "--model", "gemini-lite"],
+      "env": [
+        { "name": "PYTHONPATH", "value": "/usr/lib/python3/dist-packages" },
+        { "name": "RUNTIME_LITELLM__BASE_URL", "value": "http://127.0.0.1:4000" },
+        { "name": "RUNTIME_LITELLM__API_KEY", "value": "dummy" }
+      ]
+    }
+  }
+}
+```
+
+From a source checkout use `python3 -m runtime acp ...` with `PYTHONPATH` pointing at the repo root; the ACP server
+adds it to the child's `PYTHONPATH` automatically. `rex acp` and `runtime --acp` are equivalent.
+
+ACP sessions map to one rex `--jsonl` child each: `session/prompt` streams `agent_message_chunk` updates from rex
+`token` events, `tool_start`/`tool_end` become `tool_call` updates, `session/cancel` sends `stop`, and
+`session/close` sends `bye`. stdout is JSON-RPC only; diagnostics go to stderr.
+
+Deliberately not advertised: `loadSession` (context lives in memory), image/audio prompts, MCP passthrough and
+permission gating. Tools run in the Docker guard by default; `--local-tools` runs them on the host with **no**
+permission prompts, so use it only for local demos. Cost reporting is absent because rex reports tokens, not prices.
+
 ### Run CLI (one-shot)
 
 ```bash

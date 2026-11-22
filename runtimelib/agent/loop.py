@@ -13,7 +13,6 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..config import Config
@@ -32,6 +31,18 @@ from .context import (
     context_tokens,
     resolve_context_window,
 )
+
+
+def _parse_tool_arguments(text: str) -> dict[str, Any]:
+    """Parse tool arguments; tolerate trailing text emitted by some models."""
+    if not text or not text.strip():
+        return {}
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        value, _ = decoder.raw_decode(text.lstrip())
+    return value if isinstance(value, dict) else {}
 
 
 @dataclass
@@ -75,6 +86,9 @@ class AgentLoop:
         self.config = config
         self.llm = llm_client or LiteLLMClient.from_config(config)
         self.state = AgentState()
+        # LLM: nvidia nemotron ultra - respect configured step budget; the
+        # hard-coded 20 was too low for repository-wide explanations.
+        self.state.max_steps = int(config.get("agent.max_steps", 60))
         self.on_token = on_token or (lambda t: None)
         self.on_tool_start = on_tool_start or (lambda n, a: None)
         self.on_tool_end = on_tool_end or (lambda r: None)
@@ -148,12 +162,12 @@ Guidelines:
 - You can chain multiple tool calls in one response.
 - Maximum steps: {self.state.max_steps}
 
-Current workspace: {Path.cwd()}
+Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 """
         else:
             return f"""You are Runtime, a helpful assistant. Answer questions concisely and accurately.
 
-Current workspace: {Path.cwd()}
+Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 """
 
     def interrupt(self) -> None:
@@ -288,20 +302,10 @@ Current workspace: {Path.cwd()}
 
     def _get_llm_response(self) -> ChatMessage:
         """Get response from LLM with streaming."""
-        # Prepare messages. The step counter is per-request, so the presence of
-        # a previous assistant message is what marks a follow-up request.
-        has_history = any(m.role == "assistant" for m in self.state.messages[:-1])
-        user_msg = next(
-            (m.content or "" for m in reversed(self.state.messages) if m.role == "user"),
-            "",
-        )
-
-        # Check if user explicitly asks for tool use
-        action_keywords = ["run", "execute", "create", "write", "edit", "delete", "search", "find", "list", "git", "commit", "push", "pull", "test", "build", "install", "fix", "debug"]
-        explicit_action = any(kw in user_msg.lower() for kw in action_keywords)
-
-        # Enable tools on follow-ups and on explicit action requests.
-        enable_tools = has_history or explicit_action
+        # LLM: nvidia nemotron ultra - always expose tools, like Claude Code.
+        # The old keyword heuristic left tools off for plain questions, and the
+        # model then emitted fake textual "tool calls" instead of real ones.
+        enable_tools = True
 
         # Auto-compact at 90% of the current model's context window.
         self._compact_messages()
@@ -386,7 +390,7 @@ Current workspace: {Path.cwd()}
                 try:
                     # Parse arguments
                     args_str = tc.function.get("arguments", "{}")
-                    args = json.loads(args_str) if args_str else {}
+                    args = _parse_tool_arguments(args_str)
 
                     # Add role and agent context for permission checking
                     args["_role"] = self.role
