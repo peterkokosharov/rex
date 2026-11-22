@@ -125,7 +125,13 @@ def create_runtime_schema() -> ConfigSchema:
     agent.add_field("model", Field(type=str, default="sonnet", description="Default model"))
     agent.add_field("temperature", Field(type=float, default=0.1, description="Temperature"))
     agent.add_field("system_prompt", Field(type=str, default="", description="Custom system prompt"))
+    agent.add_field("context_window", Field(type=int, default=0, description="Override model context window in tokens (0 = auto-detect)"))
     schema.add_nested("agent", agent)
+
+    # cli section: auto-compaction settings
+    cli = ConfigSchema()
+    cli.add_field("compact_ratio", Field(type=float, default=0.9, description="Auto-compact at this fraction of the context window"))
+    schema.add_nested("cli", cli)
 
     # session section
     session = ConfigSchema()

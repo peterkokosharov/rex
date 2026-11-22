@@ -25,6 +25,7 @@ class AgentState:
     max_steps: int = 20
     current_tool_calls: list[Any] = field(default_factory=list)
     interrupted: bool = False
+    turn: int = 0
     total_tokens_in: int = 0
     total_tokens_out: int = 0
     total_cost: float = 0.0
@@ -38,6 +39,7 @@ class AgentState:
             "step": self.step,
             "max_steps": self.max_steps,
             "interrupted": self.interrupted,
+            "turn": self.turn,
             "total_tokens_in": self.total_tokens_in,
             "total_tokens_out": self.total_tokens_out,
             "total_cost": self.total_cost,
@@ -53,6 +55,7 @@ class AgentState:
         state.step = data.get("step", 0)
         state.max_steps = data.get("max_steps", 20)
         state.interrupted = data.get("interrupted", False)
+        state.turn = data.get("turn", 0)
         state.total_tokens_in = data.get("total_tokens_in", 0)
         state.total_tokens_out = data.get("total_tokens_out", 0)
         state.total_cost = data.get("total_cost", 0.0)

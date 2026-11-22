@@ -126,7 +126,33 @@ RUNTIME_LITELLM__MODEL=gemini-lite \
 python3 -m runtime
 ```
 
-REPL commands: `/help`, `/model <name>`, `/models`, `/clear`, `/verbose on|off`, `/local on|off`, `/doctor`, `/exit` (`/quit`, `/q`).
+REPL commands: `/help`, `/model <name>`, `/models`, `/context`, `/reset`, `/clear`, `/verbose on|off`, `/local on|off`, `/doctor`, `/exit` (`/quit`, `/q`).
+
+#### Context between requests
+
+The REPL keeps one `AgentLoop`, so every prompt sees the previous user and assistant messages. `/reset` starts a fresh
+context; `/clear` only clears the screen. Step budgets and interrupt flags are per-request, so a long first task or a
+Ctrl+C cannot block the next prompt.
+
+Use `/context` to see the estimated token count, the selected model's window and the auto-compact threshold.
+
+#### Auto-compact
+
+When the shared context reaches 90% of the current model's input window, older turns are compacted automatically:
+200k models compact at 180k tokens, 1M models at 900k. The compact pass first shortens old tool output, then drops
+whole old turns at user boundaries, and keeps the most recent exchange intact.
+
+Model windows come from the built-in registry (or a size hint in the model name, e.g. `our-1m-model`). Override them
+in config when needed:
+
+```yaml
+agent:
+  context_window: 1000000        # single override for the active model
+  context_windows:               # or per model name
+    gemini-lite: 1000000
+cli:
+  compact_ratio: 0.9             # 0.9 = compact at 90% of the window
+```
 
 ### Run CLI (one-shot)
 

@@ -18,22 +18,36 @@ from typing import Any, Callable, Optional
 
 from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
+from ..llm.models import get_registry
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
 from ..session import SessionManager, create_session_manager
 from ..hooks import HookEngine, HookEvent, get_hook_engine
 from ..agent.state import CheckpointManager
+from .context import (
+    COMPACT_RATIO,
+    compact_messages,
+    compact_threshold,
+    context_tokens,
+    resolve_context_window,
+)
 
 
 @dataclass
 class AgentState:
-    """Current state of the agent."""
+    """Current state of the agent.
+
+    ``messages`` is the shared conversation context and survives every call to
+    ``AgentLoop.run()``. ``step`` and ``interrupted`` are per-request and are
+    reset at the start of each run; ``turn`` counts requests in this context.
+    """
     messages: list[ChatMessage] = field(default_factory=list)
     step: int = 0
     max_steps: int = 20
     current_tool_calls: list[ToolCall] = field(default_factory=list)
     interrupted: bool = False
+    turn: int = 0
     total_tokens_in: int = 0
     total_tokens_out: int = 0
     total_cost: float = 0.0
@@ -152,8 +166,19 @@ Current workspace: {Path.cwd()}
         print("\n[Прекъснато]", file=sys.stderr)
 
     def run(self, prompt: str) -> str:
-        """Run the agent loop with a user prompt."""
-        # Add user message
+        """Run one request, reusing the conversation context from previous ones.
+
+        The step budget and the interrupt flag belong to a single request. They
+        are reset here so a second prompt cannot inherit an exhausted step
+        counter or a stale Ctrl+C from the first one.
+        """
+        self.state.step = 0
+        self.state.current_tool_calls = []
+        self.state.interrupted = False
+        self._interrupt_event.clear()
+        self.state.turn += 1
+
+        # Add user message to the shared context
         self.state.messages.append(ChatMessage(role="user", content=prompt))
 
         # Record user message in session
@@ -197,77 +222,73 @@ Current workspace: {Path.cwd()}
                 return ""
 
         if self.state.interrupted:
-            return "[Изпълнението е прекъснато от потребителя]"
+            text = "[Изпълнението е прекъснато от потребителя]"
+            self.state.messages.append(ChatMessage(role="assistant", content=text))
+            return text
 
         if self.state.step >= self.state.max_steps:
+            text = f"[Достигнат е максимум от {self.state.max_steps} стъпки]"
+            self.state.messages.append(ChatMessage(role="assistant", content=text))
             self.hook_engine.trigger(HookEvent.AGENT_END,
                 session_id=self.session_manager.session_id, agent_id=self.agent_id,
-                role=self.role, metadata={"output": f"[Достигнат е максимум от {self.state.max_steps} стъпки]"})
-            return f"[Достигнат е максимум от {self.state.max_steps} стъпки]"
+                role=self.role, metadata={"output": text})
+            return text
 
+        self.state.messages.append(ChatMessage(role="assistant", content=""))
         return ""
 
+    def context_window(self) -> int:
+        """Context window in tokens for the currently selected model."""
+        return resolve_context_window(
+            getattr(self.llm, "default_model", "") or self.config.get("liteLLM.model", ""),
+            self.config,
+            get_registry(),
+        )
+
+    def compact_threshold(self) -> int:
+        """Token count that triggers auto-compaction for the current model."""
+        ratio = float(self.config.get("cli.compact_ratio", COMPACT_RATIO))
+        return compact_threshold(self.context_window(), ratio)
+
+    def context_usage(self) -> dict[str, int]:
+        """Token accounting for /context and tests."""
+        return {
+            "tokens": context_tokens(self.state.messages),
+            "window": self.context_window(),
+            "threshold": self.compact_threshold(),
+            "messages": len(self.state.messages),
+            "turn": self.state.turn,
+        }
+
     def _compact_messages(self) -> None:
-        """Compact old messages when context grows too large."""
-        limit = int(self.config.get("cli.compact_chars", 60000))
-        msgs = self.state.messages
-        if not msgs:
-            return
-
-        def msg_size(m: ChatMessage) -> int:
-            size = len(m.content or "")
-            if m.tool_calls:
-                try:
-                    size += len(json.dumps([tc if isinstance(tc, dict) else getattr(tc, "__dict__", str(tc)) for tc in m.tool_calls], ensure_ascii=False))
-                except Exception:
-                    size += 256
-            return size
-
-        total = sum(msg_size(m) for m in msgs)
-        if total <= limit:
-            return
-
-        # 1) Trim very large tool outputs first (keeps structure).
-        for m in msgs[:-6]:
-            if m.role == "tool" and m.content and len(m.content) > 2000:
-                m.content = m.content[:1500] + "\n...[tool output compacted]..."
-        total = sum(msg_size(m) for m in msgs)
-        if total <= limit:
-            return
-
-        # 2) Drop old messages at user-message boundaries.
-        keep_from = 0
-        for i, m in enumerate(msgs):
-            if i >= len(msgs) - 4:
-                break
-            if m.role == "user":
-                candidate_total = sum(msg_size(x) for x in msgs[i:])
-                note_size = 140
-                if candidate_total + note_size <= limit:
-                    keep_from = i
-                    break
-                keep_from = i
-        if keep_from <= 0:
-            keep_from = max(1, len(msgs) - 4)
-        dropped = len(msgs[:keep_from])
-        if dropped > 0:
-            note = ChatMessage(role="user", content=f"[Context compacted: {dropped} earlier messages omitted to fit context.]")
-            self.state.messages = [note] + msgs[keep_from:]
+        """Auto-compact the shared context at 90% of the model's window."""
+        threshold = self.compact_threshold()
+        compacted, changed = compact_messages(self.state.messages, threshold)
+        if changed:
+            self.state.messages = compacted
+            print(
+                f"[Context compacted: {context_tokens(compacted)} tokens, threshold {threshold}]",
+                file=sys.stderr,
+            )
 
     def _get_llm_response(self) -> ChatMessage:
         """Get response from LLM with streaming."""
-        # Prepare messages
-        is_first_turn = self.state.step == 1
-        user_msg = self.state.messages[-1].content if self.state.messages else ""
+        # Prepare messages. The step counter is per-request, so the presence of
+        # a previous assistant message is what marks a follow-up request.
+        has_history = any(m.role == "assistant" for m in self.state.messages[:-1])
+        user_msg = next(
+            (m.content or "" for m in reversed(self.state.messages) if m.role == "user"),
+            "",
+        )
 
         # Check if user explicitly asks for tool use
         action_keywords = ["run", "execute", "create", "write", "edit", "delete", "search", "find", "list", "git", "commit", "push", "pull", "test", "build", "install", "fix", "debug"]
         explicit_action = any(kw in user_msg.lower() for kw in action_keywords)
 
-        # Enable tools if: not first turn, OR user explicitly asks for action
-        enable_tools = not is_first_turn or explicit_action
+        # Enable tools on follow-ups and on explicit action requests.
+        enable_tools = has_history or explicit_action
 
-        # Compact context if needed
+        # Auto-compact at 90% of the current model's context window.
         self._compact_messages()
 
         # Use appropriate system prompt based on whether tools are enabled

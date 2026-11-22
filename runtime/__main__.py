@@ -194,13 +194,13 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         if loop is None:
             print("Няма активен контекст.")
             return 0
-        msgs = loop.state.messages
-        chars = 0
-        for m in msgs:
-            chars += len(m.content or "")
-            if m.tool_calls:
-                chars += len(str(m.tool_calls))
-        print(f"messages: {len(msgs)}  chars: ~{chars}  step: {loop.state.step}  model: {config.get('liteLLM.model')}")
+        usage = loop.context_usage()
+        pct = usage["tokens"] * 100 // max(1, usage["window"])
+        print(
+            f"messages: {usage['messages']}  tokens: ~{usage['tokens']}  "
+            f"window: {usage['window']}  auto-compact at: {usage['threshold']} ({pct}% used)  "
+            f"turn: {usage['turn']}  model: {config.get('liteLLM.model')}"
+        )
         return 0
 
     @registry.register("doctor", "Проверете състоянието на системата")
