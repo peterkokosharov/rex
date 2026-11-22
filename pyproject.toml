@@ -1,6 +1,6 @@
 [project]
 name = "runtime"
-version = "0.2.0"
+version = "0.2.1"
 description = "Dual-mode AI runtime (Vibe Coding + Tool Provider for RONI/Archeo) via LiteLLM proxy"
 readme = "README.md"
 license = {text = "MIT"}
