@@ -1,0 +1,57 @@
+name: build-packages
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    name: rex deb + Windows zip
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ dpkg-dev zip g++-mingw-w64-x86-64
+
+      - name: Make packaging scripts executable
+        run: chmod +x packaging/*.sh
+
+      - name: Build Linux deb
+        run: ./packaging/build-deb.sh
+
+      - name: Build Windows zip
+        run: ./packaging/build-win-zip.sh
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rex-deb-amd64
+          path: dist/*.deb
+          if-no-files-found: error
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rex-win64
+          path: dist/rex-win.zip
+          if-no-files-found: error
+
+      - name: Publish Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/rex_*.deb dist/rex-win.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/rex_*.deb dist/rex-win.zip \
+              --generate-notes --title "rex $GITHUB_REF_NAME"
+          fi

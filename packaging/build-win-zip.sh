@@ -1,0 +1,56 @@
+#!/bin/bash
+# Build the Windows x64 zip for rex: Python sources + optional native DLL.
+# Needs x86_64-w64-mingw32-g++ and zip. Usage: ./packaging/build-win-zip.sh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DIST="$ROOT/dist"
+STAGE="$DIST/win-rex"
+CXX="${MINGW_CXX:-x86_64-w64-mingw32-g++}"
+
+rm -rf "$STAGE" "$DIST/rex-win.zip"
+mkdir -p "$STAGE/rex/runtimelib/native"
+
+echo "==> Cross-building rex_native.dll"
+"$CXX" -std=c++17 -O2 -shared -static-libgcc -static-libstdc++ -pthread \
+    "$ROOT/native/rex_native.cpp" -o "$STAGE/rex/runtimelib/native/rex_native.dll"
+
+# Link statically where possible; copy any runtime DLL the toolchain still needs.
+for dll in libwinpthread-1.dll libstdc++-6.dll libgcc_s_seh-1.dll; do
+    candidate="$("$CXX" -print-file-name="$dll" 2>/dev/null || true)"
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+        cp "$candidate" "$STAGE/rex/"
+        echo "   included $dll"
+    fi
+done
+
+echo "==> Staging Python sources"
+cp -a "$ROOT/runtime" "$STAGE/rex/"
+cp -a "$ROOT/runtimelib" "$STAGE/rex/"
+find "$STAGE/rex" -type d -name __pycache__ -prune -exec rm -rf {} +
+
+cat > "$STAGE/rex/rex.cmd" <<'EOF'
+@echo off
+setlocal
+set PYTHONPATH=%~dp0;%PYTHONPATH%
+python -m runtime %*
+EOF
+
+cat > "$STAGE/rex/README.txt" <<'EOF'
+rex for Windows (x64)
+
+1. Install Python 3.10 or newer and make sure `python` is in PATH.
+2. Unzip this folder anywhere, e.g. C:\Tools\rex.
+3. Run:  rex.cmd --help
+   or:   python -m runtime --jsonl --local-tools
+
+Layka users: unzip rex-win.zip next to layka.exe. Layka will find the `rex`
+subfolder automatically. rex_native.dll is optional; if it cannot be loaded,
+the pure Python fallback is used.
+
+Endpoint and key are normally passed by the front-end as
+RUNTIME_LITELLM__BASE_URL and RUNTIME_LITELLM__API_KEY.
+EOF
+
+(cd "$DIST" && zip -qr rex-win.zip rex)
+echo "==> Done: $DIST/rex-win.zip"
