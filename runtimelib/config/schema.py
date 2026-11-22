@@ -131,6 +131,7 @@ def create_runtime_schema() -> ConfigSchema:
     # cli section: auto-compaction settings
     cli = ConfigSchema()
     cli.add_field("compact_ratio", Field(type=float, default=0.9, description="Auto-compact at this fraction of the context window"))
+    cli.add_field("shell_timeout", Field(type=int, default=120, description="Timeout in seconds for ! shell commands"))
     schema.add_nested("cli", cli)
 
     # session section

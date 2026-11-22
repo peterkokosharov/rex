@@ -136,6 +136,21 @@ Ctrl+C cannot block the next prompt.
 
 Use `/context` to see the estimated token count, the selected model's window and the auto-compact threshold.
 
+#### Shell escape in the prompt
+
+A line starting with `!` runs directly in the local shell — it is never sent to the model:
+
+```
+! pwd
+! git status --short
+! /bin/bash -c 'ls -la && git log -1 --oneline'
+! /bin/bash pwd          # shorthand for /bin/bash -c pwd
+```
+
+Exit codes are reported as `[shell: exit N]` on stderr. `/shell <command>` does the same thing as a slash command.
+`cli.shell_timeout` (default 120 s) limits each command. For one-shot runs the form is the same:
+`python3 -m runtime '! git status'`. With `--json` the result includes `stdout`, `stderr` and `exit`.
+
 #### Auto-compact
 
 When the shared context reaches 90% of the current model's input window, older turns are compacted automatically:

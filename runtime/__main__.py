@@ -10,12 +10,22 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import runtimelib
 from runtimelib import Config, get_config
-from runtimelib.cli import CommandRegistry, ReadlineInterface, HistoryManager, ArgumentParser
+from runtimelib.cli import (
+    ArgumentParser,
+    CommandRegistry,
+    HistoryManager,
+    ReadlineInterface,
+    is_shell_line,
+    print_shell_result,
+    run_shell,
+    shell_command,
+)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -66,6 +76,20 @@ def main() -> int:
 
     if args.prompt:
         prompt = " ".join(args.prompt)
+        if is_shell_line(prompt):
+            result = run_shell(shell_command(prompt), timeout=config.get("cli.shell_timeout", 120))
+            if args.json:
+                print(json.dumps({
+                    "ok": result.ok,
+                    "shell": True,
+                    "command": result.command,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit": result.exit_code,
+                }, ensure_ascii=False))
+            else:
+                print_shell_result(result)
+            return result.exit_code
         return registry.execute("chat", {"prompt": prompt})
 
     return run_interactive(registry, config)
@@ -202,6 +226,17 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             f"turn: {usage['turn']}  model: {config.get('liteLLM.model')}"
         )
         return 0
+
+    @registry.register("shell", "Изпълни локална shell команда (еквивалентно на ! <команда>)")
+    def cmd_shell(args: dict[str, Any]) -> int:
+        command = args.get("command", "") or " ".join(
+            str(v) for k, v in sorted(args.items()) if k.startswith("_")
+        )
+        if not command:
+            print("Използване: /shell <команда> или ! <команда>")
+            return 1
+        result = run_shell(shell_command("!" + command), timeout=config.get("cli.shell_timeout", 120))
+        return print_shell_result(result)
 
     @registry.register("doctor", "Проверете състоянието на системата")
     def cmd_doctor(args: dict[str, Any]) -> int:
@@ -342,7 +377,7 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
     model = config.get("liteLLM.model", "?")
     base = config.get("liteLLM.base_url", "?")
     print(ansi.bold("rex") + ansi.gray(f"  model={model}  endpoint={base}"))
-    print(ansi.gray("Команди: /help /model /models /clear /doctor /exit  |  Ctrl+C прекъсва, Ctrl+D изход"))
+    print(ansi.gray("Команди: /help /model /models /context /reset /shell /doctor /exit  |  ! <команда> изпълнява локално  |  Ctrl+C прекъсва, Ctrl+D изход"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:
@@ -357,6 +392,14 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
             continue
 
         if not line:
+            continue
+
+        if is_shell_line(line):
+            try:
+                result = run_shell(shell_command(line), timeout=config.get("cli.shell_timeout", 120))
+                print_shell_result(result)
+            except Exception as e:
+                print(ansi.red(f"Грешка: {e}"))
             continue
 
         if line.startswith("/"):

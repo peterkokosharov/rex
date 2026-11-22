@@ -9,5 +9,23 @@
 from .registry import CommandRegistry, CommandHandler
 from .readline import ReadlineInterface, HistoryManager
 from .parser import ArgumentParser
+from .shell import (
+    ShellResult,
+    is_shell_line,
+    print_shell_result,
+    run_shell,
+    shell_command,
+)
 
-__all__ = ["CommandRegistry", "CommandHandler", "ReadlineInterface", "HistoryManager", "ArgumentParser"]
+__all__ = [
+    "CommandRegistry",
+    "CommandHandler",
+    "ReadlineInterface",
+    "HistoryManager",
+    "ArgumentParser",
+    "ShellResult",
+    "is_shell_line",
+    "print_shell_result",
+    "run_shell",
+    "shell_command",
+]
