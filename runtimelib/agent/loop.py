@@ -207,6 +207,53 @@ Current workspace: {Path.cwd()}
 
         return ""
 
+    def _compact_messages(self) -> None:
+        """Compact old messages when context grows too large."""
+        limit = int(self.config.get("cli.compact_chars", 60000))
+        msgs = self.state.messages
+        if not msgs:
+            return
+
+        def msg_size(m: ChatMessage) -> int:
+            size = len(m.content or "")
+            if m.tool_calls:
+                try:
+                    size += len(json.dumps([tc if isinstance(tc, dict) else getattr(tc, "__dict__", str(tc)) for tc in m.tool_calls], ensure_ascii=False))
+                except Exception:
+                    size += 256
+            return size
+
+        total = sum(msg_size(m) for m in msgs)
+        if total <= limit:
+            return
+
+        # 1) Trim very large tool outputs first (keeps structure).
+        for m in msgs[:-6]:
+            if m.role == "tool" and m.content and len(m.content) > 2000:
+                m.content = m.content[:1500] + "\n...[tool output compacted]..."
+        total = sum(msg_size(m) for m in msgs)
+        if total <= limit:
+            return
+
+        # 2) Drop old messages at user-message boundaries.
+        keep_from = 0
+        for i, m in enumerate(msgs):
+            if i >= len(msgs) - 4:
+                break
+            if m.role == "user":
+                candidate_total = sum(msg_size(x) for x in msgs[i:])
+                note_size = 140
+                if candidate_total + note_size <= limit:
+                    keep_from = i
+                    break
+                keep_from = i
+        if keep_from <= 0:
+            keep_from = max(1, len(msgs) - 4)
+        dropped = len(msgs[:keep_from])
+        if dropped > 0:
+            note = ChatMessage(role="user", content=f"[Context compacted: {dropped} earlier messages omitted to fit context.]")
+            self.state.messages = [note] + msgs[keep_from:]
+
     def _get_llm_response(self) -> ChatMessage:
         """Get response from LLM with streaming."""
         # Prepare messages
@@ -219,6 +266,9 @@ Current workspace: {Path.cwd()}
 
         # Enable tools if: not first turn, OR user explicitly asks for action
         enable_tools = not is_first_turn or explicit_action
+
+        # Compact context if needed
+        self._compact_messages()
 
         # Use appropriate system prompt based on whether tools are enabled
         system_prompt = self.system_prompt if enable_tools else self.system_prompt_no_tools

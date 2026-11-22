@@ -143,6 +143,9 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             print(config.get("liteLLM.model", "(не е зададен)"))
             return 0
         config.set("liteLLM.model", name)
+        global _REPL_LOOP
+        if _REPL_LOOP is not None and hasattr(_REPL_LOOP, "llm"):
+            _REPL_LOOP.llm.default_model = name
         print(f"Модел: {name}")
         return 0
 
@@ -176,6 +179,28 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             print("WARNING: local tools ON. Tools run on host without Docker guard.")
         else:
             print("local tools: off (Docker guard)")
+        return 0
+
+    @registry.register("reset", "Нова сесия/контекст (изчиства текущия разговор)")
+    def cmd_reset(args: dict[str, Any]) -> int:
+        global _REPL_LOOP
+        _REPL_LOOP = None
+        print("Контекстът е изчистен.")
+        return 0
+
+    @registry.register("context", "Покажи размер на текущия контекст")
+    def cmd_context(args: dict[str, Any]) -> int:
+        loop = _REPL_LOOP
+        if loop is None:
+            print("Няма активен контекст.")
+            return 0
+        msgs = loop.state.messages
+        chars = 0
+        for m in msgs:
+            chars += len(m.content or "")
+            if m.tool_calls:
+                chars += len(str(m.tool_calls))
+        print(f"messages: {len(msgs)}  chars: ~{chars}  step: {loop.state.step}  model: {config.get('liteLLM.model')}")
         return 0
 
     @registry.register("doctor", "Проверете състоянието на системата")
@@ -248,12 +273,18 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             def on_tool_end(result: Any) -> None:
                 renderer.on_tool_end(result)
 
-        loop = create_agent_loop(
-            config,
-            on_token=on_token,
-            on_tool_start=on_tool_start,
-            on_tool_end=on_tool_end,
-        )
+        global _REPL_LOOP
+        if _REPL_LOOP is None:
+            _REPL_LOOP = create_agent_loop(
+                config,
+                on_token=on_token,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
+            )
+        loop = _REPL_LOOP
+        loop.on_token = on_token
+        loop.on_tool_start = on_tool_start
+        loop.on_tool_end = on_tool_end
 
         try:
             response = loop.run(prompt)
@@ -351,6 +382,7 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
 
 
 _MODEL_CACHE: list[str] = []
+_REPL_LOOP = None
 
 
 def _get_model_ids(config: Config) -> list[str]:
