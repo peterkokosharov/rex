@@ -156,14 +156,29 @@ Current workspace: {Path.cwd()}
 Current workspace: {Path.cwd()}
 """
 
-    def _handle_interrupt(self, signum: int, frame: Any) -> None:
-        """Handle Ctrl+C interrupt."""
+    def interrupt(self) -> None:
+        """Request interruption of the current request (safe from another thread)."""
+        if self._interrupt_event.is_set():
+            return
         self._interrupt_event.set()
         self.state.interrupted = True
         self.hook_engine.trigger(HookEvent.AGENT_ERROR,
             session_id=self.session_manager.session_id, agent_id=self.agent_id,
             role=self.role, metadata={"error": "Interrupted by user"})
         print("\n[Прекъснато]", file=sys.stderr)
+
+    def _handle_interrupt(self, signum: int, frame: Any) -> None:
+        """Handle Ctrl+C interrupt."""
+        self.interrupt()
+
+    def reset_context(self) -> None:
+        """Start a fresh conversation without rebuilding the loop or its signal handler."""
+        self.state.messages = []
+        self.state.step = 0
+        self.state.current_tool_calls = []
+        self.state.interrupted = False
+        self.state.turn = 0
+        self._interrupt_event.clear()
 
     def run(self, prompt: str) -> str:
         """Run one request, reusing the conversation context from previous ones.
@@ -438,15 +453,6 @@ Current workspace: {Path.cwd()}
     def _get_agent_state(self) -> "AgentState":
         """Get current agent state for checkpointing."""
         return self.state
-
-    def _handle_interrupt(self, signum: int, frame: Any) -> None:
-        """Handle Ctrl+C interrupt."""
-        self._interrupt_event.set()
-        self.state.interrupted = True
-        self.hook_engine.trigger(HookEvent.AGENT_ERROR,
-            session_id=self.session_manager.session_id, agent_id=self.agent_id,
-            role=self.role, metadata={"error": "Interrupted by user"})
-        print("\n[Прекъснато]", file=sys.stderr)
 
 
 def create_agent_loop(config: Optional[Config] = None, **kwargs) -> AgentLoop:

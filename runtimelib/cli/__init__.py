@@ -9,6 +9,7 @@
 from .registry import CommandRegistry, CommandHandler
 from .readline import ReadlineInterface, HistoryManager
 from .parser import ArgumentParser
+from .jsonl_bridge import JsonlBridge, run_jsonl
 from .shell import (
     ShellResult,
     is_shell_line,
@@ -23,6 +24,8 @@ __all__ = [
     "ReadlineInterface",
     "HistoryManager",
     "ArgumentParser",
+    "JsonlBridge",
+    "run_jsonl",
     "ShellResult",
     "is_shell_line",
     "print_shell_result",

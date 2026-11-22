@@ -38,6 +38,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path, default=None, help="Path to .env file")
     parser.add_argument("--model", default=None, help="Model alias/id to use")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    parser.add_argument("--jsonl", "--ui-jsonl", action="store_true", dest="jsonl", help="JSON-lines stdio bridge for external UIs (e.g. Layka)")
     parser.add_argument("--no-stream", action="store_true", help="Disable token streaming")
     parser.add_argument("--verbose", action="store_true", help="Show verbose tool output")
     parser.add_argument("--quiet", action="store_true", help="Reduce non-essential output")
@@ -63,9 +64,13 @@ def main() -> int:
     config.set("cli.verbose", bool(args.verbose))
     config.set("cli.quiet", bool(args.quiet))
     config.set("cli.unsafe_local_tools", bool(args.unsafe_local_tools))
-    if args.unsafe_local_tools:
+    if args.unsafe_local_tools and not args.jsonl:
         import sys
         print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
+
+    if args.jsonl:
+        from runtimelib.cli import run_jsonl
+        return run_jsonl(config)
 
     # Register commands
     registry = CommandRegistry()

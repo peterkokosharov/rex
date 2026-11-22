@@ -169,6 +169,47 @@ cli:
   compact_ratio: 0.9             # 0.9 = compact at 90% of the window
 ```
 
+### JSON-lines bridge for external UIs (`--jsonl`)
+
+An external front-end (for example the C++ Turbo Vision UI `Layka`) can spawn rex as a background process and drive it
+over stdin/stdout. One `AgentLoop` lives for the whole session, so conversation context survives between `chat` messages.
+stdout is **only** JSON lines — no banners, no warnings. Diagnostics go to stderr.
+
+```bash
+RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:5000 \
+RUNTIME_LITELLM__API_KEY=dummy \
+python3 -m runtime --jsonl --model gemini-lite
+```
+
+Incoming lines (UI → rex):
+
+```json
+{"type":"chat","text":"Create hello.c"}
+{"type":"model","model":"gemini-lite"}
+{"type":"command","name":"model","value":"gemini-lite"}
+{"type":"reset"}
+{"type":"stop"}
+{"type":"bye"}
+```
+
+Outgoing lines (rex → UI):
+
+```json
+{"type":"ready","model":"gemini-lite"}
+{"type":"token","text":"I'll "}
+{"type":"tool_start","name":"fileops","args":{"operation":"write"}}
+{"type":"tool_end","ok":true,"error":null}
+{"type":"final","text":"Done."}
+{"type":"error","message":"..."}
+{"type":"reset_ok"}
+{"type":"model_ok","model":"gemini-lite"}
+{"type":"bye"}
+```
+
+`stop` interrupts the running request from the reader thread, so a Stop button works without waiting for the answer.
+Changing `model` updates the live loop; changing the workspace is done by starting rex in that directory (the UI passes
+it as the child process cwd). `--ui-jsonl` is an alias of `--jsonl`.
+
 ### Run CLI (one-shot)
 
 ```bash
