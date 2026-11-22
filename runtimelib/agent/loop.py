@@ -148,7 +148,7 @@ Current workspace: {Path.cwd()}
         self.state.interrupted = True
         self.hook_engine.trigger(HookEvent.AGENT_ERROR,
             session_id=self.session_manager.session_id, agent_id=self.agent_id,
-            role=self.role, error="Interrupted by user")
+            role=self.role, metadata={"error": "Interrupted by user"})
         print("\n[Прекъснато]", file=sys.stderr)
 
     def run(self, prompt: str) -> str:
@@ -296,6 +296,7 @@ Current workspace: {Path.cwd()}
                     error=f"Unknown tool: {tool_name}"
                 )
             else:
+                args = {}
                 try:
                     # Parse arguments
                     args_str = tc.function.get("arguments", "{}")
@@ -363,9 +364,6 @@ Current workspace: {Path.cwd()}
                 tool_call_id=tc.id
             ))
 
-            # Emit tool end callback
-            self.on_tool_end(result)
-
     def _get_agent_state(self) -> "AgentState":
         """Get current agent state for checkpointing."""
         return self.state
@@ -376,7 +374,7 @@ Current workspace: {Path.cwd()}
         self.state.interrupted = True
         self.hook_engine.trigger(HookEvent.AGENT_ERROR,
             session_id=self.session_manager.session_id, agent_id=self.agent_id,
-            role=self.role, error="Interrupted by user")
+            role=self.role, metadata={"error": "Interrupted by user"})
         print("\n[Прекъснато]", file=sys.stderr)
 
 

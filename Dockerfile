@@ -17,7 +17,7 @@ WORKDIR /workspace
 RUN chown guarduser:guarduser /workspace
 
 # Copy runtime code (kikolib + guard entrypoint)
-COPY runtime/kikolib /app/runtime/kikolib
+COPY runtimelib/kikolib /app/runtime/kikolib
 COPY guard/entrypoint.py /app/guard/entrypoint.py
 
 # Create __init__.py files for imports

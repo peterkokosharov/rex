@@ -83,18 +83,18 @@ class FileOpsTool(Tool):
 
     def execute(self, **kwargs: Any) -> Any:
         operation = kwargs.pop("operation")
+        if self._config and self._config.get("cli.unsafe_local_tools"):
+            return self._exec_local(operation, **kwargs)
         guard = self._get_guard()
 
         if operation == "read":
             path = kwargs.pop("path")
             return guard.fs_read(path)
-
         elif operation == "write":
             path = kwargs.pop("path")
             content = kwargs.pop("content", "")
             guard.fs_write(path, content)
             return {"ok": True, "path": path}
-
         elif operation == "edit":
             path = kwargs.pop("path")
             old_str = kwargs.pop("old_str")
@@ -102,26 +102,90 @@ class FileOpsTool(Tool):
             replace_all = kwargs.pop("replace_all", False)
             guard.fs_edit(path, old_str, new_str, replace_all)
             return {"ok": True, "path": path}
-
         elif operation == "list":
             path = kwargs.pop("path", ".")
             recursive = kwargs.pop("recursive", False)
             return {"files": guard.fs_list(path, recursive)}
-
         elif operation == "glob":
             pattern = kwargs.pop("pattern")
             root = kwargs.pop("root", ".")
             return {"matches": guard.fs_glob(pattern, root)}
-
         elif operation == "grep":
             pattern = kwargs.pop("pattern")
             path = kwargs.pop("path", ".")
             include = kwargs.pop("include", None)
             exclude = kwargs.pop("exclude", None)
             return {"matches": guard.fs_grep(pattern, path, include, exclude)}
-
         else:
             raise ValueError(f"Unknown operation: {operation}")
+
+    def _exec_local(self, operation: str, **kwargs: Any) -> Any:
+        import glob as globmod
+        import os
+        from pathlib import Path
+
+        if operation == "read":
+            path = kwargs["path"]
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+        if operation == "write":
+            path = kwargs["path"]
+            content = kwargs.get("content", "")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return {"ok": True, "path": path}
+        if operation == "edit":
+            path = kwargs["path"]
+            old_str = kwargs["old_str"]
+            new_str = kwargs["new_str"]
+            replace_all = kwargs.get("replace_all", False)
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                s = f.read()
+            if old_str not in s:
+                raise ValueError(f"old_str not found in {path}")
+            s = s.replace(old_str, new_str) if replace_all else s.replace(old_str, new_str, 1)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(s)
+            return {"ok": True, "path": path}
+        if operation == "list":
+            path = kwargs.get("path", ".")
+            recursive = kwargs.get("recursive", False)
+            p = Path(path)
+            if recursive:
+                files = [str(x) for x in p.rglob("*")]
+            else:
+                files = [str(x) for x in p.iterdir()]
+            return {"files": sorted(files)}
+        if operation == "glob":
+            pattern = kwargs["pattern"]
+            root = kwargs.get("root", ".")
+            matches = globmod.glob(os.path.join(root, pattern), recursive=True)
+            return {"matches": sorted(matches)}
+        if operation == "grep":
+            import re
+            pattern = kwargs["pattern"]
+            path = kwargs.get("path", ".")
+            include = kwargs.get("include")
+            exclude = kwargs.get("exclude")
+            rx = re.compile(pattern)
+            matches = []
+            for dirpath, _, fnames in os.walk(path):
+                for fn in fnames:
+                    fp = os.path.join(dirpath, fn)
+                    if include and not globmod.fnmatch.fnmatch(fn, include):
+                        continue
+                    if exclude and globmod.fnmatch.fnmatch(fn, exclude):
+                        continue
+                    try:
+                        with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                            for i, line in enumerate(f, 1):
+                                if rx.search(line):
+                                    matches.append({"path": fp, "line": i, "text": line.rstrip("\n")[:300]})
+                    except Exception:
+                        pass
+            return {"matches": matches[:200]}
+        raise ValueError(f"Unknown operation: {operation}")
 
 
 def create_fileops_tool(config: Config | None = None) -> FileOpsTool:

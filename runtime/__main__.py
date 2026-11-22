@@ -23,26 +23,16 @@ def create_parser() -> argparse.ArgumentParser:
         prog="runtime",
         description="Claude-like runtime for OpenAI-compatible models via LiteLLM proxy",
     )
-    parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.1.0"
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        help="Path to config file",
-        default=None,
-    )
-    parser.add_argument(
-        "--env-file",
-        type=Path,
-        help="Path to .env file",
-        default=None,
-    )
-    parser.add_argument(
-        "prompt",
-        nargs="*",
-        help="Prompt to send to the agent (if omitted, starts interactive mode)",
-    )
+    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--config", type=Path, default=None, help="Path to config file")
+    parser.add_argument("--env-file", type=Path, default=None, help="Path to .env file")
+    parser.add_argument("--model", default=None, help="Model alias/id to use")
+    parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    parser.add_argument("--no-stream", action="store_true", help="Disable token streaming")
+    parser.add_argument("--verbose", action="store_true", help="Show verbose tool output")
+    parser.add_argument("--quiet", action="store_true", help="Reduce non-essential output")
+    parser.add_argument("--unsafe-local-tools", "--local-tools", action="store_true", dest="unsafe_local_tools", help="DEV ONLY: run tools locally without Docker guard")
+    parser.add_argument("prompt", nargs="*", help="Prompt to send to the agent (if omitted, starts interactive mode)")
     return parser
 
 
@@ -56,20 +46,28 @@ def main() -> int:
     else:
         config = get_config()
 
+    if args.model:
+        config.set("liteLLM.model", args.model)
+    config.set("cli.json", bool(args.json))
+    config.set("cli.no_stream", bool(args.no_stream))
+    config.set("cli.verbose", bool(args.verbose))
+    config.set("cli.quiet", bool(args.quiet))
+    config.set("cli.unsafe_local_tools", bool(args.unsafe_local_tools))
+    if args.unsafe_local_tools:
+        import sys
+        print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
+
     # Register commands
     registry = CommandRegistry()
     register_core_commands(registry, config)
 
-    # Register runtime-specific commands
     from runtime.commands import register_runtime_commands
     register_runtime_commands(registry, config)
 
-    # If prompt provided, execute as single command
     if args.prompt:
         prompt = " ".join(args.prompt)
         return registry.execute("chat", {"prompt": prompt})
 
-    # Interactive mode
     return run_interactive(registry, config)
 
 
@@ -123,18 +121,61 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
     def cmd_models(args: dict[str, Any]) -> int:
         from runtimelib.llm import LiteLLMClient
         client = LiteLLMClient.from_config(config)
-        models = client.list_models()
+        try:
+            models = client.list_models()
+        except Exception as e:
+            print(f"Грешка: {e}")
+            return 1
         if not models:
             print("Няма налични модели")
             return 0
-
-        print(f"{'ID':<35} {'Вход':>10} {'Изход':>10} {'Режим'}")
-        print("-" * 70)
+        current = config.get("liteLLM.model", "")
         for m in models:
-            print(f"{m.get('id', ''):<35} "
-                  f"{m.get('max_input_tokens', '?'):>10} "
-                  f"{m.get('max_output_tokens', '?'):>10} "
-                  f"{m.get('mode', '?')}")
+            mid = m.get("id", "")
+            mark = "*" if mid == current else " "
+            print(f"{mark} {mid}")
+        return 0
+
+    @registry.register("model", "Покажи или смени активния модел")
+    def cmd_model(args: dict[str, Any]) -> int:
+        name = args.get("_0", "") or args.get("name", "")
+        if not name:
+            print(config.get("liteLLM.model", "(не е зададен)"))
+            return 0
+        config.set("liteLLM.model", name)
+        print(f"Модел: {name}")
+        return 0
+
+    @registry.register("clear", "Изчисти екрана")
+    def cmd_clear(args: dict[str, Any]) -> int:
+        import sys
+        if sys.stdout.isatty():
+            print("\033[2J\033[H", end="")
+        return 0
+
+    @registry.register("verbose", "Включи/изключи verbose изход")
+    def cmd_verbose(args: dict[str, Any]) -> int:
+        cur = bool(config.get("cli.verbose", False))
+        new = not cur
+        if "_0" in args:
+            v = str(args["_0"]).lower()
+            new = v in ("1", "true", "on", "yes")
+        config.set("cli.verbose", new)
+        print(f"verbose: {'on' if new else 'off'}")
+        return 0
+
+    @registry.register("local", "DEV: включи/изключи локални tools без Docker guard")
+    def cmd_local(args: dict[str, Any]) -> int:
+        cur = bool(config.get("cli.unsafe_local_tools", False))
+        new = not cur
+        if "_0" in args:
+            v = str(args["_0"]).lower()
+            new = v in ("1", "true", "on", "yes")
+        config.set("cli.unsafe_local_tools", new)
+        if new:
+            print("WARNING: local tools ON. Tools run on host without Docker guard.")
+        else:
+            print("local tools: off (Docker guard)")
         return 0
 
     @registry.register("doctor", "Проверете състоянието на системата")
@@ -178,25 +219,34 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
     def cmd_chat(args: dict[str, Any]) -> int:
         prompt = args.get("prompt", "") or args.get("_0", "")
         if not prompt:
-            print("Използване: /chat prompt=...")
+            print("Използване: /chat <prompt> или /chat prompt=...")
             return 1
 
-        from runtimelib.agent import create_agent_loop
-        from runtimelib.tools.base import ToolResult
         import json
+        from runtimelib.agent import create_agent_loop
+        from runtimelib.cli.render import Renderer
 
-        # Create agent loop with streaming output
-        def on_token(token: str) -> None:
-            print(token, end="", flush=True)
+        as_json = bool(config.get("cli.json", False))
+        no_stream = bool(config.get("cli.no_stream", False))
+        verbose = bool(config.get("cli.verbose", False))
+        events: list[dict[str, Any]] = []
+        tokens: list[str] = []
 
-        def on_tool_start(name: str, args: dict) -> None:
-            print(f"\n[Tool: {name}] {args}")
-
-        def on_tool_end(result: ToolResult) -> None:
-            if result.success:
-                print(f"[Result] {json.dumps(result.result, ensure_ascii=False)[:200]}")
-            else:
-                print(f"[Error] {result.error}")
+        if as_json:
+            def on_token(tok: str) -> None:
+                if tok:
+                    tokens.append(tok)
+            def on_tool_start(name: str, a: dict) -> None:
+                events.append({"type": "tool_start", "name": name, "args": {k: v for k, v in a.items() if not k.startswith("_")}})
+            def on_tool_end(result: Any) -> None:
+                events.append({"type": "tool_end", "ok": bool(getattr(result, "success", False)), "error": getattr(result, "error", None)})
+        else:
+            renderer = Renderer(verbose=verbose)
+            on_token = (lambda t: tokens.append(t)) if no_stream else renderer.on_token
+            def on_tool_start(name: str, a: dict) -> None:
+                renderer.on_tool_start(name, a)
+            def on_tool_end(result: Any) -> None:
+                renderer.on_tool_end(result)
 
         loop = create_agent_loop(
             config,
@@ -205,14 +255,35 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             on_tool_end=on_tool_end,
         )
 
-        print()
-        response = loop.run(prompt)
-        if response:
-            print(response)
-        print()
+        try:
+            response = loop.run(prompt)
+        except KeyboardInterrupt:
+            if as_json:
+                print(json.dumps({"ok": False, "error": "interrupted", "events": events}, ensure_ascii=False))
+            else:
+                renderer.error("прекъснато")
+            return 130
+        except Exception as e:
+            if as_json:
+                print(json.dumps({"ok": False, "error": str(e), "events": events}, ensure_ascii=False))
+            else:
+                renderer.error(str(e))
+            return 1
+
+        if as_json:
+            out = {"ok": True, "model": config.get("liteLLM.model"), "response": response or "".join(tokens), "events": events}
+            print(json.dumps(out, ensure_ascii=False))
+        else:
+            if no_stream:
+                # renderer wasn't used for tokens; print collected/final
+                text = response or "".join(tokens)
+                if text:
+                    print(text)
+            else:
+                renderer.final(response)
         return 0
 
-    @registry.register("exit", "Изход от runtime")
+    @registry.register("exit", "Изход от runtime", aliases=["quit", "q"])
     def cmd_exit(args: dict[str, Any]) -> int:
         print("Изход...")
         sys.exit(0)
@@ -230,47 +301,86 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
 
 def run_interactive(registry: CommandRegistry, config: Config) -> int:
     """Run interactive REPL with readline support."""
-    # Setup history
+    from runtimelib.cli import ansi
+
     history_file = Path.home() / ".config" / "runtime" / "history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
-
     history = HistoryManager(history_file)
-    interface = ReadlineInterface(history, completer=lambda text, state: completer(text, state, registry))
+    interface = ReadlineInterface(history, completer=lambda text, state: completer(text, state, registry, config))
 
-    print("Runtime v0.1.0 — Type /help for commands, Ctrl+C to exit")
-    print("─" * 60)
+    model = config.get("liteLLM.model", "?")
+    base = config.get("liteLLM.base_url", "?")
+    print(ansi.bold("rex") + ansi.gray(f"  model={model}  endpoint={base}"))
+    print(ansi.gray("Команди: /help /model /models /clear /doctor /exit  |  Ctrl+C прекъсва, Ctrl+D изход"))
+    print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:
         try:
-            line = interface.read("runtime> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nИзход...")
+            prompt = ansi.cyan("rex") + ansi.gray(" › ")
+            line = interface.read(prompt).strip()
+        except EOFError:
+            print()
             break
+        except KeyboardInterrupt:
+            print()
+            continue
 
         if not line:
             continue
 
         if line.startswith("/"):
-            # Slash command
             parts = line[1:].split(maxsplit=1)
             cmd = parts[0]
             arg_str = parts[1] if len(parts) > 1 else ""
             try:
                 args = ArgumentParser.parse(arg_str)
                 registry.execute(cmd, args)
+            except KeyboardInterrupt:
+                print()
             except Exception as e:
-                print(f"Грешка: {e}")
+                print(ansi.red(f"Грешка: {e}"))
         else:
-            # Regular prompt → chat
             try:
                 registry.execute("chat", {"prompt": line})
+            except KeyboardInterrupt:
+                print()
             except Exception as e:
-                print(f"Грешка: {e}")
+                print(ansi.red(f"Грешка: {e}"))
 
     return 0
 
 
-def completer(text: str, state: int, registry: CommandRegistry) -> str | None:
+_MODEL_CACHE: list[str] = []
+
+
+def _get_model_ids(config: Config) -> list[str]:
+    global _MODEL_CACHE
+    if _MODEL_CACHE:
+        return _MODEL_CACHE
+    try:
+        from runtimelib.llm import LiteLLMClient
+        client = LiteLLMClient.from_config(config)
+        _MODEL_CACHE = [m.get("id", "") for m in client.list_models() if m.get("id")]
+    except Exception:
+        _MODEL_CACHE = []
+    return _MODEL_CACHE
+
+
+def completer(text: str, state: int, registry: CommandRegistry, config: Config | None = None) -> str | None:
+    # complete /model <name>
+    if config is not None:
+        try:
+            import readline as _rl
+            line = _rl.get_line_buffer()
+        except Exception:
+            line = text
+        if line.startswith("/model "):
+            prefix = line[len("/model "):]
+            models = _get_model_ids(config)
+            matches = [m for m in models if m.startswith(prefix)]
+            if state < len(matches):
+                return matches[state]
+            return None
     commands = [f"/{cmd}" for cmd in registry.list_commands()]
     matches = [cmd for cmd in commands if cmd.startswith(text)]
     if state < len(matches):

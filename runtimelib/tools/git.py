@@ -92,48 +92,72 @@ class GitTool(Tool):
 
     def execute(self, **kwargs: Any) -> Any:
         operation = kwargs.pop("operation")
+        if self._config and self._config.get("cli.unsafe_local_tools"):
+            return self._exec_local(operation, **kwargs)
         guard = self._get_guard()
 
         if operation == "status":
-            cwd = kwargs.pop("cwd", ".")
-            return guard.git_status(cwd)
-
+            return guard.git_status(kwargs.pop("cwd", "."))
         elif operation == "diff":
-            cwd = kwargs.pop("cwd", ".")
-            staged = kwargs.pop("staged", False)
-            files = kwargs.pop("files", None)
-            return guard.git_diff(cwd, staged, files)
-
+            return guard.git_diff(kwargs.pop("cwd", "."), kwargs.pop("staged", False), kwargs.pop("files", None))
         elif operation == "add":
-            files = kwargs.pop("files", [])
-            cwd = kwargs.pop("cwd", ".")
-            return guard.git_add(files, cwd)
-
+            return guard.git_add(kwargs.pop("files", []), kwargs.pop("cwd", "."))
         elif operation == "commit":
-            message = kwargs.pop("message", "")
-            cwd = kwargs.pop("cwd", ".")
-            author = kwargs.pop("author", None)
-            return guard.git_commit(message, cwd, author)
-
+            return guard.git_commit(kwargs.pop("message", ""), kwargs.pop("cwd", "."), kwargs.pop("author", None))
         elif operation == "log":
-            cwd = kwargs.pop("cwd", ".")
-            max_count = kwargs.pop("max_count", 10)
-            oneline = kwargs.pop("oneline", True)
-            return guard.git_log(cwd, max_count, oneline)
-
+            return guard.git_log(kwargs.pop("cwd", "."), kwargs.pop("max_count", 10), kwargs.pop("oneline", True))
         elif operation == "branch":
-            cwd = kwargs.pop("cwd", ".")
-            all_branches = kwargs.pop("all_branches", False)
-            return guard.git_branch(cwd, all_branches)
-
+            return guard.git_branch(kwargs.pop("cwd", "."), kwargs.pop("all_branches", False))
         elif operation == "checkout":
-            branch = kwargs.pop("branch", "")
-            create = kwargs.pop("create", False)
-            cwd = kwargs.pop("cwd", ".")
-            return guard.git_checkout(branch, create, cwd)
-
+            return guard.git_checkout(kwargs.pop("branch", ""), kwargs.pop("create", False), kwargs.pop("cwd", "."))
         else:
             raise ValueError(f"Unknown git operation: {operation}")
+
+    def _exec_local(self, operation: str, **kwargs: Any) -> Any:
+        import subprocess
+        cwd = kwargs.pop("cwd", ".")
+
+        def run(args: list[str]) -> dict[str, Any]:
+            p = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+            return {"exit_code": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
+
+        if operation == "status":
+            return run(["git", "status", "--porcelain=v1", "-b"])
+        if operation == "diff":
+            args = ["git", "diff"]
+            if kwargs.get("staged"):
+                args.append("--staged")
+            files = kwargs.get("files")
+            if files:
+                args += list(files)
+            return run(args)
+        if operation == "add":
+            files = kwargs.get("files") or []
+            return run(["git", "add", *files])
+        if operation == "commit":
+            args = ["git", "commit", "-m", kwargs.get("message", "")]
+            author = kwargs.get("author")
+            if author:
+                args += ["--author", author]
+            return run(args)
+        if operation == "log":
+            args = ["git", "log", f"-n{kwargs.get('max_count', 10)}"]
+            if kwargs.get("oneline", True):
+                args.append("--oneline")
+            return run(args)
+        if operation == "branch":
+            args = ["git", "branch"]
+            if kwargs.get("all_branches"):
+                args.append("-a")
+            return run(args)
+        if operation == "checkout":
+            branch = kwargs.get("branch", "")
+            args = ["git", "checkout"]
+            if kwargs.get("create"):
+                args.append("-b")
+            args.append(branch)
+            return run(args)
+        raise ValueError(f"Unknown git operation: {operation}")
 
 
 def create_git_tool(config: Config | None = None) -> GitTool:

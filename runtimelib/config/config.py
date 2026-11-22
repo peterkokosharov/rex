@@ -132,6 +132,16 @@ class Config:
                 return default
         return current
 
+    def set(self, key: str, value: Any) -> None:
+        """Set config value with dot notation."""
+        parts = key.split(".")
+        current = self._data
+        for part in parts[:-1]:
+            if part not in current or not isinstance(current[part], dict):
+                current[part] = {}
+            current = current[part]
+        current[parts[-1]] = value
+
     def __getitem__(self, key: str) -> Any:
         return self.get(key)
 

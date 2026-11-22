@@ -16,7 +16,7 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 
 | Module | Status | Description |
 |--------|--------|-------------|
-| **CLI Framework** | ✅ Done | `CommandRegistry`, `ReadlineInterface` (history, tab completion), `ArgumentParser` |
+| **CLI Framework** | ✅ Done | REPL + one-shot CLI, ANSI renderer, slash commands, model switching, JSON/no-stream modes |
 | **Config System** | ✅ Done | YAML + `.env` + `RUNTIME_*` env overrides, nested keys, schema validation |
 | **LLM Client** | ✅ Done | `LiteLLMClient` with streaming, tool calls, retry policy, cost tracking |
 | **Model Registry** | ✅ Done | 20+ models with kiko.db classification (TEXT/REASONING/EYE/VOICE/MEMORY/AGENT/TOOL/IMAGE/VIDEO/CODE) |
@@ -105,32 +105,63 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 ## How to Run
 
 ### Prerequisites
-```bash
-# LiteLLM proxy on port 4000 (already running)
-curl http://127.0.0.1:4000/health
 
-# Models available:
-curl http://127.0.0.1:4000/v1/models
-# gemini/gemini-flash, gemini/gemini-flash-lite, nvidia/nemotron-ultra, etc.
+- Python 3.10+ (stdlib-only runtime; no pip/venv required for basic CLI)
+- An OpenAI-compatible endpoint (kiko-lite, LiteLLM, etc.)
+
+Example with a local kiko-lite endpoint:
+
+```bash
+curl http://127.0.0.1:5000/health
+curl http://127.0.0.1:5000/v1/models
 ```
+
+### Run CLI (REPL)
+
+```bash
+cd /tmp/rex   # or the repo root
+RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:5000 \
+RUNTIME_LITELLM__API_KEY=dummy \
+RUNTIME_LITELLM__MODEL=gemini-lite \
+python3 -m runtime
+```
+
+REPL commands: `/help`, `/model <name>`, `/models`, `/clear`, `/verbose on|off`, `/local on|off`, `/doctor`, `/exit` (`/quit`, `/q`).
+
+### Run CLI (one-shot)
+
+```bash
+RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:5000 \
+RUNTIME_LITELLM__API_KEY=dummy \
+python3 -m runtime --model gemini-lite "Create hello.c in current dir, compile and run it"
+```
+
+Useful flags:
+
+- `--model <id>` — select model
+- `--json` — machine-readable output
+- `--no-stream` — print final answer only
+- `--verbose` — show verbose tool results
+- `--local-tools` / `--unsafe-local-tools` — **DEV ONLY**: run tools on host without Docker Guard
+
+> Guard is the secure default. Use `--local-tools` only for local dev/smoke tests.
+
+### Docker Guard (secure mode)
+
+Tool execution defaults to Docker Guard. Build the image from repo root:
+
+```bash
+docker build -t runtime/guard:latest .
+```
+
+If Docker permissions/image are missing, the CLI shows hints; for quick local dev you can use `--local-tools`.
 
 ### Run Tests
-```bash
-cd runtime-ai
-.venv/bin/python -m pytest tests/ -v
-```
 
-### Run CLI
 ```bash
-.venv/bin/python -m runtime
-# Or with prompt:
-.venv/bin/python -m runtime "your prompt here"
-```
-
-### Run Architecture Review
-```bash
-.venv/bin/python scripts/review_architecture.py
-# Output: arch-docs/gemini-review.md
+python3 -m unittest tests.test_cli -v
+# If pytest is installed:
+# python3 -m pytest tests/ -v
 ```
 
 ---

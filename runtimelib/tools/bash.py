@@ -62,6 +62,8 @@ class BashTool(Tool):
         return self._guard
 
     def execute(self, **kwargs: Any) -> Any:
+        if self._config and self._config.get("cli.unsafe_local_tools"):
+            return self._exec_local(**kwargs)
         guard = self._get_guard()
         return guard.bash_exec(
             command=kwargs["command"],
@@ -69,6 +71,26 @@ class BashTool(Tool):
             cwd=kwargs.get("cwd", "."),
             env=kwargs.get("env"),
         )
+
+    def _exec_local(self, **kwargs: Any) -> dict[str, Any]:
+        import os
+        import subprocess
+        command = kwargs["command"]
+        timeout = kwargs.get("timeout", 30)
+        cwd = kwargs.get("cwd", ".")
+        env_extra = kwargs.get("env") or {}
+        env = os.environ.copy()
+        env.update({str(k): str(v) for k, v in env_extra.items()})
+        try:
+            proc = subprocess.run(
+                command, shell=True, cwd=cwd, env=env,
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+        except subprocess.TimeoutExpired as e:
+            return {"exit_code": 124, "stdout": e.stdout or "", "stderr": (e.stderr or "") + f"\nTimeout after {timeout}s"}
+        except Exception as e:
+            return {"exit_code": 1, "stdout": "", "stderr": str(e)}
 
 
 def create_bash_tool(config: Config | None = None) -> BashTool:
