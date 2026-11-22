@@ -52,5 +52,5 @@ Endpoint and key are normally passed by the front-end as
 RUNTIME_LITELLM__BASE_URL and RUNTIME_LITELLM__API_KEY.
 EOF
 
-(cd "$DIST" && zip -qr rex-win.zip rex)
+(cd "$STAGE" && zip -qr "$DIST/rex-win.zip" rex)
 echo "==> Done: $DIST/rex-win.zip"
