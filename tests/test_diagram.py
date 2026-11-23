@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -149,8 +150,41 @@ def test_render_error_truncated(ws, fake_binary):
 
 def test_timeout(ws, fake_binary, monkeypatch):
     monkeypatch.setattr(diagram, "TIMEOUT_SECONDS", 1)
+    t0 = time.monotonic()
     r = DiagramTool().execute(source="SLOW")
     assert r["ok"] is False and "timed out" in r["error"]
+    assert time.monotonic() - t0 < 10
+
+
+def test_symlinked_target_rejected(ws, fake_binary, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    (ws / "diagrams").mkdir()
+    try:
+        os.symlink(victim, ws / "diagrams" / "x.svg")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    r = DiagramTool().execute(source="graph TD; A-->B", name="x")
+    assert r["ok"] is False and "symlink" in r["error"]
+    assert victim.read_text() == "keep"
+
+
+@pytest.mark.parametrize("bad", ["CON", "nul", "com1", "LPT9"])
+def test_reserved_names_prefixed(ws, fake_binary, bad):
+    r = DiagramTool().execute(source="graph TD; A-->B", name=bad)
+    assert r["ok"] and r["path"] == f"diagrams/d-{bad}.svg"
+
+
+def test_unresolved_rel_path(ws, fake_binary):
+    r = DiagramTool().execute(source="graph TD; A-->B", name="ok")
+    assert r["path"] == "diagrams/ok.svg"
+
+
+def test_merman_home_without_binary(ws, monkeypatch, tmp_path):
+    monkeypatch.setenv("MERMAN_HOME", str(tmp_path))
+    monkeypatch.setattr(diagram.shutil, "which", lambda n: None)
+    r = DiagramTool().execute(source="graph TD; A-->B")
+    assert f"MERMAN_HOME={tmp_path} has no merman-cli" in r["error"]
 
 
 def test_registered_and_described():
@@ -158,6 +192,7 @@ def test_registered_and_described():
     t = DiagramTool()
     assert t.name == "render_diagram"
     assert "box-drawing" in t.description and "Markdown image" in t.description
+    assert "say so in one line" in t.description
     assert DefaultPermissionPolicy().check("render_diagram", "", {"_role": "CODER"}).name == "ALLOW"
 
 

@@ -12,6 +12,8 @@ import hashlib
 import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -24,6 +26,11 @@ DIAGRAM_DIR = "diagrams"
 TIMEOUT_SECONDS = 30
 FORMATS = ("svg", "png")
 MAX_ERROR_CHARS = 800
+RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 DESCRIPTION = (
     "Render a Mermaid diagram (flowchart, sequence, class, state, ER, gantt, UML-like) "
@@ -32,7 +39,7 @@ DESCRIPTION = (
     "characters, at most ~60 columns, inside a ``` block; if the diagram is too big, "
     "sketch only the main path), followed by the returned Markdown image line. "
     "Terminal front-ends show the sketch and can open the image on demand; GUI "
-    "front-ends show the image."
+    "front-ends show the image. If render_diagram fails, say so in one line and give only the compact sketch."
 )
 
 
@@ -91,9 +98,15 @@ class DiagramTool(Tool):
             return {"ok": False, "error": f"format must be one of {', '.join(FORMATS)}"}
         label = sanitize_name(kwargs.get("name"))
         stem = label or hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+        if stem.split(".")[0].upper() in RESERVED_NAMES:
+            stem = "d-" + stem
+        rel = f"{DIAGRAM_DIR}/{stem}.{fmt}"
 
         binary = find_merman()
         if binary is None:
+            home = os.environ.get("MERMAN_HOME")
+            if home:
+                return {"ok": False, "error": f"MERMAN_HOME={home} has no merman-cli(.exe)"}
             return {
                 "ok": False,
                 "error": "merman-cli not found: set MERMAN_HOME to the folder containing "
@@ -102,38 +115,123 @@ class DiagramTool(Tool):
 
         root = self._workspace_root()
         try:
-            out_path = resolve_in_workspace(f"{DIAGRAM_DIR}/{stem}.{fmt}", root)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+            resolve_in_workspace(rel, root)
         except (PermissionError, ValueError, OSError) as exc:
             return {"ok": False, "error": f"cannot write diagram: {exc}"}
 
         tmp_dir = tempfile.mkdtemp(prefix="rex-diagram-")
         try:
             src = Path(tmp_dir) / "diagram.mmd"
+            out = Path(tmp_dir) / f"out.{fmt}"
             src.write_text(source, encoding="utf-8", newline="\n")
-            try:
-                proc = subprocess.run(
-                    build_command(binary, str(src), str(out_path), fmt),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=TIMEOUT_SECONDS,
-                    shell=False,
-                )
-            except subprocess.TimeoutExpired:
-                return {"ok": False, "error": f"merman-cli timed out after {TIMEOUT_SECONDS} s"}
-            except OSError as exc:
-                return {"ok": False, "error": f"cannot run merman-cli: {exc}"}
+            err = _run(build_command(binary, str(src), str(out), fmt))
+            if err is not None:
+                return {"ok": False, "error": err}
+            if not out.is_file():
+                return {"ok": False, "error": "merman-cli produced no output file"}
+            data = out.read_bytes()
+        except OSError as exc:
+            return {"ok": False, "error": f"cannot run merman-cli: {exc}"}
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        if proc.returncode != 0 or not out_path.is_file():
-            msg = (proc.stderr or proc.stdout or "").strip()[:MAX_ERROR_CHARS]
-            return {"ok": False, "error": f"merman-cli failed (exit {proc.returncode}): {msg}"}
-
-        rel = f"{DIAGRAM_DIR}/{out_path.name}"
+        try:
+            _store(root, stem, fmt, data)
+        except OSError as exc:  # PermissionError is an OSError
+            return {"ok": False, "error": f"cannot write diagram: {exc}"}
         return {"ok": True, "path": rel, "markdown": f"![{label or stem}]({rel})"}
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+                shell=False,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run(cmd: list[str]) -> str | None:
+    """Run merman; return an error message, or None on success. Timeout kills the process tree."""
+    kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=False,
+        **kwargs,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        return f"merman-cli timed out after {TIMEOUT_SECONDS} s"
+    if proc.returncode != 0:
+        msg = (stderr or stdout or "").strip()[:MAX_ERROR_CHARS]
+        return f"merman-cli failed (exit {proc.returncode}): {msg}"
+    return None
+
+
+def _is_link(path: str | Path) -> bool:
+    try:
+        return stat.S_ISLNK(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _store(root: Path, stem: str, fmt: str, data: bytes) -> None:
+    """Write data to <root>/diagrams/<stem>.<fmt> without following symlinks."""
+    ddir = root / DIAGRAM_DIR
+    name = f"{stem}.{fmt}"
+    if _is_link(ddir):
+        raise PermissionError("diagrams/ is a symlink")
+    ddir.mkdir(exist_ok=True)
+    if _is_link(ddir) or not ddir.resolve().is_relative_to(root):
+        raise PermissionError("diagrams/ is outside the workspace")
+    target = ddir / name
+    if _is_link(target):
+        raise PermissionError(f"{DIAGRAM_DIR}/{name} is a symlink")
+
+    if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
+        dfd = os.open(ddir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        finally:
+            os.close(dfd)
+        return
+
+    tmp = ddir / f".{name}.{os.getpid()}.tmp"
+    try:
+        tmp.write_bytes(data)
+        if _is_link(ddir) or _is_link(target) or not Path(os.path.realpath(ddir)).is_relative_to(root):
+            raise PermissionError("diagrams/ changed during write")
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def create_diagram_tool(config: Any = None) -> DiagramTool:
