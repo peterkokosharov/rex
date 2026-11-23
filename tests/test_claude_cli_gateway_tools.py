@@ -738,7 +738,11 @@ def test_run_claude_returns_structured_output(monkeypatch):
     assert "structured" not in gw.run_claude("x", "haiku", "claude", 5, {"--safe-mode"})
 
 
-@pytest.mark.parametrize("stdout", ["[" * 100000 + "]" * 100000, "{\"a\": NaNx}", "\x00garbage"])
+@pytest.mark.parametrize(
+    "stdout",
+    ["[" * 100000 + "]" * 100000, "{\"a\": NaNx}", "\x00garbage"],
+    ids=["deep_nesting", "nan_token", "nul_garbage"],  # a 200k-char id overflows the Windows env limit
+)
 def test_run_claude_bad_stdout_is_502(monkeypatch, stdout):
     class P:
         returncode = 0
