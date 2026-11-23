@@ -13,6 +13,7 @@ tools are disabled, request `tools` are ignored, `tool_calls` are never returned
 
 Usage:
     python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku] [--token-file F]
+                                         [--max-concurrent 4] [--allow-unsafe]
 
 The token comes from --token-file F, else --token T (visible in the process
 list, so a warning is printed), else the REX_GATEWAY_TOKEN environment variable.
@@ -22,6 +23,9 @@ localhost are refused (DNS rebinding), POST bodies must be application/json,
 and with a token every request needs "Authorization: Bearer <token>".
 Each CLI call runs in its own private temporary directory, removed afterwards,
 with --safe-mode (no user CLAUDE.md/memory/settings; login kept) when the CLI has it.
+`claude --help` is probed once at startup; if that fails the gateway refuses to start unless
+--allow-unsafe is given. At most --max-concurrent claude processes run at once (default 4);
+a timed-out call kills the whole process tree.
 Logs method, path, model, duration and status only.
 """
 
@@ -30,23 +34,43 @@ from __future__ import annotations
 import argparse
 import errno
 import hmac
+import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
+
+
+def _load_procutil() -> Any:
+    """Load runtimelib/procutil.py by path (stdlib only; avoids importing the whole runtime package)."""
+    path = Path(__file__).resolve().parent.parent / "runtimelib" / "procutil.py"
+    spec = importlib.util.spec_from_file_location("_gateway_procutil", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_procutil = _load_procutil()
+kill_tree = _procutil.kill_tree
+safe_which = _procutil.safe_which
+popen_group_kwargs = _procutil.popen_group_kwargs
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 4000
 TOKEN_ENV = "REX_GATEWAY_TOKEN"
 DEFAULT_MODEL = "haiku"
 DEFAULT_TIMEOUT = 300.0
+DEFAULT_MAX_CONCURRENT = 4
 ALIASES = ("haiku", "sonnet", "opus")
 MAX_BODY = 32 * 1024 * 1024
 _ADDR_IN_USE = (errno.EADDRINUSE,)
@@ -148,16 +172,14 @@ def build_command(claude_bin: str, model: str, setting_sources: bool = False,
     return cmd
 
 
-_HELP_CACHE: dict[str, bytes] = {}
+_FLAG_RE = re.compile(rb"--[a-z][a-z0-9-]*")
 
 
-def _help_text(claude_bin: str) -> bytes | None:
-    """`claude --help` output, cached per binary; None when it cannot be run.
+def cli_flags(claude_bin: str) -> set[str] | None:
+    """Option names listed by `claude --help`, or None when the probe fails (retried once).
 
-    A failed probe is retried once and is not cached, so a later call tries again.
+    Called once at startup; requests never probe again.
     """
-    if claude_bin in _HELP_CACHE:
-        return _HELP_CACHE[claude_bin]
     for _ in range(2):
         try:
             proc = subprocess.run([claude_bin, "--help"], capture_output=True, timeout=30, check=False)
@@ -166,51 +188,46 @@ def _help_text(claude_bin: str) -> bytes | None:
         out = proc.stdout or b""
         if isinstance(out, str):
             out = out.encode("utf-8", errors="replace")
-        _HELP_CACHE[claude_bin] = out
-        return out
+        return {m.decode("ascii") for m in _FLAG_RE.findall(out)}
     return None
 
 
-def supports_setting_sources(claude_bin: str) -> bool:
-    """True when `claude --help` lists --setting-sources."""
-    return b"--setting-sources" in (_help_text(claude_bin) or b"")
-
-
-def supports_safe_mode(claude_bin: str) -> bool:
-    """True when `claude --help` lists --safe-mode."""
-    return b"--safe-mode" in (_help_text(claude_bin) or b"")
-
-
-supports_setting_sources.cache_clear = _HELP_CACHE.clear  # type: ignore[attr-defined]
-supports_safe_mode.cache_clear = _HELP_CACHE.clear  # type: ignore[attr-defined]
-
-
-def run_claude(prompt: str, model: str, claude_bin: str, timeout: float) -> dict[str, Any]:
+def run_claude(prompt: str, model: str, claude_bin: str, timeout: float,
+               flags: Any = frozenset()) -> dict[str, Any]:
     """Run the CLI with the prompt on stdin; return {'text', 'usage'}.
 
+    ``flags`` is the startup probe result (see cli_flags); nothing is probed here.
     The CLI runs in a fresh private directory (mode 0700 on POSIX) that is
-    removed after the call, so it never sees another request's files.
+    removed after the call, so it never sees another request's files. On a
+    timeout the whole process tree is killed.
     """
-    cmd = build_command(claude_bin, model, supports_setting_sources(claude_bin),
-                        supports_safe_mode(claude_bin))
+    flags = flags or frozenset()
+    cmd = build_command(claude_bin, model, "--setting-sources" in flags, "--safe-mode" in flags)
     workdir = tempfile.mkdtemp(prefix="claude-gw-")
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=prompt.encode("utf-8"),
-            capture_output=True,
-            timeout=timeout,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=workdir,
-            check=False,
+            **popen_group_kwargs(),
         )
-    except subprocess.TimeoutExpired:
-        raise GatewayError(504, f"claude CLI timed out after {timeout:.0f}s", "timeout")
+        try:
+            out, _err = proc.communicate(input=prompt.encode("utf-8"), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+            raise GatewayError(504, f"claude CLI timed out after {timeout:.0f}s", "timeout")
     except OSError as exc:
         raise GatewayError(502, f"cannot start claude CLI: {exc.__class__.__name__}", "cli_unavailable")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    stdout = proc.stdout.decode("utf-8", errors="replace").strip()
+    stdout = out.decode("utf-8", errors="replace").strip()
     try:
         data = json.loads(stdout) if stdout else None
     except json.JSONDecodeError:
@@ -365,7 +382,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             if ctype != "application/json":
                 raise GatewayError(415, "Content-Type must be application/json", "invalid_request_error")
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise GatewayError(400, "invalid Content-Length", "invalid_request_error")
             if length <= 0 or length > MAX_BODY:
                 raise GatewayError(400, "missing or too large request body", "invalid_request_error")
             try:
@@ -381,10 +401,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
             prompt = flatten_messages(req["messages"])
             if not prompt.strip():
                 raise GatewayError(400, "no text in messages", "invalid_request_error")
-            result = self.server.runner(prompt, model, self.server.claude_bin, self.server.timeout)
+            slots = self.server.slots
+            if not slots.acquire(timeout=self.server.timeout):
+                raise GatewayError(503, "too many concurrent requests; try again later", "overloaded")
+            try:
+                result = self.server.runner(prompt, model, self.server.claude_bin, self.server.timeout)
+            finally:
+                slots.release()
         except GatewayError as exc:
             self._send_json(exc.status, error_body(exc.message, exc.err_type))
             self._log(model, started, exc.status)
+            return
+        except Exception as exc:  # never leave the client without an answer
+            try:
+                self._send_json(500, error_body(f"internal error: {exc.__class__.__name__}", "internal_error"))
+            except OSError:
+                pass
+            self._log(model, started, 500)
             return
 
         if req.get("stream"):
@@ -393,9 +426,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            for event in sse_events(result["text"], model):
-                self.wfile.write(event)
-            self.wfile.flush()
+            try:
+                for event in sse_events(result["text"], model):
+                    self.wfile.write(event)
+                self.wfile.flush()
+            except OSError:
+                pass  # client went away
             self.close_connection = True
         else:
             self._send_json(200, completion_body(result["text"], model, result["usage"]))
@@ -421,14 +457,18 @@ class GatewayServer(ThreadingHTTPServer):
 
 def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
                 claude_bin: str | None = None, timeout: float = DEFAULT_TIMEOUT,
-                runner: Any = None, token: str | None = None) -> ThreadingHTTPServer:
+                runner: Any = None, token: str | None = None, flags: Any = None,
+                max_concurrent: int = DEFAULT_MAX_CONCURRENT) -> ThreadingHTTPServer:
     """Create the server bound to 127.0.0.1 (never another interface)."""
     server = GatewayServer((HOST, port), GatewayHandler)
     server.daemon_threads = True
     server.default_model = default_model
-    server.claude_bin = claude_bin or shutil.which("claude") or "claude"
+    server.claude_bin = claude_bin or safe_which("claude") or "claude"
     server.timeout = timeout
-    server.runner = runner or run_claude
+    server.cli_flags = frozenset(flags or ())  # probed once at startup, never again
+    server.slots = threading.BoundedSemaphore(max(1, int(max_concurrent)))
+    server.runner = runner or (lambda prompt, model, binary, tmo: run_claude(
+        prompt, model, binary, tmo, server.cli_flags))
     server.token = token or None
     return server
 
@@ -468,19 +508,32 @@ def main(argv: list[str] | None = None) -> int:
                              f"(visible in the process list; prefer --token-file or ${TOKEN_ENV})")
     parser.add_argument("--token-file", default=None,
                         help="read the bearer token from this file (surrounding whitespace stripped)")
+    parser.add_argument("--max-concurrent", type=int, default=DEFAULT_MAX_CONCURRENT,
+                        help="at most this many claude processes at once (default %(default)s)")
+    parser.add_argument("--allow-unsafe", action="store_true",
+                        help="start even when 'claude --help' cannot be probed (privacy flags unknown)")
     args = parser.parse_args(argv)
+    if args.max_concurrent < 1:
+        parser.error("--max-concurrent must be at least 1")
     try:
         token = resolve_token(args.token, args.token_file)
     except ValueError as exc:
         parser.error(str(exc))
     if not valid_model(args.default_model):
         parser.error(f"invalid --default-model '{args.default_model}'")
-    claude_bin = shutil.which("claude")
+    claude_bin = safe_which("claude")
     if not claude_bin:
-        print("claude CLI not found on PATH", file=sys.stderr)
+        print("claude CLI not found on PATH (the current directory is never searched)", file=sys.stderr)
+        return 2
+    flags = cli_flags(claude_bin)
+    if flags is None and not args.allow_unsafe:
+        print("error: could not run 'claude --help', so the privacy flags are unknown and your user "
+              "CLAUDE.md/settings might be sent with every request; fix the CLI or pass --allow-unsafe",
+              file=sys.stderr)
         return 2
     try:
-        server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token)
+        server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token,
+                             flags=flags, max_concurrent=args.max_concurrent)
     except OSError as exc:
         winerror = getattr(exc, "winerror", None)
         if exc.errno in _ADDR_IN_USE or winerror == 10048:
@@ -491,17 +544,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"error: cannot listen on {HOST}:{args.port}: {exc.strerror or exc}", file=sys.stderr)
         return 1
-    if _help_text(claude_bin) is None:
+    if flags is None:
         print("note: could not run 'claude --help'; safe mode unknown - user CLAUDE.md may be sent",
               file=sys.stderr)
-    elif supports_safe_mode(claude_bin):
+    elif "--safe-mode" in flags:
         pass
-    elif supports_setting_sources(claude_bin):
+    elif "--setting-sources" in flags:
         print("note: this claude CLI has no --safe-mode; your user CLAUDE.md/settings load into every request",
               file=sys.stderr)
     else:
         print("note: this claude CLI has no --safe-mode or --setting-sources; "
               "project and user settings may load", file=sys.stderr)
+    if not token:
+        print("note: no token set; any local process can use this gateway (and your Claude login). "
+              f"Use --token-file or ${TOKEN_ENV}.", file=sys.stderr)
     print(f"claude-cli-gateway on http://{HOST}:{args.port}/v1 (default model {args.default_model})",
           file=sys.stderr)
     try:
