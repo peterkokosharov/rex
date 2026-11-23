@@ -286,7 +286,7 @@ def _attr(value: str) -> str:
 
 
 def _escape_result(text: str) -> str:
-    """Neutralise tool_result tags inside untrusted text, so it cannot close its own block."""
+    """Neutralise tool_result tags in message text, so only the gateway can open or close a block."""
     return _TAG_RE.sub("&lt;", text)
 
 
@@ -319,7 +319,7 @@ def render_tool_prompt(messages: list[dict[str, Any]], spec: ToolSpec) -> str:
         text = _content_text(msg.get("content"))
         if role in ("system", "developer"):
             if text:
-                system_parts.append(text)
+                system_parts.append(_escape_result(text))
         elif role == "assistant":
             envelope: dict[str, Any] = {}
             if text.strip():
@@ -337,15 +337,15 @@ def render_tool_prompt(messages: list[dict[str, Any]], spec: ToolSpec) -> str:
                                  "arguments": _history_arguments(fn.get("arguments"))})
             if rendered:
                 envelope["tool_calls"] = rendered
-            if envelope:
-                turns.append("Assistant: " + json.dumps(envelope, ensure_ascii=False))
+            if envelope:  # earlier model output may echo injected text: escape it as well
+                turns.append("Assistant: " + _escape_result(json.dumps(envelope, ensure_ascii=False)))
         elif role in ("tool", "function"):
             call_id = str(msg.get("tool_call_id") or "")
             name = names.get(call_id) or "unknown"
             turns.append(f'<tool_result id="{_attr(call_id)}" name="{_attr(name)}" untrusted="true">\n'
                          f"{_escape_result(text)}\n</tool_result>")
         elif text.strip():
-            turns.append("User: " + text.strip())
+            turns.append("User: " + _escape_result(text.strip()))
 
     rules = [_PROTOCOL]
     if spec.choice == "required":

@@ -222,6 +222,13 @@ Choices made where the plan left room:
 - Not changed, because they are outside this change's files: `scripts/rex-claude-cli.example.yaml` (line 3 still
   says "Chat only") and `RELEASE.md` (line 14, "Claude Code CLI gateway (chat only)"). Both need a one-line fix.
 
+**Step 6 open (2026-11-23).** The implementer checked the diff against sections 2-4 itself. One finding was fixed:
+the tag escaping covered only tool results, so a fake `<tool_result ...>` in system, user or earlier assistant
+text could still look like a gateway block. All message text is now escaped, so only the gateway opens or closes
+a block (test `test_only_gateway_opens_tool_result_blocks`). Still to do: the independent Opus review of
+the diff, and one live run of the optional test by the maintainer:
+`REX_LIVE_CLAUDE=1 python -m pytest -q tests/test_claude_cli_gateway_e2e.py -k live` (4 short haiku calls).
+
 Sources:
 - `claude -p ... --json-schema` live probe, Claude Code 2.1.328, model haiku (run 2026-11-23, 3 calls)
 - `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453; startup probe and process handling updated later the same day)
