@@ -24,7 +24,9 @@ Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
 ask rules also see every part normalised (``NAME=value`` prefixes and wrappers
 such as ``sudo``/``env``/``nohup`` stripped, ``/bin/rm`` -> ``rm``, whitespace
 squeezed) and the commands run by ``sh -c``, ``eval``, ``xargs`` and
-``find -exec`` (see :func:`deny_subjects`).
+``find -exec`` (see :func:`deny_subjects`). An unquoted output redirect to a
+file (anything but ``/dev/null`` or ``>&N``) is never auto-allowed either,
+unless the allow rule that covers the part itself contains ``>``.
 
 Paths are normalised relative to the workspace before matching. Mode defaults
 (see :func:`mode_default`): local mode asks for every write, exec, network and
@@ -194,6 +196,62 @@ def split_bash(command: str) -> tuple[list[str], bool]:
         i += 1
     flush()
     return parts, unsafe
+
+
+_WORD_END = set(" \t\r\n;|&<>()")
+
+
+def writes_file(part: str) -> bool:
+    """True when ``part`` has an unquoted output redirect to a file.
+
+    ``>``, ``>>``, ``>|``, ``&>``, ``&>>`` and ``>&word`` count, unless the
+    target is ``/dev/null``; ``>&N`` / ``>&-`` (fd duplication) does not.
+    """
+    i, n = 0, len(part)
+    quote = ""
+    while i < n:
+        c = part[i]
+        if quote:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+            i += 1
+            continue
+        if c == "&" and part.startswith("&>", i):
+            i += 1
+            c = ">"
+        if c != ">" or part.startswith(">(", i):
+            i += 1
+            continue
+        i += 1
+        dup = False
+        if i < n and part[i] in ">|":
+            i += 1
+        elif i < n and part[i] == "&":
+            dup = True
+            i += 1
+        while i < n and part[i] in " \t":
+            i += 1
+        j = i
+        while j < n and part[j] not in _WORD_END:
+            j += 1
+        target = part[i:j].replace('"', "").replace("'", "")
+        i = j
+        if dup and re.fullmatch(r"\d+-?|-", target):
+            continue
+        if target == "/dev/null":
+            continue
+        return True
+    return False
 
 
 MAX_NEST_DEPTH = 6
@@ -661,6 +719,8 @@ class PermissionRules:
                 unsafe = "Command substitution is never auto-allowed"
             elif too_deep:
                 unsafe = "Nested shell commands too deep to check"
+            elif any(writes_file(p) and not self._allowed_redirect(p) for p in subjects):
+                unsafe = "Output redirection to a file is never auto-allowed"
             elif args.get("env"):
                 # Extra variables (PATH, LD_PRELOAD, GIT_SSH_COMMAND ...) change what runs.
                 unsafe = "A command with extra environment variables is never auto-allowed"
@@ -688,6 +748,11 @@ class PermissionRules:
         if unsafe and decision == ALLOW:
             return RuleVerdict(ASK, kind, "unsafe", None, unsafe)
         return RuleVerdict(decision, kind, "default", None, f"{mode} default for {kind}")
+
+    def _allowed_redirect(self, part: str) -> bool:
+        """A redirecting bash part is fine only under an allow rule that itself has ``>``."""
+        return any(r.spec is not None and ">" in r.spec and r.matches_subject("bash", part)
+                   for r in self.allow)
 
     def _allowed(self, tool: str, subject: str) -> Rule | None:
         for rule in self.allow:

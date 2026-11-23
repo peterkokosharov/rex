@@ -20,6 +20,7 @@ from runtimelib.permissions.rules import (
     parse_rule,
     split_bash,
     store_path,
+    writes_file,
 )
 
 WS = "/work/proj"
@@ -227,6 +228,27 @@ class BashTests(unittest.TestCase):
             cmd = "sh -c " + __import__("shlex").quote(cmd)
         v = rules().evaluate("bash", bash(cmd), "guard")
         self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+
+    def test_writes_file(self):
+        unsafe = ["echo x > f", "echo x >> f", "echo x >f", "make &> log", "make &>> log",
+                  "make >| f", "make 2> err.txt", "make >&file", "a > /dev/nullx"]
+        safe = ["make > /dev/null", "make 2>/dev/null", "make 2>&1", "make >&2", "make 2>&-",
+                "echo '>' f", 'echo "a > b"', "echo a\\>b", "make &> /dev/null", "cat < in"]
+        for cmd in unsafe:
+            self.assertTrue(writes_file(cmd), cmd)
+        for cmd in safe:
+            self.assertFalse(writes_file(cmd), cmd)
+
+    def test_redirect_never_auto_allowed(self):
+        pr = rules()
+        v = pr.evaluate("bash", bash("pytest -q > out.txt"), "local")
+        self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+        self.assertEqual(pr.evaluate("bash", bash("make >> log"), "guard").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", bash("make 2>&1 > /dev/null"), "guard").decision, R.ALLOW)
+        self.assertEqual(pr.evaluate("bash", bash("pytest -q 2>&1"), "local").decision, R.ALLOW)
+        withgt = rules({"allow": ["bash(pytest * > report.txt)"]})
+        self.assertEqual(withgt.evaluate("bash", bash("pytest -q > report.txt"), "local").decision, R.ALLOW)
+        self.assertEqual(withgt.evaluate("bash", bash("pytest -q > other.txt"), "local").decision, R.ASK)
 
     def test_quoted_separator_not_split(self):
         pr = rules()
