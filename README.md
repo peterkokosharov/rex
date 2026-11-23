@@ -517,10 +517,18 @@ Precedence is deny > ask > allow > mode default. **Allow is safe by construction
 only when every part is a simple command (plain command word; no grouping, functions, reserved words, heredocs,
 herestrings, pipes into a shell or interpreter, command substitution, file redirection, extra `env`, or unclear
 quoting) and an allow rule matches it. A bash command whose text contains a newline or CR is never auto-allowed
-(it always asks at least). **Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`,
-`timeout`, `bash -c`, `eval`, `xargs`, ...) and simple expansions before matching, but a deny rule cannot stop
-code run by an interpreter (`python -c`, `perl -e`, `node -e`) or obfuscated shell. Use the Docker guard (the real
-boundary) or allow-lists for anything that matters.
+(it always asks at least), and so is a command too complex to check (over 16 KB, more than 256 parts, more than 32
+substitutions or nesting deeper than 8).
+
+**Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`, `timeout`, `bash -c`, `eval`, `xargs`,
+...) and simple expansions before matching, but a deny rule cannot stop code run by an interpreter (`python -c`,
+`perl -e`, `node -e`) or obfuscated shell.
+
+- **Guard mode** (default): writes and commands are allowed by default, so bash deny rules **can be bypassed** (for
+  example with `python -c "import shutil; shutil.rmtree('/work')"`). The Docker container is the security boundary,
+  not the deny list.
+- **Local mode** (`--local-tools`): there is no container, so every command that is not a simple command matched by
+  an allow rule asks first, and so does every write. Keep allow rules narrow.
 
 ### Role Configs
 `~/.config/runtime/roles/{ORCHESTRATOR,CODER,TESTER,...}.yaml` — see `docs/architecture/role-based-agent-architecture.md` §8.1
