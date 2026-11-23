@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -40,42 +39,41 @@ def kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
-def safe_path_entries() -> list[str]:
-    """PATH entries without "" , "." and the current working directory."""
-    cwd = Path.cwd().resolve()
+def _resolved(path: str | os.PathLike) -> Path | None:
+    try:
+        return Path(path).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def safe_path_entries(exclude: tuple = ()) -> list[str]:
+    """PATH entries without "" , "." , the current working directory and any ``exclude`` directory."""
+    banned = [r for r in (_resolved(p) for p in (Path.cwd(), *exclude) if p) if r is not None]
     entries: list[str] = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if entry in ("", "."):
             continue
-        try:
-            if Path(entry).resolve() == cwd:
-                continue
-        except OSError:
+        resolved = _resolved(entry)
+        if resolved is None or resolved in banned:
             continue
         entries.append(entry)
     return entries
 
 
-def safe_which(name: str) -> str | None:
-    """Like shutil.which, but never finds a binary in the current directory (a workspace can plant one)."""
-    entries = safe_path_entries()
-    if not entries:
+def safe_which(name: str, exclude: tuple = ()) -> str | None:
+    """Like shutil.which for a bare command name, but never finds a binary in the current directory
+    or in an ``exclude`` directory (a workspace can plant one). Does not touch os.environ."""
+    if not name or os.path.dirname(name) or (os.altsep and os.altsep in name):
         return None
-    # Windows adds the cwd in front of an explicit path too, unless this variable is set.
-    old = os.environ.get("NoDefaultCurrentDirectoryInExePath")
-    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
-    try:
-        found = shutil.which(name, path=os.pathsep.join(entries))
-    finally:
-        if old is None:
-            os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
-        else:
-            os.environ["NoDefaultCurrentDirectoryInExePath"] = old
-    if found is None:
-        return None
-    try:
-        if Path(found).resolve().parent == Path.cwd().resolve():
-            return None
-    except OSError:
-        return None
-    return found
+    exts = [""]
+    if os.name == "nt":
+        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+        exts = [e.lower() for e in pathext if e]
+        if Path(name).suffix.lower() in exts:
+            exts = [""]
+    for entry in safe_path_entries(exclude):
+        for ext in exts:
+            candidate = Path(entry) / (name + ext)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None

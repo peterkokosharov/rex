@@ -228,13 +228,6 @@ def test_find_merman_ignores_binary_in_cwd(ws, monkeypatch, tmp_path):
     assert Path(find_merman()).parent == exe.parent
 
 
-def test_safe_which_rejects_cwd_result(ws, monkeypatch):
-    from runtimelib import procutil
-    monkeypatch.setenv("PATH", "/nonexistent-dir")
-    monkeypatch.setattr(procutil.shutil, "which", lambda n, path=None: str(ws / "merman-cli"))
-    assert procutil.safe_which("merman-cli") is None
-
-
 def test_registered_and_described():
     from runtimelib.permissions.policy import DefaultPermissionPolicy
     t = DiagramTool()
