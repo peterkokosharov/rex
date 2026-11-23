@@ -764,7 +764,7 @@ def test_find_bash_on_windows_rejects_bat_and_cmd(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Git Bash command-line re-parsing is Windows only")
-@pytest.mark.parametrize("cmd", ["@pay2", '"@pay2"', 'a"b', "x\y", "%PATH%", "!x"])
+@pytest.mark.parametrize("cmd", ["@pay2", '"@pay2"', 'a"b', r"x\y", "%PATH%", "!x"])
 def test_windows_bash_receives_command_unchanged(cmd, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     from runtimelib.tools import bash as bash_mod
