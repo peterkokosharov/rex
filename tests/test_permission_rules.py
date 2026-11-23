@@ -277,8 +277,43 @@ class BashTests(unittest.TestCase):
         self.assertEqual(withgt.evaluate("bash", bash("pytest -q > other.txt"), "local").decision, R.ASK)
 
     def test_quoted_separator_not_split(self):
+        self.assertEqual(split_bash('ls "a; rm -rf x"')[0], ['ls "a; rm -rf x"'])
         pr = rules()
-        self.assertEqual(pr.evaluate("bash", bash('ls "a; rm -rf x"'), "guard").decision, R.ALLOW)
+        self.assertEqual(pr.evaluate("bash", bash('ls "a; b"'), "guard").decision, R.ALLOW)
+        # The deny pass is also quote-blind (best effort, stricter): quoted text that
+        # looks like a denied command is denied.
+        self.assertEqual(pr.evaluate("bash", bash('ls "a; rm -rf x"'), "guard").decision, R.DENY)
+
+    def test_fail_closed_probes(self):
+        pr = rules({"allow": ["bash(echo *)"], "deny": ["bash(rm *)"]})
+        for cmd in ("echo hi # don't\nrm -rf /", "echo $'a\\'b' ; rm -rf /"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "local").decision, R.DENY)
+                self.assertNotEqual(rules({"allow": ["bash(echo *)"]}).evaluate("bash", bash(cmd), "local").decision,
+                                    R.ALLOW)
+
+    def test_comments_and_ansi_c_quotes(self):
+        self.assertEqual(split_bash("echo hi # it's; rm x\nls")[0], ["echo hi", "ls"])
+        self.assertEqual(split_bash("echo a#b; ls")[0], ["echo a#b", "ls"])
+        self.assertEqual(split_bash("echo $'a\\'b;c' ; ls")[0], ["echo $'a\\'b;c'", "ls"])
+        self.assertEqual(split_bash("ec\\\nho hi")[0], ["echo hi"])
+
+    def test_unparseable_never_auto_allowed(self):
+        pr = rules({"allow": ["bash(echo *)"]})
+        for cmd in ("echo 'open", 'echo "open', "echo $'open"):
+            v = pr.evaluate("bash", bash(cmd), "guard")
+            self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"), cmd)
+            self.assertIn("Unparseable", v.reason)
+
+    def test_quoted_line_break_never_auto_allowed(self):
+        pr = rules({"allow": ["bash(echo *)"]})
+        v = pr.evaluate("bash", bash("echo 'a\nb'"), "local")
+        self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+        self.assertEqual(pr.evaluate("bash", bash("echo 'a b'"), "local").decision, R.ALLOW)
+
+    def test_writes_file_understands_ansi_c_quotes(self):
+        self.assertFalse(writes_file("echo $'a\\'>b'"))
+        self.assertTrue(writes_file("echo $'a\\'' > f"))
 
     def test_empty_command_uses_default(self):
         self.assertEqual(rules().evaluate("bash", bash(""), "local").decision, R.ASK)

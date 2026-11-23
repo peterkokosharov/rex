@@ -19,6 +19,10 @@ fnmatch-style glob. The spec depends on the tool:
 Precedence: deny > ask > allow > mode default. Compound bash commands are split
 on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines (quote aware): any part that
 hits deny denies, any part that hits ask asks, "allow" needs every part allowed.
+The splitter understands comments, ``$'...'`` and line continuations and fails
+closed: an open quote, a part that cannot be split into words, or a line break
+inside quotes is never auto-allowed. The deny pass also splits a quote-blind
+copy of the command.
 Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
 (at least ask) and its content is also checked against deny rules. Deny and
 ask rules also see every part normalised (``NAME=value`` prefixes and wrappers
@@ -146,24 +150,56 @@ def escape_glob(text: str) -> str:
 
 # ------------------------------------------------------------ bash splitting
 
-def split_bash(command: str) -> tuple[list[str], bool]:
-    """Split a command line into parts. Returns (parts, has_substitution).
+@dataclass
+class BashScan:
+    """Result of :func:`scan_bash`.
+
+    ``parts``: the command split into simple parts (comments removed).
+    ``seps``: for each part, the separator before it (``""`` for the first,
+    else ``;``, ``&&``, ``||``, ``|``, ``&`` or ``\\n``).
+    ``substitution``: ``$(``, backticks, ``<(``, ``>(`` seen outside single quotes.
+    ``unparseable``: a quote is left open, or a part cannot be split into
+    words; the command is never auto-allowed.
+    """
+
+    parts: list[str]
+    seps: list[str]
+    substitution: bool = False
+    unparseable: bool = False
+
+
+def join_continuations(command: str) -> str:
+    """Remove backslash-newline line continuations (``r\\<newline>m`` is ``rm``)."""
+    return re.sub(r"\\\r?\n", "", command)
+
+
+def scan_bash(command: str) -> BashScan:
+    """Split a command line into parts, failing closed on anything unclear.
 
     Splits on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines outside quotes;
     an ``&`` or ``|`` that belongs to a redirect (``&>``, ``>&``, ``2>&1``,
-    ``<&``, ``>|``) does not split. ``has_substitution`` is true for ``$(``, backticks, ``<(``, ``>(`` outside
-    single quotes.
+    ``<&``, ``>|``) does not split. Understands ``'...'``, ``"..."``,
+    ``$'...'`` (backslash escapes inside), backslash escapes, line
+    continuations and unquoted ``#`` comments (to the end of the line).
     """
+    import shlex
+
+    command = join_continuations(command)
     parts: list[str] = []
+    seps: list[str] = []
     buf: list[str] = []
-    unsafe = False
+    sep = ""
+    subst = False
     quote = ""
     i, n = 0, len(command)
 
-    def flush() -> None:
+    def flush(next_sep: str) -> None:
+        nonlocal sep
         s = "".join(buf).strip()
         if s:
             parts.append(s)
+            seps.append(sep)
+        sep = next_sep if (s or not parts) else _stronger(sep, next_sep)
         buf.clear()
 
     while i < n:
@@ -174,38 +210,123 @@ def split_bash(command: str) -> tuple[list[str], bool]:
                 quote = ""
             i += 1
             continue
+        if quote == "$'":
+            if c == "\\" and i + 1 < n:
+                buf.append(command[i:i + 2])
+                i += 2
+                continue
+            buf.append(c)
+            if c == "'":
+                quote = ""
+            i += 1
+            continue
         if c == "\\" and i + 1 < n:
             buf.append(command[i:i + 2])
             i += 2
             continue
         if c == "`" or command.startswith("$(", i):
-            unsafe = True
+            subst = True
         if quote == '"':
             buf.append(c)
             if c == '"':
                 quote = ""
             i += 1
             continue
+        if c == "#" and (not buf or buf[-1] in (" ", "\t")):
+            j = command.find("\n", i)
+            i = n if j < 0 else j  # comment: skip to the newline (which still splits)
+            continue
+        if command.startswith("$'", i):
+            quote = "$'"
+            buf.append("$'")
+            i += 2
+            continue
         if c in "'\"":
             quote = c
             buf.append(c)
         elif command.startswith(("<(", ">("), i):
-            unsafe = True
+            subst = True
             buf.append(c)
         elif command.startswith(("&&", "||"), i):
-            flush()
+            flush(command[i:i + 2])
             i += 1
         elif c == "&" and (command.startswith("&>", i) or (buf and buf[-1] in ("<", ">"))):
             buf.append(c)  # redirect: &> file, >&2, 2>&1, <&3 - not a separator
         elif c == "|" and buf and buf[-1] == ">":
             buf.append(c)  # >| file (clobber) - not a pipe
         elif c in ";|&\n\r":
-            flush()
+            flush("\n" if c in "\r\n" else c)
         else:
             buf.append(c)
         i += 1
-    flush()
-    return parts, unsafe
+    unparseable = bool(quote)
+    flush("")
+    for part in parts:
+        try:
+            shlex.split(part, comments=False, posix=True)
+        except ValueError:
+            unparseable = True
+    return BashScan(parts, seps, subst, unparseable)
+
+
+def _stronger(a: str, b: str) -> str:
+    """Separator kept when empty parts sit between two separators (``a |& b``)."""
+    return a if a == "|" else b
+
+
+def split_bash(command: str) -> tuple[list[str], bool]:
+    """Split a command line into parts. Returns (parts, has_substitution).
+
+    See :func:`scan_bash` for the rules; ``has_substitution`` is true for
+    ``$(``, backticks, ``<(``, ``>(`` outside single quotes.
+    """
+    scan = scan_bash(command)
+    return scan.parts, scan.substitution
+
+
+def _quote_blind_parts(command: str) -> list[str]:
+    """Deny pass only: split on separators ignoring every quote and comment."""
+    text = join_continuations(command)
+    return [p.strip() for p in re.split(r"&&|\|\||[;|&\n\r]", text) if p.strip()]
+
+
+def quote_mask(part: str) -> str:
+    """``part`` with every quoted or escaped character replaced by ``\\x01``.
+
+    Same length as ``part``; what is left visible is unquoted shell syntax.
+    """
+    out: list[str] = []
+    quote = ""
+    i, n = 0, len(part)
+    while i < n:
+        c = part[i]
+        if quote:
+            if c == "\\" and quote in ('"', "$'") and i + 1 < n:
+                out.append("\x01\x01")
+                i += 2
+                continue
+            if c == "'" and quote in ("'", "$'") or c == '"' and quote == '"':
+                quote = ""
+            out.append("\x01")
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append("\x01\x01")
+            i += 2
+            continue
+        if part.startswith("$'", i):
+            quote = "$'"
+            out.append("\x01\x01")
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+            out.append("\x01")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 _WORD_END = set(" \t\r\n;|&<>()")
@@ -217,42 +338,27 @@ def writes_file(part: str) -> bool:
     ``>``, ``>>``, ``>|``, ``&>``, ``&>>`` and ``>&word`` count, unless the
     target is ``/dev/null``; ``>&N`` / ``>&-`` (fd duplication) does not.
     """
+    mask = quote_mask(part)
     i, n = 0, len(part)
-    quote = ""
     while i < n:
-        c = part[i]
-        if quote:
-            if c == "\\" and quote == '"' and i + 1 < n:
-                i += 2
-                continue
-            if c == quote:
-                quote = ""
-            i += 1
-            continue
-        if c == "\\":
-            i += 2
-            continue
-        if c in "'\"":
-            quote = c
-            i += 1
-            continue
-        if c == "&" and part.startswith("&>", i):
+        c = mask[i]
+        if c == "&" and mask.startswith("&>", i):
             i += 1
             c = ">"
-        if c != ">" or part.startswith(">(", i):
+        if c != ">" or mask.startswith(">(", i):
             i += 1
             continue
         i += 1
         dup = False
-        if i < n and part[i] in ">|":
+        if i < n and mask[i] in ">|":
             i += 1
-        elif i < n and part[i] == "&":
+        elif i < n and mask[i] == "&":
             dup = True
             i += 1
-        while i < n and part[i] in " \t":
+        while i < n and mask[i] in " \t":
             i += 1
         j = i
-        while j < n and part[j] not in _WORD_END:
+        while j < n and mask[j] not in _WORD_END:
             j += 1
         target = part[i:j].replace('"', "").replace("'", "")
         i = j
@@ -430,11 +536,15 @@ def deny_subjects(command: str) -> tuple[list[str], bool]:
         nonlocal too_deep
         nested: list[str] = []
         for text in [command] + _substitution_bodies(command):
-            for part in split_bash(text)[0]:
+            # The quote-aware split plus a quote-blind one: a quoting trick
+            # that fools the scanner still shows its parts to deny rules.
+            candidates = split_bash(text)[0] + _quote_blind_parts(text)
+            for part in candidates:
                 add(" ".join(part.split()))
-                words = _strip_wrappers(_words(part))
-                add(" ".join(words))
-                nested.extend(_inner_commands(words))
+                for variant in (part, part.replace("'", "").replace('"', "")):
+                    words = _strip_wrappers(_words(variant))
+                    add(" ".join(words))
+                    nested.extend(_inner_commands(words))
         if nested and depth >= MAX_NEST_DEPTH:
             too_deep = True
             return
@@ -763,8 +873,13 @@ class PermissionRules:
         if tool == "bash":
             command = str(args.get("command", ""))
             strict_subjects, too_deep = deny_subjects(command)
-            if split_bash(command)[1]:
+            scan = scan_bash(command)
+            if scan.unparseable:
+                unsafe = "Unparseable command (open quote or bad quoting) is never auto-allowed"
+            elif scan.substitution:
                 unsafe = "Command substitution is never auto-allowed"
+            elif any("\n" in p or "\r" in p for p in scan.parts):
+                unsafe = "A command with a line break inside quotes is never auto-allowed"
             elif too_deep:
                 unsafe = "Nested shell commands too deep to check"
             elif any(writes_file(p) and not self._allowed_redirect(p) for p in subjects):
