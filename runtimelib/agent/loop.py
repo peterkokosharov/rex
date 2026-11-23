@@ -13,6 +13,7 @@ import signal
 import sys
 import threading
 import uuid
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -20,6 +21,8 @@ from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
 from ..llm.models import get_registry
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool, DiagramTool
+from ..tools.skills import LoadSkillTool, ReadSkillFileTool
+from ..skills import discover_skills, skill_index
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
 from ..session import SessionManager, create_session_manager
@@ -137,6 +140,10 @@ class AgentLoop:
         self.tools["websearch"] = WebSearchTool()
         self.tools["git"] = GitTool(self.config)
         self.tools["render_diagram"] = DiagramTool(self.config)
+        skills = discover_skills(Path.cwd(), self.config)
+        if skills:
+            self.tools["load_skill"] = LoadSkillTool(self.config, skills)
+            self.tools["read_skill_file"] = ReadSkillFileTool(self.config, skills)
 
     def _build_system_prompt(self, include_tools: bool = True) -> str:
         """Build system prompt, optionally with tool descriptions."""
@@ -152,6 +159,15 @@ class AgentLoop:
                     param_descs.append(f"  {name}{' (required)' if required else ''}: {desc}")
                 tool_descs.append(f"{tool.name}: {tool.description}\n" + "\n".join(param_descs))
 
+            skills_block = ""
+            if "load_skill" in self.tools:
+                index = skill_index(list(self.tools["load_skill"]._skills))
+                skills_block = (
+                    "\nSkills available (name: description). When a task matches a skill's description, "
+                    "call load_skill(name) first and follow its instructions; read_skill_file(name, relpath) "
+                    "reads extra files listed there:\n" + index + "\n"
+                )
+
             return f"""You are Runtime, a coding agent that helps users with software development tasks.
 
 You have access to the following tools:
@@ -166,7 +182,7 @@ Guidelines:
 - You can chain multiple tool calls in one response.
 - When the user asks for a diagram (flowchart, sequence, class, state, ER, gantt, UML-like), call render_diagram, then answer with a compact text sketch of the same diagram (Unicode box-drawing characters, at most ~60 columns, inside a ``` block; sketch only the main path if it is too big) followed by the Markdown image line the tool returned. Do not paste Mermaid source or ASCII-art diagrams instead of calling the tool.
 - Maximum steps: {self.state.max_steps}
-
+{skills_block}
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 """
         else:

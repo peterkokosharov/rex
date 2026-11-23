@@ -56,6 +56,11 @@ def main() -> int:
         from runtimelib.acp import main as acp_main
         return acp_main(argv[1:])
 
+    # `rex skills [show <name>]` lists the SKILL.md skills; a normal prompt otherwise.
+    if argv and argv[0] == "skills":
+        from runtimelib.skills.cli import run_skills
+        return run_skills(argv[1:], get_config())
+
     parser = create_parser()
     args = parser.parse_args(argv)
 
@@ -380,8 +385,8 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
 
     @registry.register("skills", "Управление на skills")
     def cmd_skills(args: dict[str, Any]) -> int:
-        print("Skills система — не е имплементирана още")
-        return 0
+        from runtimelib.skills.cli import run_skills
+        return run_skills([str(args[k]) for k in sorted(args) if k.startswith("_")], config)
 
     @registry.register("session", "Управление на сесии")
     def cmd_session(args: dict[str, Any]) -> int:

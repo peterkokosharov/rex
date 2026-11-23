@@ -22,6 +22,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="*", operation=None, result=PermissionResult.ALLOW),
         ],
         "ARCHITECT": [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="render_diagram", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),
@@ -39,6 +41,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="bash", operation="rm -rf *", result=PermissionResult.DENY, reason="Destructive command"),
         ],
         "CODER": [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="render_diagram", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),
@@ -63,6 +67,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="bash", operation="sudo *", result=PermissionResult.DENY, reason="Sudo not allowed"),
         ],
         "TESTER": [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="read *", result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="list *", result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="glob *", result=PermissionResult.ALLOW),
@@ -80,6 +86,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="git", operation="push *", result=PermissionResult.DENY, reason="Tester cannot push"),
         ],
         "REVIEWER": [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="read *", result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="list *", result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="glob *", result=PermissionResult.ALLOW),
@@ -94,6 +102,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="git", operation="commit *", result=PermissionResult.DENY, reason="Reviewer cannot commit"),
         ],
         "RESEARCHER": [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="read *", result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="list *", result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation="glob *", result=PermissionResult.ALLOW),
@@ -105,6 +115,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.DENY, reason="Researcher cannot run tests"),
         ],
         "DEBUGGER": [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="render_diagram", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),
@@ -119,6 +131,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
 
     # Default fallback for unknown roles
     DEFAULT_RULES = [
+            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
         PermissionRule(tool="fileops", operation="read *", result=PermissionResult.ALLOW),
         PermissionRule(tool="fileops", operation="list *", result=PermissionResult.ALLOW),
         PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),

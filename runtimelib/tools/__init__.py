@@ -15,6 +15,7 @@ from .taskspawn import TaskSpawnTool, create_taskspawn_tool
 from .websearch import WebSearchTool, create_websearch_tool
 from .git import GitTool, create_git_tool
 from .diagram import DiagramTool, create_diagram_tool
+from .skills import LoadSkillTool, ReadSkillFileTool, create_skill_tools
 
 __all__ = [
     "Tool",
@@ -34,4 +35,7 @@ __all__ = [
     "create_git_tool",
     "DiagramTool",
     "create_diagram_tool",
+    "LoadSkillTool",
+    "ReadSkillFileTool",
+    "create_skill_tools",
 ]

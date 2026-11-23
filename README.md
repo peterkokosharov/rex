@@ -326,6 +326,38 @@ merman is not bundled. Unpack it anywhere and set `MERMAN_HOME` to the folder th
 clear error. The tool runs on the host and only writes inside the workspace, in both `--local-tools` and Docker
 mode; if merman is not installed on the host, Docker mode returns the same error.
 
+### Skills
+
+A skill is a folder with a `SKILL.md` file: YAML frontmatter (`name`, `description`; other keys are ignored)
+followed by Markdown instructions. The folder may hold extra files (references, scripts) next to it.
+
+```
+.rex/skills/release-notes/
+  SKILL.md
+  references/style.md
+```
+
+```markdown
+---
+name: release-notes
+description: Write release notes from the git log. Use when asked for a changelog or release notes.
+---
+
+1. Run `git log --oneline <last-tag>..HEAD`.
+2. Group the commits (features, fixes, other) and write short bullet points.
+3. Follow `references/style.md` for tone.
+```
+
+Skills are searched in `<workspace>/.rex/skills/`, `~/.config/runtime/skills/`, then the folders in the config key
+`skills.paths` (a list). If two skills share a name the first one wins and a warning is logged. A missing `name`
+falls back to the folder name; a skill without `description` is skipped with a warning.
+
+At session start only a compact index (`- name: description`, about 2 KB at most) is added to the system prompt.
+When a task matches a description the model calls `load_skill(name)`, which returns the `SKILL.md` body and the
+list of extra files; `read_skill_file(name, relpath)` reads one text file inside the skill folder (no `..`, no
+absolute paths, max 200 KB). `rex skills` lists the skills found (name, path, description) and
+`rex skills show <name>` prints the body.
+
 ### Run Tests
 
 ```bash
