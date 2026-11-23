@@ -88,7 +88,7 @@ def query_model(client: LiteLLMClient, model: str, prompt: str, max_retries: int
 
 
 def main():
-    doc_path = PROJECT_ROOT / "arch-docs" / "role-based-agent-architecture.md"
+    doc_path = PROJECT_ROOT / "docs" / "architecture" / "role-based-agent-architecture.md"
     if not doc_path.exists():
         print(f"Document not found: {doc_path}")
         sys.exit(1)
@@ -122,7 +122,7 @@ def main():
         result = query_model(client, model_id, prompt)
         if result:
             print(f"✅ {model_name} responded ({len(result)} chars)")
-            output_path = PROJECT_ROOT / "arch-docs" / "gemini-review.md"
+            output_path = PROJECT_ROOT / "docs" / "history" / "gemini-review.md"
             output_path.write_text(result, encoding="utf-8")
             print(f"📝 Review saved to: {output_path}")
             print("\n" + "=" * 60)

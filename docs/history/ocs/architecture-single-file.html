@@ -89,6 +89,7 @@
     </style>
 </head>
 <body>
+<p style="background:#fff3cd;padding:8px;border:1px solid #e0c36a">Historical, superseded by docs/architecture/role-based-agent-architecture.md: HTML rendering of an early draft of that document.</p>
     <h1>REX — Runtime Execution Layer</h1>
     <p><strong>Version:</strong> 1.0.0 | <strong>Status:</strong> Architecture Defined | <strong>Date:</strong> 2026-11-01</p>
 
@@ -124,7 +125,7 @@
                 </tr>
                 <tr>
                     <td><strong>Tool Provider</strong></td>
-                    <td>RONI/orchestrator → Agent (programmatic)</td>
+                    <td>an orchestrator → Agent (programmatic)</td>
                     <td><code>REX</code> Python API — <code>await rex.run_agent(...)</code></td>
                 </tr>
             </tbody>
@@ -141,7 +142,7 @@ graph TB
     end
 
     subgraph "Provider Mode"
-        REX_API["REX Python API<br/>(for RONI)"]
+        REX_API["REX Python API<br/>(for an orchestrator)"]
     end
 
     subgraph "Shared Core [Single Codebase]"
@@ -255,8 +256,8 @@ sequenceDiagram
     else ASK
         Policy-->>Executor: ASK + reason
         Executor-->>Hook: PERMISSION_ASK event
-        Hook-->>RONI/Human: Callback with details
-        alt Human/RONI allows
+        Hook-->>Orchestrator/Human: Callback with details
+        alt Human/orchestrator allows
             Executor->>Sandbox: JSON-RPC call
         else Denied
             Executor-->>Agent: ToolResult(success=false)
@@ -313,7 +314,7 @@ graph LR
     SUB_COMPLETE --> HookEngine
 
     HookEngine --> VibeMode["Vibe Mode: TUI Notifications"]
-    HookEngine --> ProviderMode["Provider Mode: RONI Callback"]
+    HookEngine --> ProviderMode["Provider Mode: Orchestrator Callback"]
 
     classDef events fill:#e3f2fd,stroke:#1565c0;
     classDef engine fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;

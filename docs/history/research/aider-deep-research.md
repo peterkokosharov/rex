@@ -4,6 +4,8 @@ LLM: nvidia nemotron ultra
 Licensed under MIT License
 -->
 
+> Historical, superseded by README.md (Aider analysis in Bulgarian, done before rex was designed; kept as background research).
+
 # Aider Deep Research Analysis
 
 **Дата:** 2024-11-01  

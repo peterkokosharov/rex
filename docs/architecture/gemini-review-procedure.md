@@ -19,7 +19,7 @@ This document describes how to run an architecture review using Gemini models vi
 curl -s http://127.0.0.1:4000/health
 
 # If not running, start it (from kiko installation):
-cd /home/petark/kiko/kiko && python3 -m litellm --config config.yaml --port 4000
+cd <your kiko install> && python3 -m litellm --config config.yaml --port 4000
 # OR whatever the actual start command is for your litellm setup
 ```
 
@@ -51,7 +51,7 @@ Keys are in `~/.kiko/.env`:
 ## What the Script Does
 
 ### 1. Loads the Architecture Document
-- Reads `arch-docs/role-based-agent-architecture.md` (relative to project root)
+- Reads `docs/architecture/role-based-agent-architecture.md` (relative to project root)
 
 ### 2. Builds Review Prompt
 Structured prompt asking for:
@@ -74,7 +74,7 @@ Structured prompt asking for:
 
 ### 5. Output
 - Prints response to stdout
-- Saves to `arch-docs/gemini-review.md` (relative to project root)
+- Saves to `docs/history/gemini-review.md` (relative to project root)
 - Exit code: 0 = success, 1 = all models failed
 
 ---
@@ -105,7 +105,7 @@ If script fails, you can manually review:
 
 ```bash
 # 1. Get document
-cat /home/petark/runtime-ai/arch-docs/role-based-agent-architecture.md
+cat docs/architecture/role-based-agent-architecture.md
 
 # 2. Copy to Gemini web UI or use curl directly:
 curl -X POST http://127.0.0.1:4000/v1/chat/completions \
@@ -123,7 +123,7 @@ curl -X POST http://127.0.0.1:4000/v1/chat/completions \
 ## Updating the Architecture Document
 
 After review, update:
-1. `/home/petark/runtime-ai/arch-docs/role-based-agent-architecture.md` — incorporate fixes
+1. `docs/architecture/role-based-agent-architecture.md` — incorporate fixes
 2. Increment version in document header
 3. Re-run review to verify
 
@@ -134,9 +134,9 @@ After review, update:
 | File | Purpose |
 |------|---------|
 | `scripts/review_architecture.py` | Main review script |
-| `arch-docs/role-based-agent-architecture.md` | Document to review |
-| `arch-docs/gemini-review.md` | Review output (overwritten each run) |
-| `arch-docs/GEMINI_REVIEW_PROCEDURE.md` | This file |
+| `docs/architecture/role-based-agent-architecture.md` | Document to review |
+| `docs/history/gemini-review.md` | Review output (overwritten each run) |
+| `docs/architecture/gemini-review-procedure.md` | This file |
 
 ---
 
@@ -144,10 +144,10 @@ After review, update:
 
 ```bash
 # One-liner to run review
-cd /home/petark/runtime-ai && .venv/bin/python scripts/review_architecture.py
+cd <repo> && .venv/bin/python scripts/review_architecture.py
 
 # Check last review
-cat /home/petark/runtime-ai/arch-docs/gemini-review.md
+cat docs/history/gemini-review.md
 
 # Verify proxy health
 curl -s http://127.0.0.1:4000/health | jq .

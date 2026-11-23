@@ -19,7 +19,7 @@ Licensed under MIT License
 | Mode | Use Case | Entry Point |
 |------|----------|-------------|
 | **Vibe Coding** | Human ↔ Agent (like Codex/Claude Code) | `runtime` CLI — interactive REPL |
-| **Tool Provider** | RONI/orchestrator → Agent (programmatic) | `REX` Python API — `await rex.run_agent(...)` |
+| **Tool Provider** | an orchestrator → Agent (programmatic) | `REX` Python API — `await rex.run_agent(...)` |
 
 **Same installation, same folder, same components.** Mode determined by how you invoke it.
 
@@ -31,14 +31,14 @@ Licensed under MIT License
 - **Tools** — fileops, bash, git, websearch, task (subagent spawn)
 - **Sandbox** — Docker Guard with git worktree isolation
 - **Sessions** — JSONL persistence, checkpoints, audit trail
-- **Hooks** — event bus (human TUI in vibe mode, RONI observability in provider mode)
-- **Permissions** — pluggable policy engine (human ask/allow in vibe, RONI injects in provider)
+- **Hooks** — event bus (human TUI in vibe mode, the orchestrator observability in provider mode)
+- **Permissions** — pluggable policy engine (human ask/allow in vibe, the orchestrator injects in provider)
 
 ### What REX Does NOT Do (v1)
 
-- ❌ Multi-agent orchestration (DAG, planning) — RONI owns this
-- ❌ PR creation/approval UI — RONI/human owns this
-- ❌ DAG task scheduling — RONI owns this
+- ❌ Multi-agent orchestration (DAG, planning) — the orchestrator owns this
+- ❌ PR creation/approval UI — the orchestrator/human owns this
+- ❌ DAG task scheduling — the orchestrator owns this
 
 ---
 
@@ -50,7 +50,7 @@ Licensed under MIT License
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │   Vibe CLI   │  │   REX API    │  │   Shared Core    │  │
-│  │  (runtime)   │  │  (for RONI)  │  │                  │  │
+│  │  (runtime)   │  │  (for the orchestrator)  │  │                  │  │
 │  │              │  │              │  │  AgentLoop       │  │
 │  │ REPL + TUI   │  │ run_agent()  │  │  Tools           │  │
 │  │ /chat, /tool │  │ spawn_subagent│  │  Sandbox         │  │
@@ -71,21 +71,21 @@ Licensed under MIT License
 | Aspect | Vibe Coding Mode | Tool Provider Mode |
 |--------|------------------|-------------------|
 | **Entry** | `runtime` (interactive) | `REX()` Python class |
-| **User** | Human in terminal | RONI orchestrator |
-| **Permissions** | Human: allow/deny/ask prompt | RONI injects `PermissionPolicy` |
-| **Hooks** | TUI notifications | RONI callback subscription |
-| **Session** | Auto-managed | RONI controls lifecycle |
-| **Subagents** | Human triggers `/task` | RONI calls `spawn_subagent()` |
+| **User** | Human in terminal | orchestrator |
+| **Permissions** | Human: allow/deny/ask prompt | the orchestrator injects `PermissionPolicy` |
+| **Hooks** | TUI notifications | the orchestrator callback subscription |
+| **Session** | Auto-managed | the orchestrator controls lifecycle |
+| **Subagents** | Human triggers `/task` | the orchestrator calls `spawn_subagent()` |
 
 ---
 
-## 2. REX API for Orchestrators (RONI)
+## 2. REX API for Orchestrators (orchestrator)
 
 ### 2.1 High-Level Interface
 
 ```python
 class REX:
-    """Main entry point for orchestrators (RONI)."""
+    """Main entry point for orchestrators (orchestrator)."""
     
     async def run_agent(
         self,
@@ -281,7 +281,7 @@ class PermissionPolicy(ABC):
 
 ```python
 class DefaultPermissionPolicy(PermissionPolicy):
-    """Reference policy - RONI provides its own."""
+    """Reference policy - the orchestrator provides its own."""
     
     ROLE_PERMISSIONS = {
         "CODER": {
@@ -390,13 +390,13 @@ class HookContext:
     error: str | None = None
 ```
 
-### 7.3 RONI Subscription
+### 7.3 Orchestrator Subscription
 
 ```python
-# RONI subscribes to all events for observability
+# The orchestrator subscribes to all events for observability
 subscription = rex.subscribe_hooks(
     events=list(HookEvent),  # All events
-    callback=roni.handle_hook_event
+    callback=orchestrator.handle_hook_event
 )
 ```
 
@@ -506,10 +506,10 @@ NVIDIA_API_KEY=...
 
 ## 12. Non-Goals (v1)
 
-- ❌ Multi-agent orchestration (RONI owns this)
-- ❌ PR creation/approval UI (RONI owns this)
-- ❌ DAG task scheduling (RONI owns this)
-- ❌ Human review workflow (RONI owns this)
+- ❌ Multi-agent orchestration (the orchestrator owns this)
+- ❌ PR creation/approval UI (the orchestrator owns this)
+- ❌ DAG task scheduling (the orchestrator owns this)
+- ❌ Human review workflow (the orchestrator owns this)
 - ❌ Distributed worker management (future)
 
 ---

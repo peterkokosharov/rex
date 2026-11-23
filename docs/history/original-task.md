@@ -4,6 +4,8 @@ LLM: nvidia nemotron ultra
 Licensed under MIT License
 -->
 
+> Historical, superseded by README.md and docs/architecture/ (the original task statement, from before the first implementation).
+
 # Task: Build a Claude-like Runtime for OpenAI-compatible Models via LiteLLM Proxy
 
 ## Objective
@@ -58,7 +60,7 @@ Create a runtime environment (similar to Claude Code) that works with AI models 
 - **Status Line**: Configurable status display
 
 ### Sandbox / Guard (Docker-based, inspired by Codex)
-- **Docker Container**: Runs in the same folder as the project (`/home/petark/runtime-ai/`)
+- **Docker Container**: Runs in the same folder as the project (`the repository root`)
 - **Guard Role**: All bash execution, file operations, and network calls go through the container
 - **Isolation**: Filesystem isolation, network policies, resource limits (CPU, memory, pids)
 - **Persistence**: Workspace mounted read-write; config/secrets mounted read-only

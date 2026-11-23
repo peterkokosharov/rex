@@ -4,6 +4,8 @@ LLM: nvidia nemotron ultra
 Licensed under MIT License
 -->
 
+> Historical, superseded by the model table in `runtimelib/llm/models.py` (12 coarse classes, not these 30).
+
 # Model Classes — Comprehensive Classification (30 Classes)
 
 ## Design Principles
