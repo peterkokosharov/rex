@@ -174,6 +174,54 @@ class BashTests(unittest.TestCase):
         self.assertEqual(pr.evaluate("bash", bash("echo `rm -rf x`"), "guard").decision, R.DENY)
         self.assertEqual(pr.evaluate("bash", bash("cat <(rm -rf x)"), "guard").decision, R.DENY)
 
+    def test_deny_bypass_probes(self):
+        pr = rules()
+        probes = [
+            "FOO=1 rm -rf /",
+            'bash -c "rm -rf /"',
+            "sh -lc 'rm -rf /'",
+            "sudo rm -rf /",
+            "sudo -u root rm -rf /",
+            "/bin/rm -rf /",
+            "rm  -rf /",
+            "rm\t-rf /",
+            "eval rm -rf /",
+            "echo x | xargs rm -rf",
+            "echo x | xargs -n 1 rm -rf",
+            'pytest "$(rm -rf /)"',
+            "pytest '$(rm -rf /)'",
+            "env -i A=1 nohup time command /usr/bin/rm -rf /",
+            "doas rm -rf /",
+            "exec rm -rf /",
+            "builtin eval 'rm -rf /'",
+            'bash -c "bash -c \\"rm -rf /\\""',
+            "find . -exec rm -rf {} \\;",
+            "find . -name x -execdir rm -rf {} +",
+            'rm "-rf" /',
+            "echo `rm -rf /`",
+            "echo $(echo $(rm -rf /))",
+        ]
+        for cmd in probes:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.DENY)
+
+    def test_ask_rule_sees_normalised_parts(self):
+        pr = rules()
+        for cmd in ("GIT_TRACE=1 git push", "sudo git push origin", "/usr/bin/git push"):
+            self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.ASK, cmd)
+
+    def test_allow_does_not_see_through_wrappers(self):
+        pr = rules()
+        self.assertEqual(pr.evaluate("bash", bash("sudo pytest -q"), "local").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", bash("FOO=1 pytest -q"), "local").decision, R.ASK)
+
+    def test_too_deep_nesting_never_auto_allowed(self):
+        cmd = "make"
+        for _ in range(10):
+            cmd = "sh -c " + __import__("shlex").quote(cmd)
+        v = rules().evaluate("bash", bash(cmd), "guard")
+        self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+
     def test_quoted_separator_not_split(self):
         pr = rules()
         self.assertEqual(pr.evaluate("bash", bash('ls "a; rm -rf x"'), "guard").decision, R.ALLOW)

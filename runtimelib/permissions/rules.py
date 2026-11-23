@@ -20,7 +20,11 @@ Precedence: deny > ask > allow > mode default. Compound bash commands are split
 on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines (quote aware): any part that
 hits deny denies, any part that hits ask asks, "allow" needs every part allowed.
 Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
-(at least ask) and its content is also checked against deny rules.
+(at least ask) and its content is also checked against deny rules. Deny and
+ask rules also see every part normalised (``NAME=value`` prefixes and wrappers
+such as ``sudo``/``env``/``nohup`` stripped, ``/bin/rm`` -> ``rm``, whitespace
+squeezed) and the commands run by ``sh -c``, ``eval``, ``xargs`` and
+``find -exec`` (see :func:`deny_subjects`).
 
 Paths are normalised relative to the workspace before matching. Mode defaults
 (see :func:`mode_default`): local mode asks for every write, exec, network and
@@ -187,16 +191,178 @@ def split_bash(command: str) -> tuple[list[str], bool]:
     return parts, unsafe
 
 
+MAX_NEST_DEPTH = 6
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Wrappers that run the rest of the line as a command, with the options of
+# each that take a separate argument (so the argument is skipped too).
+_WRAPPERS: dict[str, set[str]] = {
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "command": set(),
+    "builtin": set(),
+    "exec": {"-a"},
+    "nohup": set(),
+    "time": {"-f", "--format", "-o", "--output"},
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir",
+             "-h", "--host", "-p", "--prompt", "-r", "--role", "-t", "--type", "-U", "--other-user"},
+    "doas": {"-u", "-C"},
+}
+_XARGS_ARG_OPTS = {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "--max-args", "--max-procs",
+                   "--delimiter", "--max-lines", "--max-chars", "--eof", "--arg-file", "--replace"}
+
+
+def _basename(word: str) -> str:
+    word = word.replace("\\", "/")
+    return word.rsplit("/", 1)[-1] if "/" in word.rstrip("/") else word
+
+
+def _words(part: str) -> list[str]:
+    """Shell words of one command part (quotes removed); whitespace split if shlex fails."""
+    import shlex
+    try:
+        return shlex.split(part, comments=False, posix=True)
+    except ValueError:
+        return part.split()
+
+
+def _strip_wrappers(words: list[str]) -> list[str]:
+    """Drop leading ``NAME=value`` words and wrapper commands (``sudo``, ``env`` ...)."""
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        if _ASSIGN.match(w):
+            i += 1
+            continue
+        name = _basename(w)
+        if name not in _WRAPPERS:
+            break
+        arg_opts = _WRAPPERS[name]
+        i += 1
+        while i < n and words[i].startswith("-") and words[i] != "-":
+            opt = words[i]
+            i += 1
+            if opt == "--":
+                break
+            if opt in arg_opts and "=" not in opt:
+                i += 1  # option argument
+    out = words[i:]
+    if out:
+        out = [_basename(out[0])] + out[1:]
+    return out
+
+
+def _substitution_bodies(command: str) -> list[str]:
+    """Bodies of ``$(...)``, ``<(...)``, ``>(...)`` and backticks, ignoring quoting.
+
+    Quotes are deliberately not honoured: a body inside single quotes is
+    harmless but checking it too only makes deny stricter.
+    """
+    bodies: list[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        if command.startswith(("$(", "<(", ">("), i):
+            j, depth = i + 2, 1
+            while j < n and depth:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            bodies.append(command[i + 2:j - 1 if depth == 0 else j])
+            i += 2  # keep scanning inside: nested bodies are collected in this one pass
+            continue
+        if command[i] == "`":
+            j = command.find("`", i + 1)
+            end = n if j < 0 else j
+            bodies.append(command[i + 1:end])
+            i = end + 1
+            continue
+        i += 1
+    return [b for b in bodies if b.strip()]
+
+
+def _inner_commands(words: list[str]) -> list[str]:
+    """Command texts a part runs indirectly: ``sh -c``, ``eval``, ``xargs``, ``find -exec``."""
+    if not words:
+        return []
+    head = words[0]
+    inner: list[str] = []
+    if head in _SHELLS:
+        for k, w in enumerate(words[1:], 1):
+            if w.startswith("-") and not w.startswith("--") and "c" in w[1:]:
+                if k + 1 < len(words):
+                    inner.append(words[k + 1])
+                break
+            if not w.startswith("-"):
+                break
+    elif head == "eval":
+        inner.append(" ".join(words[1:]))
+    elif head == "xargs":
+        k = 1
+        while k < len(words) and words[k].startswith("-"):
+            opt = words[k]
+            k += 1
+            if opt == "--":
+                break
+            if opt in _XARGS_ARG_OPTS:
+                k += 1
+        if k < len(words):
+            inner.append(" ".join(words[k:]))
+    if head == "find" or "find" in words:
+        k = 0
+        while k < len(words):
+            if words[k] in ("-exec", "-execdir", "-ok", "-okdir"):
+                end = k + 1
+                while end < len(words) and words[end] not in (";", "+", "\\;"):
+                    end += 1
+                if end > k + 1:
+                    inner.append(" ".join(words[k + 1:end]))
+                k = end
+            k += 1
+    return [t for t in inner if t.strip()]
+
+
+def deny_subjects(command: str) -> tuple[list[str], bool]:
+    """Subjects used for deny (and ask) matching; returns (subjects, too_deep).
+
+    For every part: the part with whitespace squeezed, and the part with
+    leading ``NAME=value`` words and wrappers stripped and the command word
+    reduced to its basename (``sudo /bin/rm -rf /`` -> ``rm -rf /``). The
+    bodies of command substitutions (any nesting level) and the commands run
+    by ``sh -c``, ``eval``, ``xargs`` and ``find -exec`` are checked the same
+    way; ``sh -c`` / ``eval`` nesting is followed up to :data:`MAX_NEST_DEPTH`
+    levels, deeper nesting sets ``too_deep`` (the caller then never
+    auto-allows the command).
+    """
+    seen: list[str] = []
+    too_deep = False
+
+    def add(text: str) -> None:
+        text = text.strip()
+        if text and text not in seen:
+            seen.append(text)
+
+    def walk(command: str, depth: int) -> None:
+        nonlocal too_deep
+        nested: list[str] = []
+        for text in [command] + _substitution_bodies(command):
+            for part in split_bash(text)[0]:
+                add(" ".join(part.split()))
+                words = _strip_wrappers(_words(part))
+                add(" ".join(words))
+                nested.extend(_inner_commands(words))
+        if nested and depth >= MAX_NEST_DEPTH:
+            too_deep = True
+            return
+        for text in nested:
+            walk(text, depth + 1)
+
+    walk(command, 0)
+    return seen, too_deep
+
+
 def _deny_parts(command: str) -> list[str]:
-    """Parts used for deny matching: normal split plus substitution contents."""
-    parts, _ = split_bash(command)
-    loose = re.sub(r"\$\(|<\(|>\(|`|\)", ";", command)
-    extra, _ = split_bash(loose)
-    seen = list(parts)
-    for p in extra:
-        if p not in seen:
-            seen.append(p)
-    return seen
+    return deny_subjects(command)[0]
 
 
 # ------------------------------------------------------------- path handling
@@ -482,21 +648,25 @@ class PermissionRules:
         kind = classify(tool, args)
         subjects = _subjects(tool, args, self.workspace)
         unsafe = ""
-        deny_subjects = subjects
+        strict_subjects = subjects
         if tool == "bash":
             command = str(args.get("command", ""))
+            strict_subjects, too_deep = deny_subjects(command)
             if split_bash(command)[1]:
                 unsafe = "Command substitution is never auto-allowed"
+            elif too_deep:
+                unsafe = "Nested shell commands too deep to check"
             elif args.get("env"):
                 # Extra variables (PATH, LD_PRELOAD, GIT_SSH_COMMAND ...) change what runs.
                 unsafe = "A command with extra environment variables is never auto-allowed"
-            deny_subjects = _deny_parts(command)
 
+        # Deny and ask see the normalised parts too (wrappers stripped, nested
+        # commands); allow only ever sees the parts as written.
         for rule in self.deny:
-            if any(rule.matches_subject(tool, s) for s in deny_subjects or [""]):
+            if any(rule.matches_subject(tool, s) for s in strict_subjects or [""]):
                 return RuleVerdict(DENY, kind, "deny", rule.text, f"Permission denied (rule {rule.text})")
         for rule in self.ask:
-            if any(rule.matches_subject(tool, s) for s in subjects or [""]):
+            if any(rule.matches_subject(tool, s) for s in strict_subjects or [""]):
                 return RuleVerdict(ASK, kind, "ask", rule.text, f"Ask required (rule {rule.text})")
 
         allowed_by: Rule | None = None
