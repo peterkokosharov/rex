@@ -73,10 +73,19 @@ def run_shell(command: str, cwd: Optional[Path] = None, timeout: Optional[float]
         )
         return ShellResult(command, proc.stdout, proc.stderr, proc.returncode)
     except subprocess.TimeoutExpired as exc:
-        stderr = (exc.stderr or "") + f"\n[shell: timed out after {timeout}s]"
-        return ShellResult(command, exc.stdout or "", stderr, 124)
+        stderr = _to_text(exc.stderr) + f"\n[shell: timed out after {timeout}s]"
+        return ShellResult(command, _to_text(exc.stdout), stderr, 124)
     except OSError as exc:
         return ShellResult(command, "", str(exc), 1)
+
+
+def _to_text(value: object) -> str:
+    """TimeoutExpired carries bytes on POSIX even when text=True was asked."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 def print_shell_result(result: ShellResult) -> int:
