@@ -401,3 +401,21 @@ def test_run_claude_uses_safe_mode_when_supported():
     finally:
         gw.supports_setting_sources.cache_clear()
     assert "--safe-mode" in seen["cmd"] and "--setting-sources" not in seen["cmd"]
+
+
+# ---------------------------------------------------------------- info page
+
+@pytest.mark.parametrize("path", ["/", "/v1", "/v1/"])
+def test_root_and_v1_return_info(server, path):
+    with urllib.request.urlopen(_url(server, path), timeout=10) as r:
+        assert r.status == 200
+        body = json.loads(r.read())
+    assert body["name"] == "claude-cli-gateway"
+    assert body["endpoints"] == ["/v1/models", "/v1/chat/completions", "/health"]
+    assert body["default_model"] == "haiku"
+
+
+def test_unknown_get_still_404(server):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(_url(server, "/nope"), timeout=10)
+    assert exc.value.code == 404

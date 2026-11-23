@@ -327,6 +327,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 {"id": m, "object": "model", "created": now, "owned_by": "claude-cli"} for m in models]}
             self._send_json(200, body)
             self._log("", started, 200)
+        elif path in ("", "/v1"):
+            self._send_json(200, {
+                "name": "claude-cli-gateway",
+                "endpoints": ["/v1/models", "/v1/chat/completions", "/health"],
+                "default_model": self.server.default_model,
+            })
+            self._log("", started, 200)
         elif path == "/health":
             self._send_json(200, {"status": "ok"})
             self._log("", started, 200)
