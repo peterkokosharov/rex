@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Configuration schema validation (stdlib-only, pydantic-style)."""
