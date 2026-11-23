@@ -22,7 +22,7 @@ hits deny denies, any part that hits ask asks, "allow" needs every part allowed.
 Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
 (at least ask) and its content is also checked against deny rules. Deny and
 ask rules also see every part normalised (``NAME=value`` prefixes and wrappers
-such as ``sudo``/``env``/``nohup`` stripped, ``/bin/rm`` -> ``rm``, whitespace
+such as ``sudo``/``env``/``nohup``/``nice``/``timeout``/``stdbuf`` stripped, ``/bin/rm`` -> ``rm``, whitespace
 squeezed) and the commands run by ``sh -c``, ``eval``, ``xargs`` and
 ``find -exec`` (see :func:`deny_subjects`). An unquoted output redirect to a
 file (anything but ``/dev/null`` or ``>&N``) is never auto-allowed either,
@@ -279,7 +279,17 @@ _WRAPPERS: dict[str, set[str]] = {
     "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir",
              "-h", "--host", "-p", "--prompt", "-r", "--role", "-t", "--type", "-U", "--other-user"},
     "doas": {"-u", "-C"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
+    "chrt": {"-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline"},
+    "taskset": set(),
+    "setsid": set(),
 }
+# Wrappers with positional arguments before the command (timeout DURATION,
+# chrt PRIORITY, taskset MASK).
+_WRAPPER_POSITIONALS = {"timeout": 1, "chrt": 1, "taskset": 1}
 _XARGS_ARG_OPTS = {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "--max-args", "--max-procs",
                    "--delimiter", "--max-lines", "--max-chars", "--eof", "--arg-file", "--replace"}
 
@@ -318,6 +328,7 @@ def _strip_wrappers(words: list[str]) -> list[str]:
                 break
             if opt in arg_opts and "=" not in opt:
                 i += 1  # option argument
+        i += _WRAPPER_POSITIONALS.get(name, 0)
     out = words[i:]
     if out:
         out = [_basename(out[0])] + out[1:]

@@ -212,6 +212,32 @@ class BashTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.DENY)
 
+    def test_scheduling_wrappers_stripped(self):
+        pr = rules()
+        probes = [
+            "timeout 5 rm -rf /",
+            "timeout -s KILL -k 2 5 rm -rf /",
+            "timeout --signal=TERM 5s rm -rf /",
+            "nice rm -rf /",
+            "nice -n 10 rm -rf /",
+            "nice -10 rm -rf /",
+            "ionice -c 3 rm -rf /",
+            "ionice -c2 -n7 rm -rf /",
+            "stdbuf -oL rm -rf /",
+            "stdbuf -o L -e 0 rm -rf /",
+            "chrt 10 rm -rf /",
+            "chrt -f 10 rm -rf /",
+            "taskset 0x3 rm -rf /",
+            "taskset -c 0,1 rm -rf /",
+            "setsid rm -rf /",
+            "setsid -f rm -rf /",
+            "nohup nice -n 5 timeout 9 sudo /bin/rm -rf /",
+        ]
+        for cmd in probes:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.DENY)
+        self.assertEqual(pr.evaluate("bash", bash("timeout 5 make"), "guard").decision, R.ALLOW)
+
     def test_ask_rule_sees_normalised_parts(self):
         pr = rules()
         for cmd in ("GIT_TRACE=1 git push", "sudo git push origin", "/usr/bin/git push"):
