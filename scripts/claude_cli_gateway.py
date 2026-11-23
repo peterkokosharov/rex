@@ -27,11 +27,13 @@ Logs method, path, model, duration and status only.
 from __future__ import annotations
 
 import argparse
+import errno
 import functools
 import hmac
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -47,6 +49,7 @@ DEFAULT_MODEL = "haiku"
 DEFAULT_TIMEOUT = 300.0
 ALIASES = ("haiku", "sonnet", "opus")
 MAX_BODY = 32 * 1024 * 1024
+_ADDR_IN_USE = (errno.EADDRINUSE, errno.EACCES)
 
 
 class GatewayError(Exception):
@@ -361,11 +364,28 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._log(model, started, 200)
 
 
+class GatewayServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that refuses a second bind on the same port.
+
+    On Windows SO_REUSEADDR lets two processes bind the same address, so it is
+    turned off there and SO_EXCLUSIVEADDRUSE is used instead. POSIX keeps the
+    default SO_REUSEADDR (it only allows rebinding a port in TIME_WAIT).
+    """
+
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if os.name == "nt" and exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
+
+
 def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
                 claude_bin: str | None = None, timeout: float = DEFAULT_TIMEOUT,
                 runner: Any = None, token: str | None = None) -> ThreadingHTTPServer:
     """Create the server bound to 127.0.0.1 (never another interface)."""
-    server = ThreadingHTTPServer((HOST, port), GatewayHandler)
+    server = GatewayServer((HOST, port), GatewayHandler)
     server.daemon_threads = True
     server.default_model = default_model
     server.claude_bin = claude_bin or shutil.which("claude") or "claude"
@@ -421,7 +441,14 @@ def main(argv: list[str] | None = None) -> int:
     if not claude_bin:
         print("claude CLI not found on PATH", file=sys.stderr)
         return 2
-    server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token)
+    try:
+        server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token)
+    except OSError as exc:
+        if exc.errno in _ADDR_IN_USE or getattr(exc, "winerror", None) in (10013, 10048):
+            print(f"error: port {args.port} already in use (is another gateway running?)", file=sys.stderr)
+        else:
+            print(f"error: cannot listen on {HOST}:{args.port}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
     if not supports_setting_sources(claude_bin):
         print("note: this claude CLI has no --setting-sources; project settings may load", file=sys.stderr)
     print(f"claude-cli-gateway on http://{HOST}:{args.port}/v1 (default model {args.default_model})",

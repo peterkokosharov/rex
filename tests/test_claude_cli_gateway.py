@@ -354,3 +354,24 @@ def test_resolve_token_errors(tmp_path, token, name, content):
         f.write_text(content, encoding="utf-8")
     with pytest.raises(ValueError):
         gw.resolve_token(token, str(f), {})
+
+
+# ---------------------------------------------------------------- exclusive port bind
+
+def test_second_bind_on_same_port_fails(server):
+    port = server.server_address[1]
+    with pytest.raises(OSError):
+        gw.make_server(port=port, claude_bin="claude", runner=lambda *a: None)
+
+
+def test_main_reports_port_in_use(server, capsys):
+    port = server.server_address[1]
+    with mock.patch.object(gw.shutil, "which", return_value="claude"):
+        rc = gw.main(["--port", str(port)])
+    assert rc == 1
+    assert f"port {port} already in use" in capsys.readouterr().err
+
+
+def test_reuse_address_policy():
+    import os
+    assert gw.GatewayServer.allow_reuse_address == (os.name != "nt")
