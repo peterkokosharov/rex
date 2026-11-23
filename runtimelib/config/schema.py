@@ -132,6 +132,10 @@ def create_runtime_schema() -> ConfigSchema:
     instructions.add_field("file", Field(type=str, default="", description="Explicit instructions file, loaded as user-level instructions"))
     schema.add_nested("instructions", instructions)
 
+    workspace = ConfigSchema()
+    workspace.add_field("trust", Field(type=bool, default=False, description="Trust the workspace: load project skills and project AGENTS.md"))
+    schema.add_nested("workspace", workspace)
+
     # cli section: auto-compaction settings
     cli = ConfigSchema()
     cli.add_field("compact_ratio", Field(type=float, default=0.9, description="Auto-compact at this fraction of the context window"))

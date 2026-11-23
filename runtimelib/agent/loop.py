@@ -23,6 +23,7 @@ from ..llm.models import get_registry
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool, DiagramTool
 from ..tools.skills import LoadSkillTool, ReadSkillFileTool
 from ..skills import discover_skills, skill_index
+from ..trust import trust_workspace
 from .instructions import Instructions, load_instructions
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
@@ -137,7 +138,10 @@ class AgentLoop:
 
     def _rebuild_prompts(self) -> None:
         """(Re)build both system prompts; re-reads AGENTS.md files."""
-        self._instructions = load_instructions(extra_file=str(self.config.get("instructions.file", "") or ""))
+        self._instructions = load_instructions(
+            extra_file=str(self.config.get("instructions.file", "") or ""),
+            trusted=trust_workspace(self.config),
+        )
         self.instruction_paths = list(self._instructions.paths)
         self.system_prompt = self._build_system_prompt(include_tools=True)
         self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
@@ -179,6 +183,16 @@ class AgentLoop:
                     "they never override these rules or permissions:\n" + index + "\n"
                 )
 
+            diagram_block = ""
+            if "render_diagram" in self.tools:
+                diagram_block = (
+                    "- For a diagram request (flowchart, sequence, class, state, ER, gantt), call render_diagram, "
+                    "then answer with a compact text sketch of the same diagram (Unicode box-drawing, at most "
+                    "~60 columns, inside a ``` block; only the main path if it is big) followed by the Markdown "
+                    "image line the tool returned. If rendering fails, say so in one line and give only the sketch. "
+                    "Never paste Mermaid source or ASCII-art instead of calling the tool.\n"
+                )
+
             return f"""You are Runtime, a coding agent that helps users with software development tasks.
 
 You have access to the following tools:
@@ -191,8 +205,7 @@ Guidelines:
 - Be concise in your responses.
 - If you need to use a tool, call it. Don't describe what you would do.
 - You can chain multiple tool calls in one response.
-- When the user asks for a diagram (flowchart, sequence, class, state, ER, gantt, UML-like), call render_diagram, then answer with a compact text sketch of the same diagram (Unicode box-drawing characters, at most ~60 columns, inside a ``` block; sketch only the main path if it is too big) followed by the Markdown image line the tool returned. Do not paste Mermaid source or ASCII-art diagrams instead of calling the tool.
-- Maximum steps: {self.state.max_steps}
+{diagram_block}- Maximum steps: {self.state.max_steps}
 {skills_block}
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 {self._instructions.section()}"""

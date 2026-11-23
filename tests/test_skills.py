@@ -44,7 +44,7 @@ class Cfg:
         return self.data.get(key, default)
 
 
-TRUST = Cfg({"skills.trust_workspace": True})
+TRUST = Cfg({"workspace.trust": True})
 
 
 @pytest.fixture
@@ -87,7 +87,7 @@ def test_precedence_and_duplicate_warning(env, tmp_path):
     make_skill(home / ".config" / "runtime" / "skills", "c", "only-home", "h")
     make_skill(extra, "d", "from-config", "cfg")
     warnings: list[str] = []
-    skills = discover_skills(ws, Cfg({"skills.paths": [str(extra)], "skills.trust_workspace": True}), home=home, warnings=warnings)
+    skills = discover_skills(ws, Cfg({"skills.paths": [str(extra)], "workspace.trust": True}), home=home, warnings=warnings)
     by = {s.name: s for s in skills}
     assert by["dup"].description == "from home"
     assert set(by) == {"dup", "only-home", "from-config"}
@@ -212,7 +212,7 @@ def test_workspace_skills_untrusted_by_default(env, monkeypatch):
     assert {s.name: s.trusted for s in both} == {"user": True, "proj": False}
     out, err = io.StringIO(), io.StringIO()
     run_skills([], None, workspace=ws, out=out, err=err)
-    assert "(project, not trusted - set skills.trust_workspace)" in out.getvalue()
+    assert "(project, not trusted - set workspace.trust)" in out.getvalue()
     out = io.StringIO()
     run_skills([], TRUST, workspace=ws, out=out, err=err)
     assert "project skill (project)" in out.getvalue()

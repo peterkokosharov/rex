@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,18 +24,28 @@ class Instructions:
     project: str = ""
     paths: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)
 
     def section(self) -> str:
         """Prompt section, or '' when there is nothing to add."""
         if not self.user and not self.project:
             return ""
         parts = ["\n=== Standing instructions (AGENTS.md) ==="]
-        if self.user:
-            parts.append("--- User instructions ---\n" + self.user)
+        # Project text first, user text last: the trusted text has the final word.
         if self.project:
             parts.append("--- Project instructions ---\n" + PROJECT_NOTE + "\n" + self.project)
+        if self.user:
+            parts.append("--- User instructions ---\n" + self.user)
         parts.append("=== End of standing instructions ===\n")
         return "\n".join(parts)
+
+
+_FENCE = re.compile(r"^(?=(?:===|---))", re.MULTILINE)
+
+
+def _neutralise(text: str) -> str:
+    """Stop project text from faking section markers: lines starting with === or --- get a "> " prefix."""
+    return _FENCE.sub("> ", text)
 
 
 def _read_capped(path: Path) -> str:
@@ -69,7 +80,12 @@ def load_instructions(
     workspace: Optional[Path] = None,
     user_dir: Optional[Path] = None,
     extra_file: Optional[str] = None,
+    trusted: bool = False,
 ) -> Instructions:
+    """Load user, explicit and (only when ``trusted``) project instructions.
+
+    A present project AGENTS.md of an untrusted workspace is not read; a notice says how to trust it.
+    """
     workspace = Path(workspace) if workspace is not None else Path.cwd()
     user_dir = Path(user_dir) if user_dir is not None else Path.home() / ".config" / "runtime"
     result = Instructions()
@@ -99,14 +115,19 @@ def load_instructions(
                 result.warnings.append(f"cannot read {extra}: {exc}")
 
     project_file = _find(workspace)
-    if project_file is not None:
+    if project_file is not None and not trusted:
+        result.notices.append(
+            f"{project_file} not loaded: the workspace is not trusted "
+            "(set workspace.trust: true or RUNTIME_WORKSPACE__TRUST=true to load it)"
+        )
+    elif project_file is not None:
         try:
             real = project_file.resolve()
             root = workspace.resolve()
             if real != root and root not in real.parents:
                 result.warnings.append(f"refusing {project_file}: resolves outside the workspace ({real})")
             else:
-                result.project = _read_capped(real)
+                result.project = _neutralise(_read_capped(real))
                 if result.project:
                     result.paths.append(str(project_file))
         except OSError as exc:
@@ -114,4 +135,6 @@ def load_instructions(
 
     for w in result.warnings:
         print(f"WARNING: {w}", file=sys.stderr)
+    for n in result.notices:
+        print(f"NOTE: {n}", file=sys.stderr)
     return result

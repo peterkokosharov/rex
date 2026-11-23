@@ -30,7 +30,7 @@ def run_skills(argv: list[str], config: Any = None, workspace: Path | None = Non
         for s in skills:
             mark = ""
             if s.project:
-                mark = " (project)" if s.trusted else " (project, not trusted - set skills.trust_workspace)"
+                mark = " (project)" if s.trusted else " (project, not trusted - set workspace.trust)"
             print(f"{s.name}\t{s.path}\t{s.description}{mark}", file=out)
         return 0
     if argv[0] == "show" and len(argv) == 2:

@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..trust import trust_workspace
+
 SKILL_FILE = "SKILL.md"
 INDEX_CAP_BYTES = 2048
 DESC_MAX_CHARS = 200
@@ -36,7 +38,7 @@ class Skill:
     files: list[str] = field(default_factory=list)  # relative POSIX paths, SKILL.md excluded
     real_root: Path | None = None  # folder.resolve() at discovery time; file access is pinned to it
     project: bool = False  # found under <workspace>/.rex/skills (repository content, untrusted by default)
-    trusted: bool = True  # False for project skills when skills.trust_workspace is not set
+    trusted: bool = True  # False for project skills when workspace.trust is not set
     container: Path | None = None  # resolved search root a project skill must stay inside
 
 
@@ -107,17 +109,9 @@ def load_skill_folder(folder: Path, warnings: list[str] | None = None) -> Skill 
     if not description:
         _warn(f"skill {folder}: missing description, skipped", warnings)
         return None
-    name = meta.get("name", "").strip() or folder.name
+    name = " ".join(meta.get("name", "").split())[:64] or folder.name
     return Skill(name=name, description=description, path=folder, body=body, files=_list_files(folder),
                  real_root=folder.resolve())
-
-
-def trust_workspace(config: Any) -> bool:
-    """True only when config key ``skills.trust_workspace`` is set to true."""
-    value = config.get("skills.trust_workspace") if config is not None else None
-    if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    return value is True
 
 
 def search_roots(workspace: Path | str, config: Any = None, home: Path | None = None) -> list[tuple[Path, bool]]:
@@ -144,7 +138,7 @@ def discover_skills(
     """Find skills in the search roots. A later duplicate name is ignored with a warning.
 
     Project skills (``<workspace>/.rex/skills``) are repository content: they are returned only when
-    ``skills.trust_workspace`` is true, or (marked ``trusted=False``) with ``include_untrusted=True``.
+    ``workspace.trust`` is true, or (marked ``trusted=False``) with ``include_untrusted=True``.
     """
     trusted_ws = trust_workspace(config)
     if roots is not None:
