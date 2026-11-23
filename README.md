@@ -523,6 +523,7 @@ single simple command made of safe characters (ASCII letters, digits, space and 
 around whole words) that an allow rule matches. Everything else asks: `; & |`, redirects, `$`, backticks, backslash,
 globs (`*` `?` `[`), `~`, `!`, `#`, `%`, `^`, grouping, newlines, tabs, non-ASCII characters, unbalanced quotes, and any
 command over 16 KB. So `pytest -q tests/test_x.py` runs without asking, `pytest tests/*` asks.
+In guard mode the container is the boundary: commands run unless a deny/ask rule matches.
 
 **Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`, `timeout`, `bash -c`, `eval`, `xargs`,
 ...) and simple expansions before matching, but a deny rule cannot stop code run by an interpreter (`python -c`,

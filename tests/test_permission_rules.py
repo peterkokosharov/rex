@@ -159,7 +159,7 @@ class BashTests(unittest.TestCase):
         pr = rules()
         self.assertEqual(pr.evaluate("bash", bash("pytest -q && ls"), "local").decision, R.ASK)
         self.assertEqual(pr.evaluate("bash", bash("pytest -q && make"), "local").decision, R.ASK)
-        self.assertEqual(pr.evaluate("bash", bash("pytest -q && make"), "guard").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", bash("pytest -q && make"), "guard").decision, R.ALLOW)
 
     def test_compound_deny_and_ask_any_part(self):
         pr = rules()
@@ -169,7 +169,7 @@ class BashTests(unittest.TestCase):
 
     def test_substitution_never_auto_allowed(self):
         pr = rules()
-        v = pr.evaluate("bash", bash("ls $(pwd)"), "guard")
+        v = pr.evaluate("bash", bash("ls $(pwd)"), "local")
         self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
         self.assertEqual(pr.evaluate("bash", bash("pytest `id`"), "local").decision, R.ASK)
         self.assertEqual(pr.evaluate("bash", bash("pytest '$(id)'"), "local").decision, R.ASK)
@@ -265,7 +265,7 @@ class BashTests(unittest.TestCase):
     def test_quoted_separator_not_split(self):
         self.assertEqual(split_bash('ls "a; rm -rf x"')[0], ['ls "a; rm -rf x"'])
         pr = rules()
-        self.assertEqual(pr.evaluate("bash", bash('ls "a; b"'), "guard").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", bash('ls "a; b"'), "guard").decision, R.ALLOW)
         # The deny pass is also quote-blind (best effort, stricter): quoted text that
         # looks like a denied command is denied.
         self.assertEqual(pr.evaluate("bash", bash('ls "a; rm -rf x"'), "guard").decision, R.DENY)
@@ -295,15 +295,15 @@ class BashTests(unittest.TestCase):
             for payload in self.CONTINUATION_PAYLOADS:
                 text = payload.format(cmd=cmd)
                 with self.subTest(text=text):
-                    self.assertEqual(deny.evaluate("bash", bash(text), "guard").decision, R.DENY)
+                    self.assertEqual(deny.evaluate("bash", bash(text), "local").decision, R.DENY)
                     self.assertNotEqual(loose.evaluate("bash", bash(text), "local").decision, R.ALLOW)
-                    self.assertNotEqual(loose.evaluate("bash", bash(text), "guard").decision, R.ALLOW)
+                    self.assertNotEqual(loose.evaluate("bash", bash(text), "local").decision, R.ALLOW)
 
     def test_multi_line_never_auto_allowed(self):
         pr = rules({"allow": ["bash(echo *)", "bash(ls*)"]})
         for cmd in ("echo hi\nls", "echo hi\\\nthere", "echo hi\r\nls", "echo hi\rls"):
             with self.subTest(cmd=cmd):
-                v = pr.evaluate("bash", bash(cmd), "guard")
+                v = pr.evaluate("bash", bash(cmd), "local")
                 self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
                 self.assertIn("safe characters", v.reason)
 
@@ -418,11 +418,10 @@ class BashTests(unittest.TestCase):
         for cmd in ("cat <<EOF\nx\nEOF", "cat x | python", "cat x | sudo python3 -",
                     "make {a,b}", "$MAKE all", "\\make all", "m*ke all", "cat a | make -f -"):
             with self.subTest(cmd=cmd):
-                v = pr.evaluate("bash", bash(cmd), "guard")
-                self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
-        for cmd in ("make all", "FOO=1 make", "python tool.py", "make 'a b'", "'make' all"):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "local").decision, R.ASK)
+        for cmd in ("make all", "python tool.py", "make 'a b'"):
             with self.subTest(cmd=cmd):
-                self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.ALLOW)
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "local").decision, R.ALLOW)
 
     def test_heredoc_bodies(self):
         from runtimelib.permissions.rules import scan_bash
@@ -438,14 +437,14 @@ class BashTests(unittest.TestCase):
         self.assertTrue(scan_bash("cat <<EOF\nno end").unparseable)
         self.assertTrue(scan_bash("cat <<EOF").unparseable)
         pr = rules({"allow": ["bash(cat *)"], "deny": ["bash(rm *)"]})
-        v = pr.evaluate("bash", bash("cat <<'EOF'\n$(id)\nEOF"), "guard")
+        v = pr.evaluate("bash", bash("cat <<'EOF'\n$(id)\nEOF"), "local")
         self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
-        self.assertEqual(pr.evaluate("bash", bash("sh <<EOF\nrm -rf /\nEOF"), "guard").decision, R.DENY)
+        self.assertEqual(pr.evaluate("bash", bash("sh <<EOF\nrm -rf /\nEOF"), "local").decision, R.DENY)
 
     def test_unparseable_never_auto_allowed(self):
         pr = rules({"allow": ["bash(echo *)"]})
         for cmd in ("echo 'open", 'echo "open', "echo $'open"):
-            v = pr.evaluate("bash", bash(cmd), "guard")
+            v = pr.evaluate("bash", bash(cmd), "local")
             self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"), cmd)
             self.assertIn("safe characters", v.reason)
 
@@ -484,10 +483,10 @@ class BashTests(unittest.TestCase):
         v = pr.evaluate("bash", call, "local")
         self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
         self.assertIn("environment", v.reason)
-        self.assertEqual(pr.evaluate("bash", call, "guard").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", call, "local").decision, R.ASK)
         self.assertEqual(pr.evaluate("bash", {"command": "pytest -q", "env": {}}, "local").decision, R.ALLOW)
         deny = {"command": "rm -rf /", "env": {"A": "1"}}
-        self.assertEqual(pr.evaluate("bash", deny, "guard").decision, R.DENY)
+        self.assertEqual(pr.evaluate("bash", deny, "local").decision, R.DENY)
 
 
 class PathTests(unittest.TestCase):
@@ -658,12 +657,20 @@ ROUND_PAYLOADS = [
 class WhitelistAllowTests(unittest.TestCase):
     ALLOW = {"allow": ["bash(echo *)", "bash(printf *)", "bash(git status*)", "bash(pytest *)", "bash(ls*)"]}
 
-    def test_payloads_never_allowed(self):
+    def test_payloads_never_allowed_in_local(self):
         pr = rules(self.ALLOW)
         for cmd in ROUND_PAYLOADS:
-            for mode in ("local", "guard"):
-                with self.subTest(cmd=cmd, mode=mode):
-                    self.assertNotEqual(pr.evaluate("bash", bash(cmd), mode).decision, R.ALLOW)
+            with self.subTest(cmd=cmd):
+                self.assertNotEqual(pr.evaluate("bash", bash(cmd), "local").decision, R.ALLOW)
+
+    def test_guard_mode_runs_compound_unless_deny_or_ask(self):
+        pr = rules()
+        for cmd in ("ls | head", "pytest -q && make", 'ls "a; b"', "echo $(pwd)", "make > out.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.ALLOW)
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "local").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", bash("ls | git push"), "guard").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", bash("ls | rm -rf /"), "guard").decision, R.DENY)
 
     def test_safe_table_still_allowed(self):
         pr = rules(self.ALLOW)

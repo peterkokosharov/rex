@@ -16,7 +16,9 @@ fnmatch-style glob. The spec depends on the tool:
 * webfetch   - ``domain:host`` (suffix match) or a URL glob
 * MCP tools  - no spec (``mcp__github__delete_*``)
 
-Precedence: deny > ask > allow > mode default. ALLOW is a whitelist: a bash
+Precedence: deny > ask > allow > mode default. ALLOW is a whitelist (local
+and sandbox mode; in guard mode the container is the boundary and commands run unless a
+deny/ask rule matches): a bash
 command is auto-allowed by an allow rule only if it is a single simple command
 made only of ASCII letters, digits, space and ``- _ . / , : = + @`` (plain
 quotes only around whole words; see :func:`allow_blocker`); then the rule's
@@ -1160,9 +1162,10 @@ class PermissionRules:
             command = str(args.get("command", ""))
             strict_subjects, too_deep = deny_subjects(command)
             why = allow_blocker(command)
-            if why:
+            if why and mode != MODE_GUARD:
+                # Guard mode: the container is the boundary, no whitelist there.
                 unsafe = f"Auto-allow only for a single simple command of safe characters ({why})"
-            elif too_deep:
+            elif too_deep and mode != MODE_GUARD:
                 unsafe = "Nested shell commands too deep to check"
             elif args.get("env"):
                 # Extra variables (PATH, LD_PRELOAD, GIT_SSH_COMMAND ...) change what runs.
