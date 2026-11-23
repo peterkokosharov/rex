@@ -172,7 +172,10 @@ class BashScan:
     ``unparseable``: a quote is left open, a heredoc is not terminated, or a
     part cannot be split into words; the command is never auto-allowed.
     ``heredocs``: heredoc bodies (kept out of ``parts``). ``$(`` or a backtick
-    anywhere in a body counts as substitution, whatever the quoting.
+    anywhere in a body counts as substitution, whatever the quoting. ``$[``
+    (old arithmetic) counts as substitution too.
+    ``commented``: an unquoted ``#`` comment was dropped; bash and the scanner
+    may disagree on where it starts (``$[ 1 #]``), so never auto-allowed.
     """
 
     parts: list[str]
@@ -180,6 +183,7 @@ class BashScan:
     substitution: bool = False
     unparseable: bool = False
     heredocs: list[str] = field(default_factory=list)
+    commented: bool = False
 
 
 def join_continuations(command: str) -> str:
@@ -211,6 +215,7 @@ def scan_bash(command: str) -> BashScan:
     pending: list[tuple[str, bool]] = []  # heredocs waiting for the end of the line
     heredocs: list[str] = []
     broken = False
+    commented = False
 
     def flush(next_sep: str) -> None:
         nonlocal sep
@@ -250,7 +255,7 @@ def scan_bash(command: str) -> BashScan:
                 buf.append(command[i:i + 2])
                 i += 2
             continue
-        if c == "`" or command.startswith("$(", i):
+        if c == "`" or command.startswith(("$(", "$["), i):
             subst = True
         if quote == '"':
             buf.append(c)
@@ -259,6 +264,7 @@ def scan_bash(command: str) -> BashScan:
             i += 1
             continue
         if c == "#" and (not buf or buf[-1] in (" ", "\t")):
+            commented = True
             j = command.find("\n", i)
             i = n if j < 0 else j  # comment: skip to the newline (which still splits)
             continue
@@ -335,7 +341,7 @@ def scan_bash(command: str) -> BashScan:
             shlex.split(part, comments=False, posix=True)
         except ValueError:
             unparseable = True
-    return BashScan(parts, seps, subst, unparseable, heredocs)
+    return BashScan(parts, seps, subst, unparseable, heredocs, commented)
 
 
 def _stronger(a: str, b: str) -> str:
@@ -1212,6 +1218,8 @@ class PermissionRules:
                 unsafe = "Unparseable command (open quote or bad quoting) is never auto-allowed"
             elif scan.substitution:
                 unsafe = "Command substitution is never auto-allowed"
+            elif scan.commented:
+                unsafe = "A command with a # comment is never auto-allowed"
             elif any("\n" in p or "\r" in p for p in scan.parts):
                 unsafe = "A command with a line break inside quotes is never auto-allowed"
             elif any(allow_blocker(p, sep) for p, sep in zip(scan.parts, scan.seps)):
