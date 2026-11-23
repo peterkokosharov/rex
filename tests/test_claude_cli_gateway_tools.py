@@ -4,10 +4,14 @@
 # LLM: claude-opus-5-5
 # Licensed under MIT License
 
-"""Tool mode of scripts/claude_cli_gateway.py: protocol functions (pure, no CLI)."""
+"""Tool mode of scripts/claude_cli_gateway.py: protocol functions, bodies and handler (stub runner)."""
 
 import importlib.util
 import json
+import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -304,3 +308,206 @@ def test_envelope_schema_is_fixed():
     s = gw.ENVELOPE_SCHEMA
     assert set(s["properties"]) == {"tool_calls", "content"}
     assert "anyOf" not in json.dumps(s) and s["additionalProperties"] is False
+
+
+# ---------------------------------------------------------------- response bodies
+
+def _sse_chunks(events):
+    from runtimelib.llm.client import ChatCompletionChunk, LiteLLMClient
+    parser = LiteLLMClient("http://x", "dummy", "haiku")
+    chunks = []
+    for raw in events:
+        line = raw.decode().rstrip("\n")
+        parsed = parser._parse_sse_line(line)
+        if parsed.get("done"):
+            break
+        chunks.append(ChatCompletionChunk.from_dict(parsed))
+    return chunks
+
+
+def test_openai_tool_calls_have_fresh_ids_and_string_arguments():
+    calls = gw.openai_tool_calls([("echo", {"text": "hi"}), ("echo", {"text": "yo"})])
+    assert [c["type"] for c in calls] == ["function", "function"]
+    assert all(c["id"].startswith("call_") and len(c["id"]) == 29 for c in calls)
+    assert calls[0]["id"] != calls[1]["id"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {"text": "hi"}
+
+
+def test_sse_tool_turn_parses_with_rex_accumulator():
+    from runtimelib.agent.loop import accumulate_tool_call
+    calls = gw.openai_tool_calls([("fileops", {"operation": "read", "path": "a.txt"}), ("echo", {"text": "x"})])
+    events = gw.sse_events("reading", "haiku", calls)
+    assert len(events) == 3 and events[-1] == b"data: [DONE]\n\n"
+    chunks = _sse_chunks(events)
+    assert chunks[-1].finish_reason == "tool_calls"
+    acc, last = {}, None
+    for ch in chunks:
+        for d in ch.tool_calls or []:
+            last = accumulate_tool_call(acc, d, last)
+    assert [acc[i].function["name"] for i in sorted(acc)] == ["fileops", "echo"]
+    assert [acc[i].id for i in sorted(acc)] == [c["id"] for c in calls]
+    assert json.loads(acc[0].function["arguments"]) == {"operation": "read", "path": "a.txt"}
+    assert "".join(c.content or "" for c in chunks) == "reading"
+
+
+def test_sse_and_body_without_calls_are_unchanged():
+    assert gw.sse_events("ok", "haiku")[0].count(b"tool_calls") == 0
+    assert _sse_chunks(gw.sse_events("ok", "haiku"))[-1].finish_reason == "stop"
+    body = gw.completion_body("ok", "haiku", {})
+    assert body["choices"][0] == {"index": 0, "message": {"role": "assistant", "content": "ok"},
+                                  "finish_reason": "stop"}
+
+
+def test_completion_body_with_calls_parses_in_rex():
+    from runtimelib.llm.client import ChatCompletion
+    calls = gw.openai_tool_calls([("echo", {"text": "hi"})])
+    body = gw.completion_body(None, "haiku", {"input_tokens": 2, "output_tokens": 3}, calls)
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    msg = ChatCompletion.from_dict(body).message
+    assert msg.content is None and msg.tool_calls[0].function["name"] == "echo"
+    assert body["usage"]["total_tokens"] == 5
+
+
+def test_sum_usage():
+    assert gw.sum_usage({"input_tokens": 2, "output_tokens": 1, "service_tier": "x"},
+                        {"input_tokens": 3, "cache_read_input_tokens": 4, "flag": True}) == \
+        {"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 4, "service_tier": "x"}
+
+
+# ---------------------------------------------------------------- handler wiring (stub runner)
+
+class Script:
+    """A stub runner that answers with scripted CLI results, one per call."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def __call__(self, prompt, model, claude_bin, timeout, **kw):
+        self.calls.append({"prompt": prompt, "timeout": timeout, **kw})
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, dict):
+            return reply
+        return {"text": reply, "usage": {"input_tokens": 10, "output_tokens": 2}}
+
+
+@pytest.fixture
+def make_srv():
+    servers = []
+
+    def make(runner, **kw):
+        srv = gw.make_server(port=0, claude_bin="claude", runner=runner, **kw)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        servers.append(srv)
+        return srv
+
+    yield make
+    for srv in servers:
+        srv.shutdown()
+        srv.server_close()
+
+
+def post(srv, payload):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{srv.server_address[1]}/v1/chat/completions", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    return urllib.request.urlopen(req, timeout=20)
+
+
+def post_error(srv, payload):
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        post(srv, payload)
+    return ei.value.code, json.loads(ei.value.read())
+
+
+READ_CALL = '{"tool_calls":[{"name":"fileops","arguments":{"operation":"read","path":"a.txt"}}]}'
+REQ = {"model": "haiku", "messages": [{"role": "user", "content": "read a.txt"}], "tools": [FILEOPS, ECHO],
+       "tool_choice": "auto"}
+
+
+def test_handler_tool_call_non_stream(make_srv):
+    runner = Script(READ_CALL)
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        body = json.load(r)
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    (call,) = choice["message"]["tool_calls"]
+    assert call["function"]["name"] == "fileops" and call["id"].startswith("call_")
+    assert json.loads(call["function"]["arguments"]) == {"operation": "read", "path": "a.txt"}
+    assert "[Tools]" in runner.calls[0]["prompt"]
+
+
+def test_handler_tool_call_stream(make_srv):
+    srv = make_srv(Script(READ_CALL))
+    with post(srv, {**REQ, "stream": True}) as r:
+        assert r.headers["Content-Type"] == "text/event-stream"
+        events = [b"data: " + ln[len(b"data: "):] + b"\n\n" for ln in r.read().splitlines()
+                  if ln.startswith(b"data: ")]
+    assert len(events) == 3
+    chunks = _sse_chunks(events)
+    assert chunks[0].tool_calls[0].function["name"] == "fileops"
+    assert chunks[-1].finish_reason == "tool_calls"
+
+
+def test_handler_prose_under_auto_is_content(make_srv):
+    runner = Script("Hello, nothing to do.")
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        body = json.load(r)
+    assert body["choices"][0]["message"] == {"role": "assistant", "content": "Hello, nothing to do."}
+    assert body["choices"][0]["finish_reason"] == "stop"
+    assert len(runner.calls) == 1
+
+
+def test_handler_tool_choice_none_is_todays_path(make_srv):
+    runner = Script("ok", "ok")
+    srv = make_srv(runner)
+    plain = {"model": "haiku", "stream": True, "messages": [{"role": "user", "content": "say ok"}]}
+    with post(srv, plain) as r:
+        a = r.read()
+    with post(srv, {**plain, "tools": [FILEOPS], "tool_choice": "none"}) as r:
+        b = r.read()
+
+    def mask(raw):
+        out = []
+        for ln in raw.splitlines():
+            if ln.startswith(b"data: {"):
+                d = json.loads(ln[6:])
+                d["id"], d["created"] = "X", 0
+                ln = b"data: " + json.dumps(d).encode()
+            out.append(ln)
+        return out
+    assert mask(a) == mask(b)
+    assert runner.calls[0]["prompt"] == runner.calls[1]["prompt"] == "say ok"
+
+
+def test_handler_bad_tools_is_400_without_cli_call(make_srv):
+    runner = Script()
+    srv = make_srv(runner)
+    code, body = post_error(srv, {**REQ, "tools": [{"type": "function", "function": {"name": "a b"}}]})
+    assert code == 400 and body["error"]["type"] == "invalid_request_error"
+    assert runner.calls == []
+
+
+def test_handler_prompt_too_large_is_413(make_srv, monkeypatch):
+    monkeypatch.setattr(gw, "MAX_PROMPT_CHARS", 3000)
+    runner = Script()
+    srv = make_srv(runner)
+    code, _ = post_error(srv, {**REQ, "messages": [{"role": "user", "content": "x" * 5000}]})
+    assert code == 413 and runner.calls == []
+
+
+def test_handler_log_has_counts_only(make_srv, capsys):
+    srv = make_srv(Script(READ_CALL))
+    post(srv, REQ).read()
+    err = ""
+    for _ in range(100):  # the log line is written right after the response
+        err += capsys.readouterr().err
+        if "status=" in err:
+            break
+        time.sleep(0.02)
+    assert "tools=2 calls=1 retry=0" in err
+    assert "a.txt" not in err and "read a.txt" not in err

@@ -625,7 +625,27 @@ def _openai_usage(usage: dict[str, Any]) -> dict[str, int]:
     return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
 
 
-def completion_body(text: str, model: str, usage: dict[str, Any]) -> dict[str, Any]:
+def sum_usage(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    """Add up the numeric CLI usage counters of two attempts."""
+    out = dict(a or {})
+    for key, value in (b or {}).items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            old = out.get(key, 0)
+            out[key] = (old if isinstance(old, (int, float)) and not isinstance(old, bool) else 0) + value
+    return out
+
+
+def openai_tool_calls(calls: list[tuple[str, dict]]) -> list[dict[str, Any]]:
+    """OpenAI tool_calls with fresh gateway ids (ids offered by the model are never used)."""
+    return [{"id": "call_" + uuid.uuid4().hex[:24], "type": "function",
+             "function": {"name": name, "arguments": json.dumps(args)}} for name, args in calls]
+
+
+def completion_body(text: str | None, model: str, usage: dict[str, Any],
+                    tool_calls: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": "assistant", "content": text}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     return {
         "id": "chatcmpl-" + uuid.uuid4().hex,
         "object": "chat.completion",
@@ -633,16 +653,18 @@ def completion_body(text: str, model: str, usage: dict[str, Any]) -> dict[str, A
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": text},
-            "finish_reason": "stop",
+            "message": message,
+            "finish_reason": "tool_calls" if tool_calls else "stop",
         }],
         "usage": _openai_usage(usage),
     }
 
 
-def sse_events(text: str, model: str) -> list[bytes]:
-    """SSE chunks rex can parse: role+content chunk, stop chunk, [DONE].
+def sse_events(text: str | None, model: str, tool_calls: list[dict[str, Any]] | None = None) -> list[bytes]:
+    """SSE chunks rex can parse: role+content chunk, finish chunk, [DONE].
 
+    With tool calls the first chunk also carries every call complete (index, id, type, name and
+    the full arguments string) and the finish reason is "tool_calls"; otherwise it is "stop".
     rex ignores unknown chunk fields; these chunks carry only
     id/object/created/model/choices.
     """
@@ -654,11 +676,45 @@ def sse_events(text: str, model: str) -> list[bytes]:
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
         return b"data: " + json.dumps(body).encode("utf-8") + b"\n\n"
 
+    first: dict[str, Any] = {"role": "assistant", "content": text}
+    if tool_calls:
+        first["tool_calls"] = [{"index": i, **call} for i, call in enumerate(tool_calls)]
     return [
-        chunk({"role": "assistant", "content": text}, None),
-        chunk({}, "stop"),
+        chunk(first, None),
+        chunk({}, "tool_calls" if tool_calls else "stop"),
         b"data: [DONE]\n\n",
     ]
+
+
+def interpret_reply(result: dict[str, Any], spec: ToolSpec) -> tuple[str | None, list[tuple[str, dict]]]:
+    """(content, calls) from one CLI result in tool mode; raises ProtocolError for a bad reply.
+
+    A reply that does not start with '{' is plain content, accepted only under tool_choice auto.
+    """
+    text = str(result.get("text") or "")
+    envelope = parse_envelope(text)
+    if envelope is None:
+        if not text.strip():
+            raise ProtocolError("empty reply: give tool_calls or content")
+        if spec.choice != "auto":
+            raise ProtocolError("the reply must be the JSON envelope with a tool call")
+        return text, []
+    return validate_envelope(envelope, spec)
+
+
+def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout: float,
+                  spec: ToolSpec) -> dict[str, Any]:
+    """One tool-mode request: run the CLI, then parse and validate its reply.
+
+    Returns {"content", "calls", "usage", "retries"}. A broken reply raises GatewayError 502
+    tool_protocol_error; nothing half-valid is passed on.
+    """
+    result = runner(prompt, model, claude_bin, timeout)
+    try:
+        content, calls = interpret_reply(result, spec)
+    except ProtocolError as exc:
+        raise GatewayError(502, f"the model broke the tool protocol: {exc}", "tool_protocol_error") from None
+    return {"content": content, "calls": calls, "usage": result.get("usage") or {}, "retries": 0}
 
 
 def error_body(message: str, err_type: str) -> dict[str, Any]:
@@ -693,9 +749,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # default access log is replaced by _log (no bodies, no headers)
 
-    def _log(self, model: str, started: float, status: int) -> None:
+    def _log(self, model: str, started: float, status: int, extra: str = "") -> None:
         ms = (time.monotonic() - started) * 1000
-        sys.stderr.write(f"{self.command} {self.path} model={model or '-'} {ms:.0f}ms status={status}\n")
+        tail = f" {extra}" if extra else ""
+        sys.stderr.write(f"{self.command} {self.path} model={model or '-'} {ms:.0f}ms status={status}{tail}\n")
 
     def _send_json(self, status: int, body: dict[str, Any]) -> None:
         data = json.dumps(body).encode("utf-8")
@@ -751,6 +808,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?", 1)[0].rstrip("/")
         model = ""
+        spec: ToolSpec | None = None
+        turn: dict[str, Any] = {}
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._send_json(404, error_body("not found", "not_found"))
             self._log(model, started, 404)
@@ -775,26 +834,37 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if not valid_model(model):
                 raise GatewayError(400, f"unknown model '{model}' (use haiku/sonnet/opus or a claude-* id)",
                                    "invalid_request_error")
-            prompt = flatten_messages(req["messages"])
-            if not prompt.strip():
-                raise GatewayError(400, "no text in messages", "invalid_request_error")
+            spec = tool_spec(req)
+            if spec is None:  # plain chat path, unchanged
+                prompt = flatten_messages(req["messages"])
+                if not prompt.strip():
+                    raise GatewayError(400, "no text in messages", "invalid_request_error")
+            else:
+                prompt = render_tool_prompt(req["messages"], spec)
             slots = self.server.slots
             if not slots.acquire(timeout=self.server.timeout):
                 raise GatewayError(503, "too many concurrent requests; try again later", "overloaded")
             try:
-                result = self.server.runner(prompt, model, self.server.claude_bin, self.server.timeout)
+                if spec is None:
+                    result = self.server.runner(prompt, model, self.server.claude_bin, self.server.timeout)
+                    text, usage, calls = result["text"], result["usage"], None
+                else:
+                    turn = run_tool_turn(self.server.runner, prompt, model, self.server.claude_bin,
+                                         self.server.timeout, spec)
+                    text, usage = turn["content"], turn["usage"]
+                    calls = openai_tool_calls(turn["calls"]) or None
             finally:
                 slots.release()
         except GatewayError as exc:
             self._send_json(exc.status, error_body(exc.message, exc.err_type))
-            self._log(model, started, exc.status)
+            self._log(model, started, exc.status, self._tool_log(spec, turn))
             return
         except Exception as exc:  # never leave the client without an answer
             try:
                 self._send_json(500, error_body(f"internal error: {exc.__class__.__name__}", "internal_error"))
             except OSError:
                 pass
-            self._log(model, started, 500)
+            self._log(model, started, 500, self._tool_log(spec, turn))
             return
 
         if req.get("stream"):
@@ -804,15 +874,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             try:
-                for event in sse_events(result["text"], model):
+                for event in sse_events(text, model, calls):
                     self.wfile.write(event)
                 self.wfile.flush()
             except OSError:
                 pass  # client went away
             self.close_connection = True
         else:
-            self._send_json(200, completion_body(result["text"], model, result["usage"]))
-        self._log(model, started, 200)
+            self._send_json(200, completion_body(text, model, usage, calls))
+        self._log(model, started, 200, self._tool_log(spec, turn))
+
+    @staticmethod
+    def _tool_log(spec: ToolSpec | None, turn: dict[str, Any]) -> str:
+        """Counts only (never prompt or argument text): tools=N calls=K retry=0/1."""
+        if spec is None:
+            return ""
+        return f"tools={len(spec.tools)} calls={len(turn.get('calls') or [])} retry={turn.get('retries', 0)}"
 
 
 class GatewayServer(ThreadingHTTPServer):

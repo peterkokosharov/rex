@@ -105,7 +105,7 @@ def test_models_lists_aliases(server):
 
 def test_chat_completion_non_stream(server):
     with _post(server, {"model": "sonnet", "messages": [{"role": "user", "content": "say ok"}],
-                        "tools": [{"type": "function", "function": {"name": "x"}}]}) as r:
+                        "tools": [{"type": "function", "function": {"name": "x"}}], "tool_choice": "none"}) as r:
         body = json.load(r)
     assert body["object"] == "chat.completion"
     msg = body["choices"][0]["message"]
