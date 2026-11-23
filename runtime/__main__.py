@@ -134,12 +134,13 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         import json
         if not args:
             print("Текуща конфигурация:")
-            print(json.dumps(config.to_dict(), indent=2, ensure_ascii=False))
+            print(json.dumps(config.to_safe_dict(), indent=2, ensure_ascii=False))
             return 0
 
         if "show" in args:
             key = args["show"]
-            value = config.get(key)
+            from runtimelib.config.config import mask_value
+            value = mask_value(key, config.get(key))
             print(f"{key} = {json.dumps(value, ensure_ascii=False)}")
             return 0
 
@@ -152,7 +153,8 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
                         parsed = json.loads(value)
                     except json.JSONDecodeError:
                         parsed = value
-                    print(f"Ще зададе {key} = {parsed} (само за тази сесия)")
+                    from runtimelib.config.config import mask_value
+                    print(f"Ще зададе {key} = {mask_value(key, parsed)} (само за тази сесия)")
             return 0
 
         return 0

@@ -151,11 +151,52 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         return dict(self._data)
 
+    def to_safe_dict(self) -> dict[str, Any]:
+        """Deep copy for display with secret values masked."""
+        return mask_secrets(self._data)
+
     def save(self, path: Optional[Path] = None) -> None:
         """Save config to YAML file."""
         path = path or DEFAULT_CONFIG_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         yaml_lite.save(path, self._data)
+
+
+SECRET_WORDS = {"key", "apikey", "token", "secret", "password", "passwd", "credential", "credentials"}
+MASK = "***"
+
+
+def is_secret_key(name: str) -> bool:
+    """True for config keys whose values must never be printed.
+
+    ``api_key``, ``apiKey``, ``auth_token``, ``client_secret`` match;
+    ``max_tokens`` and ``keep_recent`` do not.
+    """
+    import re as _re
+    snake = _re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name)).lower().replace("-", "_")
+    words = [w for w in snake.split("_") if w]
+    if not words:
+        return False
+    return words[-1] in SECRET_WORDS or "secret" in words or "password" in words
+
+
+def mask_value(key: str, value: Any) -> Any:
+    """Mask ``value`` when ``key`` (dot path or leaf name) names a secret."""
+    leaf = str(key).rsplit(".", 1)[-1]
+    if isinstance(value, (dict, list)):
+        return mask_secrets(value)
+    if is_secret_key(leaf) and value not in (None, ""):
+        return MASK
+    return value
+
+
+def mask_secrets(data: Any) -> Any:
+    """Return a deep copy of ``data`` with secret-looking values masked."""
+    if isinstance(data, dict):
+        return {k: mask_value(k, v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [mask_secrets(v) for v in data]
+    return data
 
 
 def get_config() -> Config:
