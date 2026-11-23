@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,19 +19,24 @@ class TestFileOpsNative(unittest.TestCase):
         self.tool = FileOpsTool(self.cfg)
 
     def test_grep_and_glob(self):
+        # Local fileops are confined to the workspace (cwd), so run inside it.
+        old_cwd = os.getcwd()
+        self.addCleanup(os.chdir, old_cwd)
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            os.chdir(root)
             (root / "a.txt").write_text("hello world\nbye\n", encoding="utf-8")
             (root / "sub").mkdir()
             (root / "sub" / "b.py").write_text("print('hello')\n", encoding="utf-8")
 
-            g = self.tool.execute(operation="grep", pattern="hello", path=str(root))
+            g = self.tool.execute(operation="grep", pattern="hello", path=".")
             texts = [m["text"] for m in g["matches"]]
             self.assertTrue(any("hello world" in t for t in texts))
             self.assertTrue(any("print('hello')" in t for t in texts))
 
-            gl = self.tool.execute(operation="glob", pattern="**/*.py", root=str(root))
+            gl = self.tool.execute(operation="glob", pattern="**/*.py", root=".")
             self.assertTrue(any(p.endswith("b.py") for p in gl["matches"]))
+            os.chdir(old_cwd)
 
 
 class TestSSEParseNative(unittest.TestCase):

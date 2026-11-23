@@ -108,7 +108,10 @@ def grep(root: str, pattern: str, include: str | None = None, exclude: str | Non
 
 
 def glob(root: str, pattern: str) -> list[str]:
-    if not NATIVE_AVAILABLE:
+    # The native helper only matches direct children for patterns without
+    # '**', so 'src/*.py' found nothing. Such patterns use the Python path.
+    nested = ('/' in pattern or os.sep in pattern) and '**' not in pattern
+    if not NATIVE_AVAILABLE or nested:
         return _fallback.glob(root, pattern)
     ptr = _lib.rex_glob(root.encode("utf-8"), pattern.encode("utf-8"))
     raw = _str(ptr)

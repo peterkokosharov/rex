@@ -71,6 +71,10 @@ def glob(root: str, pattern: str) -> list[str]:
                 tail = pattern.rsplit("/", 1)[-1]
                 if _glob.fnmatch.fnmatch(rel, pattern) or _glob.fnmatch.fnmatch(base, pattern) or _glob.fnmatch.fnmatch(base, tail):
                     matches.append(p)
+    elif '/' in pattern or os.sep in pattern:
+        # Directory part without '**' (e.g. 'src/*.py'): match per path segment.
+        for p in _glob.glob(pattern, root_dir=root):
+            matches.append(os.path.join(root, p))
     else:
         for name in os.listdir(root):
             p = os.path.join(root, name)

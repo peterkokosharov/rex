@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .base import Tool, ToolSchema
@@ -119,83 +120,145 @@ class FileOpsTool(Tool):
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
+    def _workspace_root(self) -> Path:
+        """Root that local file operations may not leave (the current directory)."""
+        return Path.cwd().resolve()
+
     def _exec_local(self, operation: str, **kwargs: Any) -> Any:
-        import glob as globmod
+        """Run a file operation on the host, confined to the workspace root.
+
+        Every path is resolved against the workspace root (cwd). Absolute
+        paths and anything that resolves outside the root, including through
+        ``..`` or symlinks, are rejected. Results of list/glob/grep are filtered
+        with the same check.
+        """
+        import fnmatch
         import os
-        from pathlib import Path
+        import re
+
+        root = self._workspace_root()
 
         if operation == "read":
-            path = kwargs["path"]
+            path = resolve_in_workspace(kwargs["path"], root)
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 return f.read()
         if operation == "write":
-            path = kwargs["path"]
+            path = resolve_in_workspace(kwargs["path"], root)
             content = kwargs.get("content", "")
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
-            return {"ok": True, "path": path}
+            return {"ok": True, "path": kwargs["path"]}
         if operation == "edit":
-            path = kwargs["path"]
+            path = resolve_in_workspace(kwargs["path"], root)
             old_str = kwargs["old_str"]
             new_str = kwargs["new_str"]
             replace_all = kwargs.get("replace_all", False)
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 s = f.read()
             if old_str not in s:
-                raise ValueError(f"old_str not found in {path}")
+                raise ValueError(f"old_str not found in {kwargs['path']}")
             s = s.replace(old_str, new_str) if replace_all else s.replace(old_str, new_str, 1)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(s)
-            return {"ok": True, "path": path}
+            return {"ok": True, "path": kwargs["path"]}
         if operation == "list":
-            path = kwargs.get("path", ".")
+            p = resolve_in_workspace(kwargs.get("path", "."), root)
             recursive = kwargs.get("recursive", False)
-            p = Path(path)
-            if recursive:
-                files = [str(x) for x in p.rglob("*")]
-            else:
-                files = [str(x) for x in p.iterdir()]
-            return {"files": sorted(files)}
+            items = p.rglob("*") if recursive else p.iterdir()
+            return {"files": sorted(_inside(items, root))}
         if operation == "glob":
             pattern = kwargs["pattern"]
-            root = kwargs.get("root", ".")
+            _check_pattern(pattern)
+            base = resolve_in_workspace(kwargs.get("root", "."), root)
+            from ..native import glob as native_glob
             try:
-                from ..native import glob as native_glob
-                return {"matches": native_glob(root, pattern)}
+                found = native_glob(str(base), pattern)
             except Exception:
-                pass
-            matches = globmod.glob(os.path.join(root, pattern), recursive=True)
-            return {"matches": sorted(matches)}
+                found = []
+            return {"matches": sorted(_inside(found, root))}
         if operation == "grep":
-            import re
             pattern = kwargs["pattern"]
-            path = kwargs.get("path", ".")
+            base = resolve_in_workspace(kwargs.get("path", "."), root)
             include = kwargs.get("include")
             exclude = kwargs.get("exclude")
             rx = re.compile(pattern)
-            try:
-                from ..native import grep as native_grep
-                return {"matches": native_grep(path, pattern, include=include, exclude=exclude, max_matches=200)}
-            except Exception:
-                pass
             matches = []
-            for dirpath, _, fnames in os.walk(path):
+            for dirpath, _, fnames in os.walk(base):
                 for fn in fnames:
-                    fp = os.path.join(dirpath, fn)
-                    if include and not globmod.fnmatch.fnmatch(fn, include):
+                    if include and not fnmatch.fnmatch(fn, include):
                         continue
-                    if exclude and globmod.fnmatch.fnmatch(fn, exclude):
+                    if exclude and fnmatch.fnmatch(fn, exclude):
+                        continue
+                    fp = Path(dirpath) / fn
+                    rel = _relative_inside(fp, root)
+                    if rel is None:  # symlink pointing outside the workspace
                         continue
                     try:
                         with open(fp, "r", encoding="utf-8", errors="replace") as f:
                             for i, line in enumerate(f, 1):
                                 if rx.search(line):
-                                    matches.append({"path": fp, "line": i, "text": line.rstrip("\n")[:300]})
-                    except Exception:
+                                    matches.append({"path": rel, "line": i, "text": line.rstrip("\n")[:300]})
+                                    if len(matches) >= 200:
+                                        return {"matches": matches}
+                    except OSError:
                         pass
-            return {"matches": matches[:200]}
+            return {"matches": matches}
         raise ValueError(f"Unknown operation: {operation}")
+
+
+def _is_absolute_like(raw: str) -> bool:
+    """Absolute on this OS or on the other one (``/etc``, ``C:\\x``, ``\\\\host``)."""
+    return (
+        Path(raw).is_absolute()
+        or PurePosixPath(raw).is_absolute()
+        or bool(PureWindowsPath(raw).drive)
+        or PureWindowsPath(raw).root != ""
+    )
+
+
+def resolve_in_workspace(raw: Any, root: Path) -> Path:
+    """Resolve ``raw`` inside ``root`` or raise PermissionError."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("path must be a non-empty string")
+    if "\x00" in raw:
+        raise PermissionError("path contains a NUL byte")
+    if _is_absolute_like(raw) or raw.startswith("~"):
+        raise PermissionError(f"absolute paths are not allowed: {raw}")
+    resolved = (root / raw).resolve()
+    if not resolved.is_relative_to(root):
+        raise PermissionError(f"path is outside the workspace: {raw}")
+    return resolved
+
+
+def _check_pattern(pattern: Any) -> None:
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError("pattern must be a non-empty string")
+    if _is_absolute_like(pattern) or pattern.startswith("~"):
+        raise PermissionError(f"absolute glob patterns are not allowed: {pattern}")
+
+
+def _relative_inside(path: Any, root: Path) -> str | None:
+    """Workspace-relative POSIX path, or None when it resolves outside ``root``."""
+    p = Path(path)
+    if not p.is_absolute():
+        p = root / p
+    try:
+        resolved = p.resolve()
+    except OSError:
+        return None
+    if not resolved.is_relative_to(root):
+        return None
+    return resolved.relative_to(root).as_posix() or "."
+
+
+def _inside(paths: Any, root: Path) -> list[str]:
+    out = []
+    for item in paths:
+        rel = _relative_inside(item, root)
+        if rel is not None:
+            out.append(rel)
+    return out
 
 
 def create_fileops_tool(config: Config | None = None) -> FileOpsTool:
