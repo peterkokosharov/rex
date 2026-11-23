@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-sonnet-5-5
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Tests for the JSON-lines stdio bridge used by the C++ Turbo Vision UI."""
@@ -177,8 +177,44 @@ def test_stop_interrupts_a_running_request():
         factory=lambda b: SlowLoop(b),
     )
     assert bridge.loop.messages == ["long task"]
+    assert bridge.loop.stopped in (1, 2)  # stop, and bye if it lands while the request runs
+    assert [e["text"] for e in events if e["type"] == "final"] == ["interrupted"]
+
+
+def test_bye_during_request_interrupts_and_closes_asker():
+    import threading
+
+    running = threading.Event()
+
+    class SlowLoop(FakeLoop):
+        def __init__(self, bridge):
+            super().__init__(bridge)
+            self.released = threading.Event()
+
+        def interrupt(self):
+            super().interrupt()
+            self.released.set()
+
+        def run(self, prompt):
+            running.set()
+            self.released.wait(5)
+            return "interrupted" if self.released.is_set() else "timed out"
+
+    stream, out = PipeStream(), WaitOut()
+    bridge = JsonlBridge(_config(), loop_factory=lambda b: SlowLoop(b), stream=stream, out=out)
+    thread = threading.Thread(target=bridge.run)
+    thread.start()
+    stream.feed({"type": "chat", "text": "long task"})
+    assert running.wait(5)
+    stream.feed({"type": "bye"})
+    thread.join(10)
+    assert not thread.is_alive()
+    events = out.lines
     assert bridge.loop.stopped == 1
     assert [e["text"] for e in events if e["type"] == "final"] == ["interrupted"]
+    request = PermissionRequest(id="perm-9", tool="bash", kind="exec", summary="s")
+    assert bridge.asker.ask(request) == "deny"  # closed: denied at once
+    assert not any(e["type"] == "permission" for e in events)
 
 
 def test_malformed_line_emits_error():
@@ -380,6 +416,34 @@ def test_gate_with_jsonl_asker_denies_and_allows():
         t.join(5)
         assert result["d"].allowed is allowed
         assert result["d"].source == "user"
+
+
+def test_asker_denies_at_once_after_interrupt():
+    class InterruptedLoop(FakeLoop):
+        def interrupt_requested(self):
+            return True
+
+    out = WaitOut()
+    bridge = JsonlBridge(_config(), loop_factory=lambda b: InterruptedLoop(b), stream=PipeStream(), out=out)
+    bridge._ensure_loop()
+    request = PermissionRequest(id="perm-1", tool="bash", kind="exec", summary="s")
+    assert bridge.asker.ask(request) == "deny"
+    assert out.lines == []  # no permission event: nobody is asked after a stop
+    assert bridge.asker._pending == {}
+
+
+def test_terminal_asker_ctrl_c_denies_and_interrupts():
+    from runtime.__main__ import TerminalAsker
+
+    hits = []
+
+    def fake_input(prompt):
+        raise KeyboardInterrupt
+
+    asker = TerminalAsker(input_fn=fake_input, out=io.StringIO(), on_interrupt=lambda: hits.append(1))
+    request = PermissionRequest(id="perm-1", tool="bash", kind="exec", summary="run ls", detail="ls")
+    assert asker.ask(request) == "deny"
+    assert hits == [1]
 
 
 def test_terminal_asker_answers():

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-sonnet-5-5
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """JSON-lines stdio bridge for external UIs (the C++ Turbo Vision front-end).
@@ -42,8 +42,9 @@ and blocks the loop until the UI answers with ``permission_reply`` (same
 ``id``). The reply is read by the reader thread, so it works while ``chat`` is
 running. Anything but ``allow_once`` / ``allow_always`` is a deny. ``stop``,
 ``bye``, a closed stdin, or no answer within ``permissions.ask_timeout``
-seconds (default 300) deny every open question; ``stop`` also interrupts the
-loop.
+seconds (default 300) deny every open question; ``stop`` (and ``bye`` during a
+request) also interrupts the loop. A question asked after the loop was
+interrupted is denied at once, without a ``permission`` event.
 """
 
 from __future__ import annotations
@@ -71,6 +72,13 @@ class JsonlAsker:
         self._pending: dict[str, list[Any]] = {}  # id -> [event, decision]
         self._closed = False
 
+    def _interrupted(self) -> bool:
+        check = getattr(self.bridge.loop, "interrupt_requested", None)
+        try:
+            return bool(check()) if callable(check) else False
+        except Exception:
+            return False
+
     def ask(self, request: PermissionRequest) -> str:
         slot: list[Any] = [threading.Event(), DENY]
         with self._lock:
@@ -78,6 +86,10 @@ class JsonlAsker:
                 return DENY
             self._pending[request.id] = slot
         try:
+            # Checked after the slot is registered: a stop that lands before this
+            # check is seen here, one that lands after it denies the slot.
+            if self._interrupted():
+                return DENY
             self.bridge.emit(
                 "permission",
                 id=request.id,
@@ -140,6 +152,7 @@ class JsonlBridge:
         self.loop: Any = None
         self.tokens: list[str] = []
         self._pending_context: Optional[dict] = None
+        self._busy = False  # a chat request is running
         try:
             timeout = float(config.get("permissions.ask_timeout", DEFAULT_ASK_TIMEOUT))
         except (TypeError, ValueError):
@@ -229,15 +242,21 @@ class JsonlBridge:
                         sys.stderr.write(f"rex: unknown permission id: {item.get('id')!r}\n")
                     continue
                 if item.get("type") == "bye":
-                    self.asker.deny_all()
+                    # Interrupt first, then deny: a question asked in between
+                    # sees the interrupt (see JsonlAsker.ask).
+                    loop = self.loop
+                    if self._busy and loop is not None and hasattr(loop, "interrupt"):
+                        loop.interrupt()
+                    self.asker.deny_all(closed=True)
                 # Stop must reach the running request immediately, not after
                 # it finishes: the main thread is blocked inside loop.run().
                 if item.get("type") == "stop":
-                    self.asker.deny_all()
                     loop = self.loop
                     if loop is not None and hasattr(loop, "interrupt"):
                         loop.interrupt()
+                        self.asker.deny_all()
                     else:
+                        self.asker.deny_all()
                         self._queue.put(item)
                     continue
                 self._queue.put(item)
@@ -256,12 +275,16 @@ class JsonlBridge:
             return
         self.tokens = []
         self._pending_context = None
+        loop = self._ensure_loop()
+        self._busy = True
         try:
-            response = self._ensure_loop().run(text)
+            response = loop.run(text)
         except Exception as exc:  # protocol must never die on one bad request
             self._pending_context = None
             self.emit("error", message=str(exc))
             return
+        finally:
+            self._busy = False
         self.emit("final", text=response or "".join(self.tokens))
         self._flush_context()
 

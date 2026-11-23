@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-sonnet-5-5
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Runtime CLI entry point."""
@@ -125,13 +125,27 @@ def main() -> int:
 class TerminalAsker:
     """REPL asker: shows the pending tool call on stderr and reads y / a / n.
 
-    Anything but an explicit yes (empty line, EOF, Ctrl+C) is a deny. One-shot
-    runs do not use it: they keep the gate's default asker, which denies.
+    Anything but an explicit yes (empty line, EOF, Ctrl+C) is a deny. Ctrl+C
+    also stops the running request (``on_interrupt``). One-shot runs do not use
+    it: they keep the gate's default asker, which denies.
     """
 
-    def __init__(self, input_fn: Any = None, out: Any = None) -> None:
+    def __init__(self, input_fn: Any = None, out: Any = None, on_interrupt: Any = None) -> None:
         self._input = input_fn or input
         self._out = out if out is not None else sys.stderr
+        self._on_interrupt = on_interrupt
+
+    def _read(self, prompt: str) -> str:
+        """Read the answer; Ctrl+C raises KeyboardInterrupt even under the loop's SIGINT handler."""
+        import signal
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            return self._input(prompt)
+        previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+        try:
+            return self._input(prompt)
+        finally:
+            signal.signal(signal.SIGINT, previous)
 
     def ask(self, request: Any) -> str:
         print(f"\nPermission needed: {request.tool}: {request.summary}", file=self._out)
@@ -140,9 +154,17 @@ class TerminalAsker:
         if request.reason:
             print(f"({request.reason})", file=self._out)
         try:
-            answer = self._input("Allow? [y] once  [a] always  [N] deny: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+            answer = self._read("Allow? [y] once  [a] always  [N] deny: ").strip().lower()
+        except EOFError:
             print("", file=self._out)
+            return "deny"
+        except KeyboardInterrupt:
+            print("", file=self._out)
+            if callable(self._on_interrupt):
+                try:
+                    self._on_interrupt()
+                except Exception:
+                    pass
             return "deny"
         if answer in ("y", "yes"):
             return "allow_once"
@@ -152,6 +174,13 @@ class TerminalAsker:
 
 
 _ASKER: Any = None  # set by run_interactive; None = deny (one-shot)
+
+
+def _interrupt_repl_loop() -> None:
+    """Stop the request of the current REPL loop (used by the asker on Ctrl+C)."""
+    loop = _REPL_LOOP
+    if loop is not None and hasattr(loop, "interrupt"):
+        loop.interrupt()
 _LAST_CONTEXT: dict[str, Any] = {}
 _DEFAULT_WINDOW_HINTED: set[str] = set()
 
@@ -474,7 +503,7 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
     from runtimelib.cli import ansi
 
     global _ASKER
-    _ASKER = TerminalAsker()
+    _ASKER = TerminalAsker(on_interrupt=_interrupt_repl_loop)
     history_file = Path.home() / ".config" / "runtime" / "history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
     history = HistoryManager(history_file)

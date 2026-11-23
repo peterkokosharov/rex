@@ -261,6 +261,10 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             role=self.role, metadata={"error": "Interrupted by user"})
         print("\n[Прекъснато]", file=sys.stderr)
 
+    def interrupt_requested(self) -> bool:
+        """True once ``interrupt()`` was called for the current request."""
+        return self._interrupt_event.is_set()
+
     def _handle_interrupt(self, signum: int, frame: Any) -> None:
         """Handle Ctrl+C interrupt."""
         self.interrupt()
@@ -535,6 +539,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             tool = self.tools.get(tool_name)
             args: dict[str, Any] = {}
             decision = None
+            cancelled = False
 
             if not tool:
                 result = ToolResult(
@@ -550,6 +555,11 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
                     # Gate first: a denied call never reaches execute().
                     decision = self.gate.check(tool_name, args, tool)
+                    # A stop while the gate waited (slow hook, open question)
+                    # cancels the call even if the gate said yes.
+                    cancelled = self._interrupt_event.is_set()
+                    if cancelled:
+                        raise _Cancelled()
 
                     # Add role and agent context (kept out of rules and hook payloads)
                     args["_role"] = self.role
@@ -583,6 +593,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                                 {**result_data, "hook_note": note} if isinstance(result_data, dict)
                                 else {"result": result_data, "hook_note": note}
                             )
+                except _Cancelled:
+                    result = None
                 except json.JSONDecodeError as e:
                     result = ToolResult(
                         tool_name=tool_name,
@@ -597,6 +609,14 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                     )
                     if args and decision is not None and decision.allowed:
                         self.gate.post(tool_name, args, False, result.error)
+
+            if cancelled:
+                self.state.interrupted = True
+                for rest in tool_calls[pos:]:
+                    self.state.messages.append(ChatMessage(
+                        role="tool", content=CANCELLED_RESULT, tool_call_id=rest.id,
+                    ))
+                break
 
             # Emit tool end hook
             self.hook_engine.trigger(HookEvent.POST_TOOL,
@@ -630,6 +650,10 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
     def _get_agent_state(self) -> "AgentState":
         """Get current agent state for checkpointing."""
         return self.state
+
+
+class _Cancelled(Exception):
+    """Internal: the user stopped the request while the gate was deciding."""
 
 
 def create_agent_loop(config: Optional[Config] = None, **kwargs) -> AgentLoop:

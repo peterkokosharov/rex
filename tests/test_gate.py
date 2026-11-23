@@ -258,6 +258,58 @@ class LoopGate(GateBase):
         res, _ = self.run_call(loop, "bash", {"command": "ls"})
         self.assertTrue(res.success)
 
+    def _slow_hook(self, decision: str) -> tuple[list[dict], Path]:
+        marker = self.dir / "hook-started"
+        script = self.script("slow.py", f"""
+            import json, sys, time
+            sys.stdin.read()
+            open({str(marker)!r}, 'w').close()
+            time.sleep(1.0)
+            print(json.dumps({{"decision": {decision!r}}}))
+        """)
+        return [{"command": script, "timeout": 10}], marker
+
+    def _stop_during_hook(self, loop, marker, calls):
+        import threading
+        import time
+        t = threading.Thread(target=loop._execute_tool_calls, args=(calls,))
+        t.start()
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(marker.exists())
+        loop.interrupt()
+        t.join(15)
+        self.assertFalse(t.is_alive())
+
+    def test_stop_during_slow_pre_hook_cancels_allowed_call(self):
+        from runtimelib.agent.context import CANCELLED_RESULT
+        tool = FakeTool("bash")
+        pre, marker = self._slow_hook("allow")
+        loop = self.make_loop(tool, self.gate("guard", pre=pre))
+        calls = [ToolCall(id=f"c{i}", type="function",
+                          function={"name": "bash", "arguments": '{"command": "ls"}'}) for i in (1, 2)]
+        self._stop_during_hook(loop, marker, calls)
+        self.assertEqual(tool.calls, [])  # the gate said yes, but the stop wins
+        self.assertTrue(loop.state.interrupted)
+        tail = loop.state.messages[-2:]
+        self.assertEqual([m.tool_call_id for m in tail], ["c1", "c2"])
+        self.assertTrue(all(m.content == CANCELLED_RESULT for m in tail))
+
+    def test_stop_during_slow_pre_hook_denies_question_without_asking(self):
+        import io
+        from runtimelib.cli.jsonl_bridge import JsonlBridge
+        tool = FakeTool("bash")
+        pre, marker = self._slow_hook("ask")
+        out = io.StringIO()
+        bridge = JsonlBridge(Config(dict(self.CFG)), loop_factory=lambda b: None, stream=io.StringIO(""), out=out)
+        loop = self.make_loop(tool, self.gate("guard", asker=bridge.asker, pre=pre))
+        bridge.loop = loop
+        calls = [ToolCall(id="c1", type="function", function={"name": "bash", "arguments": '{"command": "ls"}'})]
+        self._stop_during_hook(loop, marker, calls)
+        self.assertEqual(tool.calls, [])
+        self.assertNotIn('"permission"', out.getvalue())  # denied at once, never asked
+
     def test_mode_follows_local_toggle_on_live_loop(self):
         # /local on in the REPL flips the config key; the gate must follow at once.
         tool = FakeTool("bash")
