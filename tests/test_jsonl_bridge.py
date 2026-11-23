@@ -478,6 +478,20 @@ def test_terminal_asker_escapes_control_characters():
     assert "(r\\x00)" in text
 
 
+def test_one_shot_asker_needs_a_terminal():
+    from runtime.__main__ import TerminalAsker, one_shot_asker
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    assert isinstance(one_shot_asker(False, Tty(), Tty()), TerminalAsker)
+    assert one_shot_asker(True, Tty(), Tty()) is None          # --json: a script reads it
+    assert one_shot_asker(False, io.StringIO(), Tty()) is None  # piped stdin
+    assert one_shot_asker(False, Tty(), io.StringIO()) is None  # redirected stderr
+    assert one_shot_asker(False, object(), Tty()) is None       # no isatty at all
+
+
 def test_terminal_asker_answers():
     from runtime.__main__ import TerminalAsker
 

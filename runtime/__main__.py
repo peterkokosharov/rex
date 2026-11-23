@@ -117,6 +117,8 @@ def main() -> int:
             else:
                 print_shell_result(result)
             return result.exit_code
+        global _ASKER
+        _ASKER = one_shot_asker(bool(args.json))
         return registry.execute("chat", {"prompt": prompt})
 
     return run_interactive(registry, config)
@@ -140,8 +142,8 @@ class TerminalAsker:
     """REPL asker: shows the pending tool call on stderr and reads y / a / n.
 
     Anything but an explicit yes (empty line, EOF, Ctrl+C) is a deny. Ctrl+C
-    also stops the running request (``on_interrupt``). One-shot runs do not use
-    it: they keep the gate's default asker, which denies.
+    also stops the running request (``on_interrupt``). One-shot runs use it only
+    when stdin and stderr are a terminal (see :func:`one_shot_asker`).
     """
 
     def __init__(self, input_fn: Any = None, out: Any = None, on_interrupt: Any = None) -> None:
@@ -189,7 +191,27 @@ class TerminalAsker:
         return "deny"
 
 
-_ASKER: Any = None  # set by run_interactive; None = deny (one-shot)
+_ASKER: Any = None  # set by run_interactive / one_shot_asker; None = deny
+
+
+def _isatty(stream: Any) -> bool:
+    try:
+        return bool(stream is not None and stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def one_shot_asker(as_json: bool, stdin: Any = None, stderr: Any = None) -> Any:
+    """Asker for ``rex "prompt"``: the terminal when someone can answer, else None (deny).
+
+    Someone can answer when stdin and stderr are both a terminal and the
+    output is not ``--json`` (a script reads that).
+    """
+    stdin = sys.stdin if stdin is None else stdin
+    stderr = sys.stderr if stderr is None else stderr
+    if as_json or not (_isatty(stdin) and _isatty(stderr)):
+        return None
+    return TerminalAsker(on_interrupt=_interrupt_repl_loop)
 
 
 def _interrupt_repl_loop() -> None:

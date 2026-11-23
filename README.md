@@ -263,7 +263,9 @@ deny. `rule` is the matching rule text or `null`; `reason` may be empty; `detail
 is read while `chat` is running. `stop` (which also interrupts the request), `bye`, a closed stdin, or no answer within
 `permissions.ask_timeout` seconds (default 300) deny every open question; `bye` during a request also interrupts it.
 A reply with an unknown or already closed id gets `{"type":"error","message":"unknown permission id: <id>"}`. The
-interactive REPL asks on the terminal (`y` once, `a` always, anything else denies); one-shot runs deny every question.
+interactive REPL asks on the terminal (`y` once, `a` always, anything else denies). A one-shot `rex "prompt"` asks on
+the terminal too when stdin and stderr are both a terminal; with `--json`, or when either is redirected, it denies every
+question.
 
 `stop` interrupts the running request from the reader thread, so a Stop button works without waiting for the answer.
 Changing `model` updates the live loop; changing the workspace is done by starting rex in that directory (the UI passes
