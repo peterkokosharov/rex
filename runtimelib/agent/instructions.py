@@ -40,11 +40,11 @@ class Instructions:
         return "\n".join(parts)
 
 
-_FENCE = re.compile(r"^(?=(?:===|---))", re.MULTILINE)
+_FENCE = re.compile(r"^(?=[ \t]*(?:===|---))", re.MULTILINE)
 
 
 def _neutralise(text: str) -> str:
-    """Stop project text from faking section markers: lines starting with === or --- get a "> " prefix."""
+    """Stop project text from faking section markers: lines starting with === or --- (even indented) get a "> " prefix."""
     return _FENCE.sub("> ", text)
 
 
