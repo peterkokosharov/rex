@@ -249,6 +249,21 @@ Outgoing lines (rex → UI):
 {"type":"bye"}
 ```
 
+Permission questions (when the gate says "ask"; for example a write in sandbox mode or an `ask` rule) use two more messages.
+rex sends the question and waits; the UI must answer **every** `permission` exactly once, and a front-end that cannot
+show it must answer `deny`:
+
+```json
+{"type":"permission","id":"perm-1","tool":"bash","kind":"exec","summary":"run ls","detail":"ls -la","args":{"command":"ls -la"},"rule":null,"reason":""}
+{"type":"permission_reply","id":"perm-1","decision":"allow_once"}
+```
+
+`decision` is `allow_once`, `allow_always` (also stored as a per-workspace allow rule) or `deny`; any other value is a
+deny. `rule` is the matching rule text or `null`; `reason` may be empty; `detail` is capped at 20000 characters. The reply
+is read while `chat` is running. `stop` (which also interrupts the request), `bye`, a closed stdin, or no answer within
+`permissions.ask_timeout` seconds (default 300) deny every open question. A reply with an unknown id is ignored. The
+interactive REPL asks on the terminal (`y` once, `a` always, anything else denies); one-shot runs deny every question.
+
 `stop` interrupts the running request from the reader thread, so a Stop button works without waiting for the answer.
 Changing `model` updates the live loop; changing the workspace is done by starting rex in that directory (the UI passes
 it as the child process cwd). `--ui-jsonl` is an alias of `--jsonl`.

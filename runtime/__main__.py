@@ -122,6 +122,36 @@ def main() -> int:
     return run_interactive(registry, config)
 
 
+class TerminalAsker:
+    """REPL asker: shows the pending tool call on stderr and reads y / a / n.
+
+    Anything but an explicit yes (empty line, EOF, Ctrl+C) is a deny. One-shot
+    runs do not use it: they keep the gate's default asker, which denies.
+    """
+
+    def __init__(self, input_fn: Any = None, out: Any = None) -> None:
+        self._input = input_fn or input
+        self._out = out if out is not None else sys.stderr
+
+    def ask(self, request: Any) -> str:
+        print(f"\nPermission needed: {request.tool}: {request.summary}", file=self._out)
+        if request.detail:
+            print(request.detail, file=self._out)
+        if request.reason:
+            print(f"({request.reason})", file=self._out)
+        try:
+            answer = self._input("Allow? [y] once  [a] always  [N] deny: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("", file=self._out)
+            return "deny"
+        if answer in ("y", "yes"):
+            return "allow_once"
+        if answer in ("a", "always"):
+            return "allow_always"
+        return "deny"
+
+
+_ASKER: Any = None  # set by run_interactive; None = deny (one-shot)
 _LAST_CONTEXT: dict[str, Any] = {}
 _DEFAULT_WINDOW_HINTED: set[str] = set()
 
@@ -382,6 +412,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
                 on_token=on_token,
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
+                asker=_ASKER,
             )
             for loaded in getattr(_REPL_LOOP, "instruction_paths", None) or []:
                 print(f"instructions: {loaded}", file=sys.stderr)
@@ -442,6 +473,8 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
     """Run interactive REPL with readline support."""
     from runtimelib.cli import ansi
 
+    global _ASKER
+    _ASKER = TerminalAsker()
     history_file = Path.home() / ".config" / "runtime" / "history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
     history = HistoryManager(history_file)

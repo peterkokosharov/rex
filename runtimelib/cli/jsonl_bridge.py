@@ -12,10 +12,12 @@ Wire format, one JSON object per line:
                 {"type":"reset"}
                 {"type":"model","model":"..."}
                 {"type":"command","name":"model","value":"..."}
+                {"type":"permission_reply","id":"perm-1","decision":"allow_once|allow_always|deny"}
                 {"type":"stop"}
                 {"type":"bye"}
 
-    rex -> UI:  {"type":"ready","model":"...","instructions":[paths]}  (instructions only when AGENTS.md files were loaded)
+    rex -> UI:  {"type":"permission","id":"perm-1","tool":"...","kind":"...","summary":"...","detail":"...","args":{...},"rule":null,"reason":""}
+                {"type":"ready","model":"...","instructions":[paths]}  (instructions only when AGENTS.md files were loaded)
                 {"type":"token","text":"..."}
                 {"type":"tool_start","name":"...","args":{...}}
                 {"type":"tool_end","ok":true,"error":null}
@@ -34,6 +36,14 @@ Everything is written to stdout with an explicit flush, because the caller
 reads line by line from a pipe. Human-readable diagnostics stay on stderr.
 One AgentLoop lives for the whole session, so conversation context survives
 across ``chat`` messages and is cleared only by ``reset``.
+
+Permissions: when the gate must ask, :class:`JsonlAsker` emits ``permission``
+and blocks the loop until the UI answers with ``permission_reply`` (same
+``id``). The reply is read by the reader thread, so it works while ``chat`` is
+running. Anything but ``allow_once`` / ``allow_always`` is a deny. ``stop``,
+``bye``, a closed stdin, or no answer within ``permissions.ask_timeout``
+seconds (default 300) deny every open question; ``stop`` also interrupts the
+loop.
 """
 
 from __future__ import annotations
@@ -45,8 +55,70 @@ import threading
 from typing import Any, Callable, IO, Optional
 
 from ..agent import create_agent_loop
+from ..agent.gate import ALLOW_ALWAYS, ALLOW_ONCE, DENY, PermissionRequest
 
 Eof = object()
+DEFAULT_ASK_TIMEOUT = 300.0
+
+
+class JsonlAsker:
+    """Gate asker that asks the front-end over the JSONL bridge."""
+
+    def __init__(self, bridge: "JsonlBridge", timeout: float = DEFAULT_ASK_TIMEOUT) -> None:
+        self.bridge = bridge
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._pending: dict[str, list[Any]] = {}  # id -> [event, decision]
+        self._closed = False
+
+    def ask(self, request: PermissionRequest) -> str:
+        slot: list[Any] = [threading.Event(), DENY]
+        with self._lock:
+            if self._closed:
+                return DENY
+            self._pending[request.id] = slot
+        try:
+            self.bridge.emit(
+                "permission",
+                id=request.id,
+                tool=request.tool,
+                kind=request.kind,
+                summary=request.summary,
+                detail=request.detail,
+                args=request.args,
+                rule=request.rule,
+                reason=request.reason,
+            )
+            if not slot[0].wait(self.timeout):
+                return DENY
+            return slot[1]
+        finally:
+            with self._lock:
+                self._pending.pop(request.id, None)
+
+    def reply(self, request_id: Any, decision: Any) -> bool:
+        """Deliver an answer; returns False for an unknown or already answered id."""
+        with self._lock:
+            slot = self._pending.get(request_id) if isinstance(request_id, str) else None
+        if slot is None or slot[0].is_set():
+            return False
+        slot[1] = decision if decision in (ALLOW_ONCE, ALLOW_ALWAYS) else DENY
+        slot[0].set()
+        return True
+
+    def deny_all(self, closed: bool = False) -> None:
+        """Deny every open question (stop, bye, closed stdin).
+
+        ``closed`` marks stdin as gone: questions asked later are denied at once.
+        """
+        with self._lock:
+            if closed:
+                self._closed = True
+            slots = list(self._pending.values())
+        for slot in slots:
+            if not slot[0].is_set():
+                slot[1] = DENY
+                slot[0].set()
 
 
 class JsonlBridge:
@@ -68,10 +140,15 @@ class JsonlBridge:
         self.loop: Any = None
         self.tokens: list[str] = []
         self._pending_context: Optional[dict] = None
+        try:
+            timeout = float(config.get("permissions.ask_timeout", DEFAULT_ASK_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_ASK_TIMEOUT
+        self.asker = JsonlAsker(self, timeout if timeout > 0 else DEFAULT_ASK_TIMEOUT)
 
     # ---------- output ----------
 
-    def emit(self, kind: str, **fields: Any) -> None:
+    def emit(self, kind: str, /, **fields: Any) -> None:
         payload = {"type": kind}
         payload.update(fields)
         line = json.dumps(payload, ensure_ascii=False)
@@ -124,6 +201,9 @@ class JsonlBridge:
             self.loop = self._loop_factory(self)
             if hasattr(self.loop, "on_context"):
                 self.loop.on_context = self.on_context
+            gate = getattr(self.loop, "gate", None)
+            if gate is not None and hasattr(gate, "set_asker"):
+                gate.set_asker(self.asker)
         return self.loop
 
     # ---------- input ----------
@@ -142,9 +222,18 @@ class JsonlBridge:
                 if not isinstance(item, dict):
                     self._queue.put({"type": "_invalid", "message": "expected a JSON object"})
                     continue
+                # A reply must reach the blocked asker, so it never goes
+                # through the queue (the main thread is inside loop.run()).
+                if item.get("type") == "permission_reply":
+                    if not self.asker.reply(item.get("id"), item.get("decision")):
+                        sys.stderr.write(f"rex: unknown permission id: {item.get('id')!r}\n")
+                    continue
+                if item.get("type") == "bye":
+                    self.asker.deny_all()
                 # Stop must reach the running request immediately, not after
                 # it finishes: the main thread is blocked inside loop.run().
                 if item.get("type") == "stop":
+                    self.asker.deny_all()
                     loop = self.loop
                     if loop is not None and hasattr(loop, "interrupt"):
                         loop.interrupt()
@@ -155,6 +244,7 @@ class JsonlBridge:
         except (OSError, ValueError) as exc:
             self._queue.put({"type": "_invalid", "message": str(exc)})
         finally:
+            self.asker.deny_all(closed=True)
             self._queue.put(Eof)
 
     # ---------- commands ----------

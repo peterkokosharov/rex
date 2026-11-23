@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Tests for the JSON-lines stdio bridge used by the C++ Turbo Vision UI."""
@@ -230,3 +230,174 @@ def test_force_utf8_stdio_ignores_plain_streams(monkeypatch):
 
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     force_utf8_stdio()  # StringIO has no reconfigure: must not raise
+
+
+# ---------- permission asker ----------
+
+import queue
+import threading
+
+from runtimelib.agent.gate import PermissionRequest, PermissionGate
+from runtimelib.permissions.rules import PermissionRules
+
+
+class PipeStream:
+    """stdin stand-in: lines are fed from the test; None closes it."""
+
+    def __init__(self) -> None:
+        self._q: queue.Queue = queue.Queue()
+
+    def feed(self, obj) -> None:
+        self._q.put(json.dumps(obj) + "\n")
+
+    def close(self) -> None:
+        self._q.put(None)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = self._q.get(timeout=5)
+        if item is None:
+            raise StopIteration
+        return item
+
+
+class WaitOut:
+    """stdout stand-in that lets the test wait for a message type."""
+
+    def __init__(self) -> None:
+        self.lines: list[dict] = []
+        self._cv = threading.Condition()
+
+    def write(self, text: str) -> int:
+        for line in text.splitlines():
+            with self._cv:
+                self.lines.append(json.loads(line))
+                self._cv.notify_all()
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def wait_for(self, kind: str) -> dict:
+        with self._cv:
+            assert self._cv.wait_for(lambda: any(e["type"] == kind for e in self.lines), timeout=5)
+            return next(e for e in self.lines if e["type"] == kind)
+
+
+class AskingLoop(FakeLoop):
+    """Asks one question through the bridge asker (like the gate would)."""
+
+    def run(self, prompt: str) -> str:
+        request = PermissionRequest(
+            id="perm-1", tool="bash", kind="exec", summary="run ls", detail="ls -la",
+            args={"command": "ls -la"}, rule=None, reason="",
+        )
+        self.answer = self.bridge.asker.ask(request)
+        return f"answer={self.answer}"
+
+
+def _drive(replies, timeout_cfg=None, close_stdin=False, stop=False):
+    stream, out = PipeStream(), WaitOut()
+    cfg = _config()
+    if timeout_cfg is not None:
+        cfg.set("permissions.ask_timeout", timeout_cfg)
+    bridge = JsonlBridge(cfg, loop_factory=lambda b: AskingLoop(b), stream=stream, out=out)
+    thread = threading.Thread(target=bridge.run)
+    thread.start()
+    stream.feed({"type": "chat", "text": "go"})
+    permission = out.wait_for("permission")
+    for reply in replies:
+        stream.feed(reply)
+    if stop:
+        stream.feed({"type": "stop"})
+    if close_stdin:
+        stream.close()
+    else:
+        out.wait_for("final")
+        stream.feed({"type": "bye"})
+        stream.close()
+    thread.join(10)
+    assert not thread.is_alive()
+    return permission, bridge, out.lines
+
+
+def test_permission_round_trip_allow_once():
+    permission, bridge, events = _drive([{"type": "permission_reply", "id": "perm-1", "decision": "allow_once"}])
+    assert permission == {
+        "type": "permission", "id": "perm-1", "tool": "bash", "kind": "exec", "summary": "run ls",
+        "detail": "ls -la", "args": {"command": "ls -la"}, "rule": None, "reason": "",
+    }
+    assert bridge.loop.answer == "allow_once"
+    assert {"type": "final", "text": "answer=allow_once"} in events
+
+
+def test_permission_allow_always_and_garbage_decision():
+    _, bridge, _ = _drive([{"type": "permission_reply", "id": "perm-1", "decision": "allow_always"}])
+    assert bridge.loop.answer == "allow_always"
+    _, bridge, _ = _drive([{"type": "permission_reply", "id": "perm-1", "decision": "sure"}])
+    assert bridge.loop.answer == "deny"
+
+
+def test_permission_unknown_id_is_ignored():
+    _, bridge, _ = _drive([
+        {"type": "permission_reply", "id": "other", "decision": "allow_once"},
+        {"type": "permission_reply", "id": "perm-1", "decision": "deny"},
+    ])
+    assert bridge.loop.answer == "deny"
+
+
+def test_permission_timeout_denies():
+    _, bridge, events = _drive([], timeout_cfg=0.2)
+    assert bridge.loop.answer == "deny"
+    assert {"type": "final", "text": "answer=deny"} in events
+
+
+def test_permission_closed_stdin_denies():
+    _, bridge, _ = _drive([], close_stdin=True)
+    assert bridge.loop.answer == "deny"
+
+
+def test_permission_stop_denies_and_interrupts():
+    _, bridge, _ = _drive([], stop=True)
+    assert bridge.loop.answer == "deny"
+    assert bridge.loop.stopped == 1
+
+
+def test_gate_with_jsonl_asker_denies_and_allows():
+    """The real gate: a deny reply blocks the call, allow_once lets it through."""
+    for decision, allowed in (("deny", False), ("allow_once", True)):
+        stream, out = PipeStream(), WaitOut()
+        bridge = JsonlBridge(_config(), loop_factory=lambda b: FakeLoop(b), stream=stream, out=out)
+        rules = PermissionRules({}, str(REPO_ROOT), persist=False)
+        gate = PermissionGate(rules, None, bridge.asker, "sandbox")
+        result: dict = {}
+        t = threading.Thread(target=lambda: result.update(d=gate.check("bash", {"command": "rm -rf x"})))
+        t.start()
+        permission = out.wait_for("permission")
+        bridge.asker.reply(permission["id"], decision)
+        t.join(5)
+        assert result["d"].allowed is allowed
+        assert result["d"].source == "user"
+
+
+def test_terminal_asker_answers():
+    from runtime.__main__ import TerminalAsker
+
+    request = PermissionRequest(id="perm-1", tool="bash", kind="exec", summary="run ls", detail="ls")
+
+    def asker(answer):
+        def fake_input(prompt):
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+        return TerminalAsker(input_fn=fake_input, out=io.StringIO())
+
+    assert asker("y").ask(request) == "allow_once"
+    assert asker(" A ").ask(request) == "allow_always"
+    assert asker("n").ask(request) == "deny"
+    assert asker("").ask(request) == "deny"
+    assert asker("whatever").ask(request) == "deny"
+    assert asker(EOFError()).ask(request) == "deny"
+    assert asker(KeyboardInterrupt()).ask(request) == "deny"
