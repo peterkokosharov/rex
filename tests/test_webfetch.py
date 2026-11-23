@@ -122,6 +122,21 @@ def test_cross_host_redirect_rechecks_rules(server, tool):
     assert both.check_redirect(server + "/to-localhost", "http://localhost:1/text") is None
 
 
+def test_redirect_target_always_evaluated(server, tool):
+    # Same host but the target URL is denied: refused.
+    tool.redirect_check = _gate({"allow": ["webfetch(domain:127.0.0.1)"],
+                                 "deny": ["webfetch(*/text)"]}).check_redirect
+    with pytest.raises(WebFetchError, match="refused: Permission denied"):
+        tool.execute(url=server + "/redir")
+    g = _gate({})  # no rules: webfetch asks everywhere
+    assert g.check_redirect("http://a.example/x", "https://a.example/y") is None  # ask + same host: follow
+    assert "needs its own permission" in g.check_redirect("http://a.example/x", "http://b.example/y")
+    g = _gate({"allow": ["webfetch(domain:b.example)"]})
+    assert g.check_redirect("http://a.example/x", "http://b.example/y") is None  # allow: follow
+    g = _gate({"deny": ["webfetch(domain:a.example)"]})
+    assert "refused" in g.check_redirect("http://a.example/x", "http://a.example/y")  # deny, same host
+
+
 def test_loop_wires_redirect_check():
     from runtimelib.agent.loop import AgentLoop
     from runtimelib.config import Config

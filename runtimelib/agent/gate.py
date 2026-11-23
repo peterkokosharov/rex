@@ -216,18 +216,19 @@ class PermissionGate:
     def check_redirect(self, from_url: str, to_url: str) -> Optional[str]:
         """webfetch redirect hook: None to follow, else the refusal reason.
 
-        Same host: followed. Another host: followed only when the rules allow
-        it outright (deny rule or ask = refused; fetching the new URL directly
-        asks the normal way). Hooks and the asker are not consulted mid-call.
+        The target is always evaluated against the rules: deny refuses (also
+        on the same host, e.g. a denied URL glob), allow follows, ask follows
+        only on the same host (fetching the new URL directly asks the normal
+        way). Hooks and the asker are not consulted mid-call.
         """
         new_host = _host(to_url)
-        if new_host and new_host == _host(from_url):
-            return None
         verdict = self.rules.evaluate("webfetch", {"url": to_url}, self.mode)
-        if verdict.decision == PermissionResult.ALLOW:
-            return None
         if verdict.decision == PermissionResult.DENY:
             return f"redirect to {new_host or to_url} refused: {verdict.reason}"
+        if verdict.decision == PermissionResult.ALLOW:
+            return None
+        if new_host and new_host == _host(from_url):
+            return None
         return (f"redirect to another host ({new_host or to_url}) refused: it needs its own "
                 f"permission; fetch {to_url} directly")
 
