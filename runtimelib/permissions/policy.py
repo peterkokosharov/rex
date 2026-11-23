@@ -22,6 +22,7 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="*", operation=None, result=PermissionResult.ALLOW),
         ],
         "ARCHITECT": [
+            PermissionRule(tool="render_diagram", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="cargo test *", result=PermissionResult.ALLOW),
@@ -38,6 +39,7 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="bash", operation="rm -rf *", result=PermissionResult.DENY, reason="Destructive command"),
         ],
         "CODER": [
+            PermissionRule(tool="render_diagram", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="cargo test *", result=PermissionResult.ALLOW),
@@ -103,6 +105,7 @@ class DefaultPermissionPolicy(PermissionPolicy):
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.DENY, reason="Researcher cannot run tests"),
         ],
         "DEBUGGER": [
+            PermissionRule(tool="render_diagram", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="fileops", operation=None, result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),
             PermissionRule(tool="bash", operation="cargo test *", result=PermissionResult.ALLOW),

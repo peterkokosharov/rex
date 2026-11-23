@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
 from ..llm.models import get_registry
-from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool
+from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool, DiagramTool
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
 from ..session import SessionManager, create_session_manager
@@ -136,6 +136,7 @@ class AgentLoop:
         self.tools["task"] = TaskSpawnTool()
         self.tools["websearch"] = WebSearchTool()
         self.tools["git"] = GitTool(self.config)
+        self.tools["render_diagram"] = DiagramTool(self.config)
 
     def _build_system_prompt(self, include_tools: bool = True) -> str:
         """Build system prompt, optionally with tool descriptions."""
@@ -163,6 +164,7 @@ Guidelines:
 - Be concise in your responses.
 - If you need to use a tool, call it. Don't describe what you would do.
 - You can chain multiple tool calls in one response.
+- When the user asks for a diagram (flowchart, sequence, class, state, ER, gantt, UML-like), call render_diagram, then answer with a compact text sketch of the same diagram (Unicode box-drawing characters, at most ~60 columns, inside a ``` block; sketch only the main path if it is too big) followed by the Markdown image line the tool returned. Do not paste Mermaid source or ASCII-art diagrams instead of calling the tool.
 - Maximum steps: {self.state.max_steps}
 
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.

@@ -14,6 +14,7 @@ from .bash import BashTool, create_bash_tool
 from .taskspawn import TaskSpawnTool, create_taskspawn_tool
 from .websearch import WebSearchTool, create_websearch_tool
 from .git import GitTool, create_git_tool
+from .diagram import DiagramTool, create_diagram_tool
 
 __all__ = [
     "Tool",
@@ -31,4 +32,6 @@ __all__ = [
     "create_websearch_tool",
     "GitTool",
     "create_git_tool",
+    "DiagramTool",
+    "create_diagram_tool",
 ]
