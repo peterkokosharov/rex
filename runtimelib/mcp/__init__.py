@@ -153,8 +153,11 @@ class StdioTransport(MCPTransport):
                 except Exception:
                     pass
             return  # notifications from the server are ignored
+        rid = msg.get("id")
+        if not isinstance(rid, (str, int)):
+            return  # unhashable or odd id (list, dict): not ours, ignore
         with self._lock:
-            pending = self._pending.get(msg.get("id"))
+            pending = self._pending.get(rid)
         if pending is not None:
             pending.response = msg
             pending.event.set()

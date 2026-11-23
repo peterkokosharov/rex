@@ -27,3 +27,5 @@ rex itself runs on the host; only the tool-execution guard runs in a container (
 Not needed for quick development: `--local-tools` runs tools on the host without the guard.
 
 Sources: `Dockerfile`, `docker-compose.yml`, `runtimelib/guard/__init__.py` in this repository, 2026-11-23.
+
+In guard mode the container is the security boundary; rex does not apply the bash whitelist or deny-list as protection there.

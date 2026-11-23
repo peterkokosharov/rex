@@ -173,3 +173,9 @@ def test_tool_result_text_shapes():
     assert tool_result_text({"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}) == ("a\nb", False)
     assert tool_result_text({"content": [{"type": "image"}], "isError": True}) == ("[image]", True)
     assert tool_result_text(None) == ("", False)
+
+
+def test_reply_with_unhashable_id_is_ignored(client):
+    client.transport._dispatch({"jsonrpc": "2.0", "id": ["x"], "result": {}})
+    client.transport._dispatch({"jsonrpc": "2.0", "id": {"a": 1}, "result": {}})
+    assert call(client, "echo", text="hi")  # reader still works

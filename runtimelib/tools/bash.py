@@ -30,6 +30,8 @@ def find_bash() -> str | None:
     """
     found = safe_which("bash")
     if os.name == "nt":
+        if found and not found.lower().endswith(".exe"):
+            found = None  # bash.bat / bash.cmd would run through cmd.exe
         if found and not any(x in found.lower().replace("\\", "/") for x in ("/system32/", "/windowsapps/")):
             return found
         roots = [os.environ.get(v) for v in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData")]
@@ -124,8 +126,14 @@ class BashTool(Tool):
         env_extra = {str(k): str(v) for k, v in (kwargs.get("env") or {}).items()}
         env = scrubbed_env(extra=env_extra)
         try:
+            argv = [shell, "-c", command]
+            if os.name == "nt":
+                # Git Bash re-parses the Windows command line (expands `@file`, mangles
+                # quotes). Pass the text in the environment; the argv is then constant.
+                env["REX_COMMAND"] = command
+                argv = [shell, "-c", 'eval "$REX_COMMAND"']
             proc = subprocess.run(
-                [shell, "-c", command], shell=False, cwd=cwd, env=env,
+                argv, shell=False, cwd=cwd, env=env,
                 capture_output=True, text=True, errors="replace", timeout=timeout,
             )
             return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}

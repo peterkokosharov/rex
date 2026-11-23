@@ -185,7 +185,10 @@ def test_bash_local_uses_bash_not_a_shell(monkeypatch):
     monkeypatch.setattr(bash_mod, "find_bash", lambda: "C:/Git/bin/bash.exe")
     with mock.patch("subprocess.run", fake_run):
         BashTool(LOCAL).execute(command="echo 'a & b'", description="t")
-    assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", "echo 'a & b'"]
+    if os.name == "nt":  # the text travels in the environment, argv is constant
+        assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", 'eval "$REX_COMMAND"']
+    else:
+        assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", "echo 'a & b'"]
     assert not seen["shell"]
 
 
@@ -750,3 +753,28 @@ def test_fileops_rejects_junction_escape(workspace, tmp_path):
         with pytest.raises(PermissionError):
             GitTool(LOCAL).execute(operation="status", cwd="junc")
     run.assert_not_called()
+
+
+def test_find_bash_on_windows_rejects_bat_and_cmd(monkeypatch):
+    from runtimelib.tools import bash as bash_mod
+    monkeypatch.setattr(bash_mod.os, "name", "nt")
+    monkeypatch.setattr(bash_mod, "safe_which", lambda n: "C:\tools\bash.bat" if n == "bash" else None)
+    monkeypatch.setattr(bash_mod.os.path, "isfile", lambda p: False)
+    assert bash_mod.find_bash() is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Git Bash command-line re-parsing is Windows only")
+@pytest.mark.parametrize("cmd", ["@pay2", '"@pay2"', 'a"b', "x\y", "%PATH%", "!x"])
+def test_windows_bash_receives_command_unchanged(cmd, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from runtimelib.tools import bash as bash_mod
+    if bash_mod.find_bash() is None:
+        pytest.skip("no Git Bash")
+    (tmp_path / "pay2").write_text("echo RAN_PAYLOAD\n")
+    # The odd text sits in a trailing comment so it cannot break the parse; the command
+    # writes the text bash was handed to a file.
+    text = 'printf %s "$REX_COMMAND" > seen.txt # ' + cmd
+    res = BashTool(LOCAL).execute(command=text, description="t")
+    assert res["exit_code"] == 0, res
+    assert "RAN_PAYLOAD" not in res["stdout"]
+    assert (tmp_path / "seen.txt").read_bytes().decode() == text

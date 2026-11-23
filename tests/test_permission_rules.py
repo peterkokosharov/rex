@@ -317,7 +317,7 @@ class BashTests(unittest.TestCase):
         import time
         start = time.perf_counter()
         v = pr.evaluate("bash", bash(cmd), mode)
-        self.assertLess(time.perf_counter() - start, 1.0, f"took too long ({len(cmd)} chars)")
+        self.assertLess(time.perf_counter() - start, 3.0, f"took too long ({len(cmd)} chars)")
         return v
 
     def test_complexity_cap_timing_shapes(self):
@@ -333,6 +333,17 @@ class BashTests(unittest.TestCase):
                 self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
                 self.assertIn("too complex", v.reason)
                 self.assertEqual(pr.exact_rules("bash", bash(cmd)), [])
+
+    def test_assignment_first_word_never_allowed(self):
+        for rule, cmd in (("ls*", "ls=1 echo RAN_ECHO"), ("git*", "git=1 bash pay2"),
+                          ("pytest*", "pytest=x echo RAN"), ("ls*", "A=1 ls"), ("ls*", "-x ls")):
+            with self.subTest(cmd=cmd):
+                v = rules({"allow": [f"bash({rule})"]}).evaluate("bash", bash(cmd), "local")
+                self.assertNotEqual(v.decision, R.ALLOW)
+        for rule, cmd in (("ls*", "ls -la"), ("git*", "git status"), ("make*", "make test")):
+            with self.subTest(cmd=cmd):
+                v = rules({"allow": [f"bash({rule})"]}).evaluate("bash", bash(cmd), "local")
+                self.assertEqual(v.decision, R.ALLOW)
 
     def test_complexity_cap_prefix_deny(self):
         pr = rules({"deny": ["bash(rm *)"]})

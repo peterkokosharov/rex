@@ -815,6 +815,10 @@ def allow_blocker(command: str) -> str:
         return "empty command"
     if not _SAFE_CHARS.fullmatch(command):
         return "it has characters outside the safe set"
+    first = command.split()[0]
+    if "=" in first or first.startswith("-"):
+        # `ls=1 echo x` is an assignment followed by the next word, not `ls`.
+        return "the first word is an assignment or an option"
     quote = ""
     for i, c in enumerate(command):
         if quote:
