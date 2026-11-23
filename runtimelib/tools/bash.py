@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Bash execution tool using guard client."""
@@ -10,11 +10,39 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from typing import Any, Mapping
 
 from .base import Tool, ToolSchema
 from ..guard import get_guard_client
 from ..config import Config
+from ..procutil import safe_which
+
+NO_BASH_WINDOWS = ("rex needs Git Bash on Windows: install Git for Windows from "
+                   "https://git-scm.com/download/win")
+
+
+def find_bash() -> str | None:
+    """Absolute path of the bash that runs local commands, or None.
+
+    Never cmd.exe. On Windows the WSL launcher (System32 / WindowsApps ``bash.exe``)
+    is skipped: rex needs Git Bash. Elsewhere ``bash`` on PATH, else ``/bin/sh``.
+    """
+    found = safe_which("bash")
+    if os.name == "nt":
+        if found and not any(x in found.lower().replace("\\", "/") for x in ("/system32/", "/windowsapps/")):
+            return found
+        roots = [os.environ.get(v) for v in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData")]
+        git = safe_which("git")
+        if git:
+            roots.append(os.path.dirname(os.path.dirname(git)))
+        for root in roots:
+            for rel in ("Git/bin/bash.exe", "Programs/Git/bin/bash.exe", "bin/bash.exe"):
+                cand = os.path.join(root, rel) if root else ""
+                if cand and os.path.isfile(cand):
+                    return cand
+        return None
+    return found or shutil.which("sh") or "/bin/sh"
 
 
 class BashTool(Tool):
@@ -90,11 +118,14 @@ class BashTool(Tool):
                 "stdout": "",
                 "stderr": "[bash: 'git push' is not allowed from the agent; push by hand]",
             }
+        shell = find_bash()
+        if shell is None:
+            return {"exit_code": 1, "stdout": "", "stderr": f"[bash: {NO_BASH_WINDOWS}]"}
         env_extra = {str(k): str(v) for k, v in (kwargs.get("env") or {}).items()}
         env = scrubbed_env(extra=env_extra)
         try:
             proc = subprocess.run(
-                command, shell=True, cwd=cwd, env=env,
+                [shell, "-c", command], shell=False, cwd=cwd, env=env,
                 capture_output=True, text=True, errors="replace", timeout=timeout,
             )
             return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}

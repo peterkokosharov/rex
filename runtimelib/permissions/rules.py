@@ -16,32 +16,26 @@ fnmatch-style glob. The spec depends on the tool:
 * webfetch   - ``domain:host`` (suffix match) or a URL glob
 * MCP tools  - no spec (``mcp__github__delete_*``)
 
-Precedence: deny > ask > allow > mode default. Compound bash commands are split
-on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines (quote aware): any part that
-hits deny denies, any part that hits ask asks, "allow" needs every part allowed.
-A command whose text contains a newline or CR is never auto-allowed (always
-at least ask). A command over 16 KB, with more than 256 parts, more than 32
-substitutions or substitutions nested deeper than 8 is "too complex to check":
-it is decided before any full scan, never allowed, and denied only when a
-deny rule hits its first 4 KB; otherwise it asks. The splitter understands comments, ``$'...'`` and line
-continuations and fails closed: an open quote or a part that cannot be split
-into words is never auto-allowed. The deny pass also splits a quote-blind
-copy of the command.
-Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
-(at least ask) and its content is also checked against deny rules. Deny and
-ask rules also see every part normalised (``NAME=value`` prefixes, reserved
-words and wrappers such as ``sudo``/``env``/``nohup``/``nice``/``timeout``
-stripped, ``/bin/rm`` -> ``rm``, whitespace squeezed, simple expansions) and
-the commands run by ``sh -c``, ``eval``, ``xargs``, ``find -exec`` and similar
-(see :func:`deny_subjects`). An unquoted output redirect to a file (anything
-but ``/dev/null`` or ``>&N``) is never auto-allowed either, unless the allow
-rule that covers the part itself contains ``>``.
+Precedence: deny > ask > allow > mode default. ALLOW is a whitelist: a bash
+command is auto-allowed by an allow rule only if it is a single simple command
+made only of ASCII letters, digits, space and ``- _ . / , : = + @`` (plain
+quotes only around whole words; see :func:`allow_blocker`); then the rule's
+prefix match applies. Anything else (``; & | < > $ ` \ * ? ( ) { }``, newline,
+non-ASCII, a command over 16 KB ...) asks at least; no shell syntax has to be
+understood for ALLOW.
 
-Design: ALLOW is safe by construction - only simple commands are eligible for
-an allow rule (see :func:`allow_blocker`); everything else asks at least.
-Bash DENY is best effort: it does not stop code run by an interpreter
-(``python -c``, ``perl -e``, ``node -e``) or obfuscated shell. The Docker
-guard is the real boundary; use it or allow-lists for anything that matters.
+Bash DENY is best effort and unchanged: compound commands are split on ``&&``,
+``||``, ``;``, ``|``, ``&`` and newlines (quote aware, plus a quote-blind
+split); command substitutions, ``sh -c``, ``eval``, ``xargs``, ``find -exec``
+and similar are checked too; deny and ask rules see every part normalised
+(``NAME=value`` prefixes, wrappers such as ``sudo``/``env``/``timeout``
+stripped, ``/bin/rm`` -> ``rm``, simple expansions; see :func:`deny_subjects`).
+A command over 16 KB, with more than 256 parts, more than 32 substitutions or
+substitutions nested deeper than 8 is "too complex to check": it is decided
+before any full scan, never allowed, and denied only when a deny rule hits its
+first 4 KB; otherwise it asks. It does not stop code run by an interpreter
+(``python -c``, ``perl -e``, ``node -e``) or obfuscated shell. The Docker guard
+is the real boundary; use it or allow-lists for anything that matters.
 
 fileops ``list`` / ``glob`` / ``grep`` are also checked as a read of their
 search root and of any entry below it, so a root inside a path whose reading is
@@ -413,47 +407,6 @@ def quote_mask(part: str) -> str:
     return "".join(out)
 
 
-_WORD_END = set(" \t\r\n;|&<>()")
-
-
-def writes_file(part: str) -> bool:
-    """True when ``part`` has an unquoted output redirect to a file.
-
-    ``>``, ``>>``, ``>|``, ``&>``, ``&>>`` and ``>&word`` count, unless the
-    target is ``/dev/null``; ``>&N`` / ``>&-`` (fd duplication) does not.
-    """
-    mask = quote_mask(part)
-    i, n = 0, len(part)
-    while i < n:
-        c = mask[i]
-        if c == "&" and mask.startswith("&>", i):
-            i += 1
-            c = ">"
-        if c != ">" or mask.startswith(">(", i):
-            i += 1
-            continue
-        i += 1
-        dup = False
-        if i < n and mask[i] in ">|":
-            i += 1
-        elif i < n and mask[i] == "&":
-            dup = True
-            i += 1
-        while i < n and mask[i] in " \t":
-            i += 1
-        j = i
-        while j < n and mask[j] not in _WORD_END:
-            j += 1
-        target = part[i:j].replace('"', "").replace("'", "")
-        i = j
-        if dup and re.fullmatch(r"\d+-?|-", target):
-            continue
-        if target == "/dev/null":
-            continue
-        return True
-    return False
-
-
 MAX_NEST_DEPTH = 8
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "mksh", "fish", "csh", "tcsh"}
 # Programs that run code they read from stdin or an argument.
@@ -466,7 +419,6 @@ _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _RESERVED = {"{", "}", "(", ")", "!", "if", "then", "elif", "else", "fi", "while", "until", "do",
              "done", "case", "esac", "function", "time", "coproc", "select", "[[", "]]"}
 _FUNC_DEF = re.compile(r"^[\w.:-]+\(\)\{?$")
-_PLAIN_WORD = re.compile(r"^[A-Za-z0-9_./:+,@%=-]+$")
 # Wrappers that run the rest of the line as a command, with the options of
 # each that take a separate argument (so the argument is skipped too).
 _WRAPPERS: dict[str, set[str]] = {
@@ -844,38 +796,36 @@ def deny_subjects(command: str) -> tuple[list[str], bool]:
     return list(seen), too_deep
 
 
-def allow_blocker(part: str, sep: str = "") -> str:
-    """Why ``part`` can never be auto-allowed by a rule, or ``""``.
+_SAFE_CHARS = re.compile(r"[A-Za-z0-9 _.,:=+@/'\"-]*")
 
-    Only simple commands are eligible: the command word is a plain word (no
-    ``$``, braces, backslash, glob or quote characters), no reserved word or
-    grouping (``{ } ( ) !``, ``if``, ``while``, ``f()`` ...), no heredoc or
-    herestring, and no pipe into a shell or interpreter (or
-    ``source /dev/stdin``).
+
+def allow_blocker(command: str) -> str:
+    """Why ``command`` can never be auto-allowed, or ``""`` (whitelist, not a parser).
+
+    Only a single simple command made of safe characters is eligible: ASCII
+    letters, digits, space and ``- _ . / , : = + @``, plus plain ``'`` / ``"``
+    quotes around whole words. Everything else (dollar, backtick, backslash,
+    ``! # % ^ * ? [ ] { } ( ) < > ; & | ~``, tab, newline, control and non-ASCII
+    characters, an unbalanced quote) is never auto-allowed, so no shell syntax
+    has to be understood.
     """
-    mask = quote_mask(part)
-    if "<<" in mask:
-        return "heredoc or herestring"
-    if re.search(r"[(){}]", mask):
-        return "grouping, function or brace expansion"
-    command_word = None
-    for m in re.finditer(r"\S+", mask):
-        token = part[m.start():m.end()]
-        if _ASSIGN.match(m.group()) and "\x01" not in m.group().split("=", 1)[0]:
-            continue
-        command_word = token
-        break
-    if command_word is None:
-        return ""
-    if command_word in _RESERVED:
-        return f"shell keyword {command_word!r}"
-    if not _PLAIN_WORD.match(command_word):
-        return "the command word is not a plain word"
-    words = _strip_wrappers(_words(part))
-    if sep == "|" and words and _basename(words[0]) in _INTERPRETERS:
-        return "pipe into a shell or interpreter"
-    if _reads_stdin_code(words) and words and _basename(words[0]) in ("source", "."):
-        return "code read from stdin"
+    if not command.strip():
+        return "empty command"
+    if not _SAFE_CHARS.fullmatch(command):
+        return "it has characters outside the safe set"
+    quote = ""
+    for i, c in enumerate(command):
+        if quote:
+            if c == quote:
+                quote = ""
+                if i + 1 < len(command) and command[i + 1] != " ":
+                    return "quotes must surround whole words"
+        elif c in "'\"":
+            if i and command[i - 1] not in " =":
+                return "quotes must surround whole words"
+            quote = c
+    if quote:
+        return "unbalanced quote"
     return ""
 
 
@@ -1209,26 +1159,11 @@ class PermissionRules:
         if tool == "bash":
             command = str(args.get("command", ""))
             strict_subjects, too_deep = deny_subjects(command)
-            scan = scan_bash(command)
-            if "\n" in command or "\r" in command:
-                # Hard rule: legal but rare in agent calls, and the source of
-                # every continuation/comment trick. Never auto-allowed.
-                unsafe = "A multi-line command is never auto-allowed"
-            elif scan.unparseable:
-                unsafe = "Unparseable command (open quote or bad quoting) is never auto-allowed"
-            elif scan.substitution:
-                unsafe = "Command substitution is never auto-allowed"
-            elif scan.commented:
-                unsafe = "A command with a # comment is never auto-allowed"
-            elif any("\n" in p or "\r" in p for p in scan.parts):
-                unsafe = "A command with a line break inside quotes is never auto-allowed"
-            elif any(allow_blocker(p, sep) for p, sep in zip(scan.parts, scan.seps)):
-                why = next(b for b in (allow_blocker(p, sep) for p, sep in zip(scan.parts, scan.seps)) if b)
-                unsafe = f"Only simple commands are auto-allowed ({why})"
+            why = allow_blocker(command)
+            if why:
+                unsafe = f"Auto-allow only for a single simple command of safe characters ({why})"
             elif too_deep:
                 unsafe = "Nested shell commands too deep to check"
-            elif any(writes_file(p) and not self._allowed_redirect(p) for p in subjects):
-                unsafe = "Output redirection to a file is never auto-allowed"
             elif args.get("env"):
                 # Extra variables (PATH, LD_PRELOAD, GIT_SSH_COMMAND ...) change what runs.
                 unsafe = "A command with extra environment variables is never auto-allowed"
@@ -1264,11 +1199,6 @@ class PermissionRules:
         if unsafe and decision == ALLOW:
             return RuleVerdict(ASK, kind, "unsafe", None, unsafe)
         return RuleVerdict(decision, kind, "default", None, f"{mode} default for {kind}")
-
-    def _allowed_redirect(self, part: str) -> bool:
-        """A redirecting bash part is fine only under an allow rule that itself has ``>``."""
-        return any(r.spec is not None and ">" in r.spec and r.matches_subject("bash", part)
-                   for r in self.allow)
 
     def _allowed(self, tool: str, subject: str) -> Rule | None:
         for rule in self.allow:

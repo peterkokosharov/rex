@@ -40,6 +40,8 @@ cat > "$STAGE/rex/README.txt" <<'EOF'
 rex for Windows (x64)
 
 1. Install Python 3.12 or newer and make sure `python` is in PATH.
+   Install Git for Windows too (https://git-scm.com/download/win): rex REQUIRES Git Bash on
+   Windows and runs every bash command with it (never cmd.exe).
 2. Unzip this folder anywhere, e.g. C:\Tools\rex.
 3. Run:  rex.cmd --help
    or:   python -m runtime --jsonl --local-tools

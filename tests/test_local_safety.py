@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-opus-5-5
+# LLM: claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Safety tests for running rex without Docker (local tools) and for
@@ -173,7 +173,41 @@ def test_bash_local_runs_with_scrubbed_env(monkeypatch):
     assert "PATH" in seen or "Path" in seen
 
 
-@pytest.mark.parametrize("cmd", ["git push", "git push origin main", "cd x && git -C . push -f", "GIT_X=1 git  push"])
+def test_bash_local_uses_bash_not_a_shell(monkeypatch):
+    """Local mode runs [bash, -c, command] without shell=True (never cmd.exe)."""
+    from runtimelib.tools import bash as bash_mod
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["shell"] = cmd, kw.get("shell")
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(bash_mod, "find_bash", lambda: "C:/Git/bin/bash.exe")
+    with mock.patch("subprocess.run", fake_run):
+        BashTool(LOCAL).execute(command="echo 'a & b'", description="t")
+    assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", "echo 'a & b'"]
+    assert not seen["shell"]
+
+
+def test_bash_local_without_bash_is_a_clear_error(monkeypatch):
+    from runtimelib.tools import bash as bash_mod
+    monkeypatch.setattr(bash_mod, "find_bash", lambda: None)
+    with mock.patch("subprocess.run") as run:
+        out = BashTool(LOCAL).execute(command="echo hi", description="t")
+    run.assert_not_called()
+    assert out["exit_code"] != 0
+    assert "rex needs Git Bash on Windows: install Git for Windows from https://git-scm.com/download/win" in out["stderr"]
+
+
+def test_find_bash_on_windows_skips_wsl_launcher(monkeypatch):
+    from runtimelib.tools import bash as bash_mod
+    monkeypatch.setattr(bash_mod.os, "name", "nt")
+    monkeypatch.setattr(bash_mod, "safe_which", lambda n: "C:\\Windows\\System32\\bash.exe" if n == "bash" else None)
+    monkeypatch.setattr(bash_mod.os.path, "isfile", lambda p: False)
+    assert bash_mod.find_bash() is None
+
+
+@pytest.mark.parametrize("cmd", ["git push", "git push origin main","cd x && git -C . push -f", "GIT_X=1 git  push"])
 def test_bash_blocks_git_push(cmd):
     assert blocks_git_push(cmd)
     with mock.patch("subprocess.run") as run:

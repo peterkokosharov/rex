@@ -109,6 +109,10 @@ All documentation is indexed in [`docs/INDEX.md`](docs/INDEX.md) (reading order,
 ### Prerequisites
 
 - Python 3.12+ (older versions are no longer tested or supported; stdlib-only runtime; no pip/venv required for basic CLI)
+- **Windows: Git Bash is required** (install Git for Windows from https://git-scm.com/download/win). With
+  `--local-tools` rex runs every bash command with Git Bash (`bash -c`), never with cmd.exe; if Git Bash is not
+  found the bash tool answers "rex needs Git Bash on Windows: install Git for Windows from
+  https://git-scm.com/download/win". Linux and macOS use `bash` (or `/bin/sh`).
 - An OpenAI-compatible endpoint (kiko-lite, LiteLLM, etc.)
 
 Example with a local kiko-lite endpoint:
@@ -514,12 +518,11 @@ permissions:
   deny:  ["bash(rm *)", "edit(**/.env)", "mcp__github__delete_*"]
 ```
 
-Precedence is deny > ask > allow > mode default. **Allow is safe by construction**: a bash command is auto-allowed
-only when every part is a simple command (plain command word; no grouping, functions, reserved words, heredocs,
-herestrings, pipes into a shell or interpreter, command substitution, file redirection, extra `env`, or unclear
-quoting) and an allow rule matches it. A bash command whose text contains a newline or CR is never auto-allowed
-(it always asks at least), and so is a command too complex to check (over 16 KB, more than 256 parts, more than 32
-substitutions or nesting deeper than 8).
+Precedence is deny > ask > allow > mode default. **Allow is a whitelist**: a bash command is auto-allowed only for a
+single simple command made of safe characters (ASCII letters, digits, space and `- _ . / , : = + @`, plain quotes only
+around whole words) that an allow rule matches. Everything else asks: `; & |`, redirects, `$`, backticks, backslash,
+globs (`*` `?` `[`), `~`, `!`, `#`, `%`, `^`, grouping, newlines, tabs, non-ASCII characters, unbalanced quotes, and any
+command over 16 KB. So `pytest -q tests/test_x.py` runs without asking, `pytest tests/*` asks.
 
 **Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`, `timeout`, `bash -c`, `eval`, `xargs`,
 ...) and simple expansions before matching, but a deny rule cannot stop code run by an interpreter (`python -c`,

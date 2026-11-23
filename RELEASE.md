@@ -7,6 +7,8 @@ Licensed under MIT License
 # Release v0.2.2
 
 - Windows start without readline/fcntl.
+- Windows requires Git Bash (Git for Windows); local bash commands run with it, never cmd.exe.
+- Bash allow rules are a whitelist: only a single simple command of safe characters is auto-allowed.
 - Local-tools confinement: fileops/git/bash cwd; env scrub as a guard rail.
 - Orphan tool-call repair and compaction safety.
 - Streaming tool-call index fix.
