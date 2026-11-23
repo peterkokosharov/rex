@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Context estimate (prompt + tool schemas), 80% warning, mandatory compaction, window chain."""
@@ -199,6 +199,21 @@ def test_endpoint_probe_litellm_and_v1_models_with_cache():
     assert client.context_window() == 131_072
     client = LiteLLMClient("http://h:4000", "k", "m", http_backend=_Http({}))
     assert client.context_window() is None
+
+
+def test_endpoint_probe_ignores_small_litellm_max_tokens():
+    small = {"data": [{"model_name": "m", "model_info": {"max_tokens": 8192}}]}
+    v1 = {"data": [{"id": "m", "context_window": 200_000}]}
+    client = LiteLLMClient("http://h:4000", "k", "m", http_backend=_Http({"/model/info": small, "/v1/models": v1}))
+    assert client.context_window() == 200_000  # output limit skipped, /v1/models used
+    client = LiteLLMClient("http://h:4000", "k", "m", http_backend=_Http({"/model/info": small}))
+    assert client.context_window() is None
+    big = {"data": [{"model_name": "m", "model_info": {"max_tokens": 128_000}}]}
+    client = LiteLLMClient("http://h:4000", "k", "m", http_backend=_Http({"/model/info": big}))
+    assert client.context_window() == 128_000
+    both = {"data": [{"model_name": "m", "model_info": {"max_input_tokens": 100_000, "max_tokens": 4096}}]}
+    client = LiteLLMClient("http://h:4000", "k", "m", http_backend=_Http({"/model/info": both}))
+    assert client.context_window() == 100_000
 
 
 def test_loop_uses_endpoint_window():

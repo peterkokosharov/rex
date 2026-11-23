@@ -17,6 +17,9 @@ from ..config import Config
 from ..kikolib import http_client, retry
 from ..kikolib.http_client import HttpBackend, Response
 
+# A LiteLLM ``max_tokens`` below this is taken as an output limit, not a window.
+MIN_MAX_TOKENS_WINDOW = 32768
+
 
 def _known_fields(cls: type, data: dict[str, Any]) -> dict[str, Any]:
     """Keep only keys that are fields of dataclass ``cls``.
@@ -205,8 +208,9 @@ class LiteLLMClient:
     def context_window(self, model: Optional[str] = None, timeout: float = 3.0) -> Optional[int]:
         """Context window the endpoint reports for ``model``, or None.
 
-        Tries the LiteLLM proxy ``GET /model/info`` (``max_input_tokens``) and
-        then ``GET /v1/models`` (``context_length`` and similar). One short
+        Tries the LiteLLM proxy ``GET /model/info`` (``max_input_tokens``;
+        ``max_tokens`` only when it is at least 32768, since it is usually the
+        output limit) and then ``GET /v1/models`` (``context_length`` and similar). One short
         attempt per model, cached for the life of the client; any failure
         returns None silently.
         """
@@ -241,7 +245,13 @@ class LiteLLMClient:
             if not isinstance(entry, dict) or entry.get("model_name") != name:
                 continue
             info = entry.get("model_info") or {}
-            return self._positive(info.get("max_input_tokens")) or self._positive(info.get("max_tokens"))
+            found = self._positive(info.get("max_input_tokens"))
+            if found:
+                return found
+            # LiteLLM's max_tokens is often the OUTPUT limit (4k-16k); trusting it
+            # would compact far too early. Only a large value can be a window.
+            out = self._positive(info.get("max_tokens"))
+            return out if out and out >= MIN_MAX_TOKENS_WINDOW else None
         return None
 
     def _probe_v1_models(self, name: str, timeout: float) -> Optional[int]:
