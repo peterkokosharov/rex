@@ -144,6 +144,11 @@ class AgentLoop:
         )
         if gate is not None and asker is not None:
             self.gate.set_asker(asker)
+        # webfetch re-checks a redirect to another host against the rules.
+        check_redirect = getattr(self.gate, "check_redirect", None)
+        for tool in self.tools.values():
+            if isinstance(tool, WebFetchTool) and callable(check_redirect):
+                tool.redirect_check = check_redirect
         self.agent_id = agent_id
         self.role = role
         self.depth = depth

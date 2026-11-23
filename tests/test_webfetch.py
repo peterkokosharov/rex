@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """webfetch tool tests: local http.server on 127.0.0.1, no internet."""
@@ -48,6 +48,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(302, "text/plain", b"", {"Location": "/text"})
         elif p == "/to-private":
             self._send(302, "text/plain", b"", {"Location": "http://127.0.0.1:%d/text" % self.server.server_address[1]})
+        elif p == "/to-localhost":
+            self._send(302, "text/plain", b"", {"Location": "http://localhost:%d/text" % self.server.server_address[1]})
         elif p == "/hostile":
             self._send(302, "text/plain", b"", {"Location": "file:///etc/passwd"})
         else:
@@ -99,6 +101,41 @@ def test_redirect_followed_and_loop_refused(server, tool):
     assert r["url"].endswith("/text") and r["text"] == "café"
     with pytest.raises(WebFetchError, match="too many redirects"):
         tool.execute(url=server + "/loop")
+
+
+def _gate(perms):
+    from runtimelib.agent.gate import PermissionGate
+    from runtimelib.permissions.rules import PermissionRules
+    return PermissionGate(PermissionRules(perms, ".", persist=False), mode="guard")
+
+
+def test_cross_host_redirect_rechecks_rules(server, tool):
+    tool.redirect_check = _gate({"allow": ["webfetch(domain:127.0.0.1)"]}).check_redirect
+    assert tool.execute(url=server + "/redir")["text"] == "café"  # same host: followed
+    with pytest.raises(WebFetchError, match="needs its own permission"):
+        tool.execute(url=server + "/to-localhost")  # localhost would ask: refused
+    tool.redirect_check = _gate({"allow": ["webfetch(domain:127.0.0.1)"],
+                                 "deny": ["webfetch(domain:localhost)"]}).check_redirect
+    with pytest.raises(WebFetchError, match="refused: Permission denied"):
+        tool.execute(url=server + "/to-localhost")
+    both = _gate({"allow": ["webfetch(domain:127.0.0.1)", "webfetch(domain:localhost)"]})
+    assert both.check_redirect(server + "/to-localhost", "http://localhost:1/text") is None
+
+
+def test_loop_wires_redirect_check():
+    from runtimelib.agent.loop import AgentLoop
+    from runtimelib.config import Config
+
+    class _S:
+        session_id = "s"
+
+        def append(self, *a, **k):
+            pass
+
+    t = WebFetchTool()
+    loop = AgentLoop(Config({"liteLLM": {"base_url": "http://x", "api_key": "k", "model": "m"}}),
+                     llm_client=object(), tools=[t], session_manager=_S())
+    assert t.redirect_check == loop.gate.check_redirect
 
 
 def test_redirect_to_bad_scheme_refused(server, tool):

@@ -37,6 +37,7 @@ from ..permissions.rules import (
     MODE_LOCAL,
     MODE_SANDBOX,
     PermissionRules,
+    _host,
 )
 from ..tools.base import Tool, default_describe
 
@@ -210,6 +211,25 @@ class PermissionGate:
         if len(detail) > MAX_DETAIL_CHARS:
             detail = detail[:MAX_DETAIL_CHARS] + "\n... (truncated)"
         return str(summary), detail
+
+    # -- during the call
+    def check_redirect(self, from_url: str, to_url: str) -> Optional[str]:
+        """webfetch redirect hook: None to follow, else the refusal reason.
+
+        Same host: followed. Another host: followed only when the rules allow
+        it outright (deny rule or ask = refused; fetching the new URL directly
+        asks the normal way). Hooks and the asker are not consulted mid-call.
+        """
+        new_host = _host(to_url)
+        if new_host and new_host == _host(from_url):
+            return None
+        verdict = self.rules.evaluate("webfetch", {"url": to_url}, self.mode)
+        if verdict.decision == PermissionResult.ALLOW:
+            return None
+        if verdict.decision == PermissionResult.DENY:
+            return f"redirect to {new_host or to_url} refused: {verdict.reason}"
+        return (f"redirect to another host ({new_host or to_url}) refused: it needs its own "
+                f"permission; fetch {to_url} directly")
 
     # -- after the call
     def post(self, name: str, args: Mapping[str, Any] | None, ok: bool,

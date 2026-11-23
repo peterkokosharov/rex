@@ -311,6 +311,24 @@ class PathTests(unittest.TestCase):
         pr = rules()
         self.assertEqual(pr.evaluate("edit", {"path": "/home/x/.env"}, "guard").decision, R.DENY)
 
+    def test_search_inside_denied_read_path(self):
+        for cfg in ({"deny": ["fileops(read:secrets/**)"]}, {"deny": ["fileops(secrets/**)"]},
+                    {"deny": ["fileops(read:secrets/*)"]}):
+            pr = rules(cfg)
+            for op in ("grep", "glob", "list"):
+                for path in ("secrets", "secrets/sub", "./secrets/"):
+                    with self.subTest(cfg=cfg, op=op, path=path):
+                        args = {"operation": op, "path": path}
+                        self.assertEqual(pr.evaluate("fileops", args, "guard").decision, R.DENY)
+            self.assertEqual(pr.evaluate("fileops", {"operation": "grep", "path": "src"}, "guard").decision,
+                             R.ALLOW)
+        pr = rules({"deny": ["fileops(read:**/.env)"]})
+        self.assertEqual(pr.evaluate("fileops", {"operation": "grep", "path": "."}, "guard").decision, R.ALLOW)
+
+    def test_render_diagram_is_write(self):
+        self.assertEqual(rules({}).evaluate("render_diagram", {}, "local").decision, R.ASK)
+        self.assertEqual(rules({}).evaluate("render_diagram", {}, "guard").decision, R.ALLOW)
+
     def test_fileops_without_op(self):
         pr = rules({"deny": ["fileops(secrets/**)"]})
         self.assertEqual(pr.evaluate("fileops", {"operation": "read", "path": "secrets/k"}, "guard").decision, R.DENY)
@@ -367,6 +385,31 @@ class AllowAlwaysTests(unittest.TestCase):
         pr.add_allow_always("fileops", {"operation": "write", "path": "a/[x].txt"})
         self.assertEqual(pr.evaluate("fileops", {"operation": "write", "path": "a/[x].txt"}, "local").decision, R.ALLOW)
         self.assertEqual(pr.evaluate("fileops", {"operation": "write", "path": "a/x.txt"}, "local").decision, R.ASK)
+
+    def test_webfetch_host_glob_chars_escaped(self):
+        pr = rules()
+        added = pr.add_allow_always("webfetch", {"url": "http://*/x"})
+        self.assertEqual(added, ["webfetch(domain:[*])"])
+        self.assertEqual(pr.evaluate("webfetch", {"url": "https://evil.example/"}, "local").decision, R.ASK)
+
+    def test_store_reads_only_allow_section(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = store_path(WS, d)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text('deny:\n  - "bash(make)"\nallow:\n  - "bash(ok)"\nother:\n  - "bash(rm *)"\n',
+                         encoding="utf-8")
+            pr = PermissionRules({}, WS, store_dir=d)
+            self.assertEqual([r.text for r in pr.allow], ["bash(ok)"])
+
+    def test_store_write_merges_and_is_atomic(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = PermissionRules({}, WS, store_dir=d)
+            b = PermissionRules({}, WS, store_dir=d)  # a second rex process, same workspace
+            a.add_allow_always("bash", bash("make a"))
+            b.add_allow_always("bash", bash("make b"))
+            fresh = PermissionRules({}, WS, store_dir=d)
+            self.assertEqual(sorted(r.text for r in fresh.allow), ["bash(make a)", "bash(make b)"])
+            self.assertEqual(sorted(x.name for x in Path(d).iterdir()), [store_path(WS, d).name])
 
     def test_store_survives_garbage(self):
         with tempfile.TemporaryDirectory() as d:

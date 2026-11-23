@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Web fetch tool: GET one http(s) URL and return it as text.
@@ -9,7 +9,8 @@
 Runs in the rex host process (not in the guard). Safety rules:
 
 - http/https only, GET only, 20 s overall deadline, 2 MB download cap.
-- At most 5 redirects; every hop is checked again (scheme and address).
+- At most 5 redirects; every hop is checked again (scheme and address), and a
+  hop to another host is checked against the permission rules (``redirect_check``).
 - A host is refused when ANY of its resolved addresses is private, loopback,
   link-local, multicast, reserved or unspecified (unless ``allow_private``).
 - DNS rebinding: the name is resolved once, checked, and the connection is made
@@ -29,7 +30,7 @@ import socket
 import ssl
 import time
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Callable, Optional
 from urllib.parse import urljoin, urlsplit
 
 from .base import Tool, ToolSchema
@@ -202,6 +203,9 @@ class WebFetchTool(Tool):
     def __init__(self, allow_private: bool = False) -> None:
         # allow_private is set by the host (config webfetch.allow_private, tests); never by the model.
         self.allow_private = allow_private
+        # Set by the agent loop to the permission gate: (from_url, to_url) -> refusal
+        # reason or None. Without it every redirect is followed (scheme/address checks only).
+        self.redirect_check: Optional[Callable[[str, str], Optional[str]]] = None
         schema = ToolSchema(
             name="webfetch",
             description=("Fetch one http(s) URL with GET and return its content as text (HTML is "
@@ -278,7 +282,12 @@ class WebFetchTool(Tool):
         for _ in range(MAX_REDIRECTS + 1):
             status, headers, body, cut = self._get(url, deadline)
             if 300 <= status < 400 and headers.get("Location"):
-                url = urljoin(url, headers["Location"])
+                target = urljoin(url, headers["Location"])
+                if self.redirect_check is not None:
+                    refusal = self.redirect_check(url, target)
+                    if refusal:
+                        raise WebFetchError(refusal)
+                url = target
                 continue
             break
         else:

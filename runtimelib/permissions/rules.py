@@ -28,6 +28,12 @@ squeezed) and the commands run by ``sh -c``, ``eval``, ``xargs`` and
 file (anything but ``/dev/null`` or ``>&N``) is never auto-allowed either,
 unless the allow rule that covers the part itself contains ``>``.
 
+fileops ``list`` / ``glob`` / ``grep`` are also checked as a read of their
+search root and of any entry below it, so a root inside a path whose reading is
+denied is denied. Known limit: a search whose root is ABOVE a denied path
+(``grep`` in ``.`` with ``fileops(read:secrets/**)`` denied) is not refused by
+the rules; deny the search ops too, or rely on the guard.
+
 Paths are normalised relative to the workspace before matching. Mode defaults
 (see :func:`mode_default`): local mode asks for every write, exec, network and
 MCP call unless an allow rule matches, whatever the config says.
@@ -65,7 +71,11 @@ MODE_LOCAL = "local"
 
 _READ_FILE_OPS = {"read", "list", "glob", "grep"}
 _READ_GIT_OPS = {"status", "diff", "log", "show"}
-_READ_TOOLS = {"load_skill", "read_skill_file", "render_diagram"}
+_READ_TOOLS = {"load_skill", "read_skill_file"}  # render_diagram writes files: a write
+_SEARCH_FILE_OPS = {"list", "glob", "grep"}
+# Stand-in for "any entry below the search root" when a search is checked
+# against deny rules for reading: matches ``*`` / ``**`` but no real name.
+_ANY_CHILD = "\x00"
 _DECISIONS = {"allow": ALLOW, "ask": ASK, "deny": DENY}
 
 
@@ -636,9 +646,14 @@ def load_store(path: Path) -> list[str]:
     except OSError:
         return []
     rules: list[str] = []
+    section = ""
     for line in lines:
-        m = re.match(r"^\s*-\s+(.*?)\s*$", line)
-        if not m:
+        head = re.match(r"^([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$", line)
+        if head:  # a top-level key starts a section; only "allow:" items count
+            section = head.group(1)
+            continue
+        m = re.match(r"^\s+-\s+(.*?)\s*$", line) or re.match(r"^-\s+(.*?)\s*$", line)
+        if not m or section != "allow":
             continue
         item = m.group(1)
         if item.startswith('"'):
@@ -651,10 +666,32 @@ def load_store(path: Path) -> list[str]:
     return rules
 
 
-def save_store(path: Path, rules: list[str]) -> None:
+def save_store(path: Path, rules: list[str]) -> list[str]:
+    """Merge ``rules`` into the store file atomically; returns the merged list.
+
+    The current file content is read first, so a second rex process working in
+    the same workspace does not lose its rules; the new file is written to a
+    temporary file next to it and moved into place with ``os.replace``.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = "allow:\n" + "".join(f"  - {json.dumps(r)}\n" for r in rules)
-    path.write_text(body, encoding="utf-8")
+    merged = load_store(path)
+    for rule in rules:
+        if rule not in merged:
+            merged.append(rule)
+    body = "allow:\n" + "".join(f"  - {json.dumps(r)}\n" for r in merged)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return merged
 
 
 # ----------------------------------------------------------------- engine
@@ -725,6 +762,14 @@ class PermissionRules:
                 # Extra variables (PATH, LD_PRELOAD, GIT_SSH_COMMAND ...) change what runs.
                 unsafe = "A command with extra environment variables is never auto-allowed"
 
+        elif tool == "fileops" and _fileops_op(args) in _SEARCH_FILE_OPS:
+            # list/glob/grep read below their root: a root inside a path whose
+            # reading is denied is denied too (fileops(read:secrets/**) covers
+            # grep in secrets/sub). A root ABOVE a denied path is not caught.
+            root = subjects[0].partition(":")[2]
+            child = _ANY_CHILD if root == "." else root.rstrip("/") + "/" + _ANY_CHILD
+            strict_subjects = subjects + [f"read:{root}", f"read:{child}"]
+
         # Deny and ask see the normalised parts too (wrappers stripped, nested
         # commands); allow only ever sees the parts as written.
         for rule in self.deny:
@@ -767,7 +812,8 @@ class PermissionRules:
         subjects = _subjects(tool, args, self.workspace)
         if tool == "webfetch":
             host = _host(subjects[0])
-            return [f"webfetch(domain:{host})"] if host else []
+            # Escaped: a host such as "*" must not become an allow-everything rule.
+            return [f"webfetch(domain:{escape_glob(host)})"] if host else []
         if tool == "bash":
             # Never store junk such as bash(1) or bash(>&2): a part made only of
             # digits and redirect characters is not a command.
@@ -799,7 +845,7 @@ class PermissionRules:
             added.append(text)
         if added and self._persist:
             try:
-                save_store(self._store, self._stored)
+                self._stored = save_store(self._store, self._stored)
             except OSError as exc:
                 self.errors.append(f"cannot save {self._store}: {exc}")
         return added
