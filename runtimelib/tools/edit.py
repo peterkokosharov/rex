@@ -115,13 +115,32 @@ class GuardFile:
 
 # --- core -------------------------------------------------------------------
 
+def _split_keepends(text: str) -> list[str]:
+    """Lines split on "\n" only, each keeping its newline; the last line has none if the text lacks one."""
+    parts = text.split("\n")
+    last = parts.pop()
+    out = [p + "\n" for p in parts]
+    if last:
+        out.append(last)
+    return out
+
+
 def make_diff(old: str, new: str, path: str, max_lines: int = MAX_DIFF_LINES) -> str:
     """Unified diff (3 lines context), capped at ``max_lines`` lines."""
-    lines = list(difflib.unified_diff(
-        old.splitlines(), new.splitlines(),
+    raw = list(difflib.unified_diff(
+        _split_keepends(old), _split_keepends(new),
         fromfile=f"a/{path}", tofile=f"b/{path}",
         n=DIFF_CONTEXT, lineterm="",
     ))
+    lines: list[str] = []
+    for i, ln in enumerate(raw):
+        if i < 2 or ln.startswith("@@"):  # file headers and hunk headers
+            lines.append(ln)
+        elif ln.endswith("\n"):
+            lines.append(ln[:-1])
+        else:  # a body line whose source line has no trailing newline
+            lines.append(ln)
+            lines.append("\\ No newline at end of file")
     if len(lines) > max_lines:
         extra = len(lines) - max_lines
         lines = lines[:max_lines] + [f"... {extra} more lines"]
@@ -168,6 +187,11 @@ def plan_edit(
             raise EditError(f"{f.display} changed since it was read; read it again before editing")
 
     crlf = "\r\n" in text
+    if crlf and text.count("\n") > text.count("\r\n"):
+        raise EditError(
+            f"{f.display} mixes CRLF and LF line endings; edit refuses it because it could not keep them "
+            "intact. Normalise the line endings first (for example rewrite the file with fileops write)"
+        )
     if crlf:
         text = text.replace("\r\n", "\n")
     old = old_string.replace("\r\n", "\n")

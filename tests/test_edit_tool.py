@@ -142,6 +142,24 @@ def test_crlf_preserved(ws):
     assert (ws / "w.txt").read_bytes() == b"one\r\n2\r\n3\r\n"
 
 
+def test_mixed_line_endings_refused(ws):
+    (ws / "m.txt").write_bytes(b"one\r\ntwo\nthree\r\n")
+    fo, et, _ = local_tools()
+    fo.execute(operation="read", path="m.txt")
+    with pytest.raises(EditError, match="mixes CRLF and LF"):
+        et.execute(path="m.txt", old_string="two", new_string="2")
+    assert (ws / "m.txt").read_bytes() == b"one\r\ntwo\nthree\r\n"
+
+
+def test_diff_shows_trailing_newline_change():
+    diff = make_diff("a\nb\n", "a\nb", "f.txt")
+    assert "-b" in diff and "+b" in diff
+    assert diff.count("\\ No newline at end of file") == 1
+    assert diff.splitlines().index("+b") + 1 == diff.splitlines().index("\\ No newline at end of file")
+    both = make_diff("a\nx", "a\ny", "f.txt")
+    assert both.count("\\ No newline at end of file") == 2
+
+
 def test_missing_file_and_outside_workspace(ws):
     _, et, _ = local_tools()
     with pytest.raises(EditError, match="not found"):
