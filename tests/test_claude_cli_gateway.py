@@ -375,3 +375,29 @@ def test_main_reports_port_in_use(server, capsys):
 def test_reuse_address_policy():
     import os
     assert gw.GatewayServer.allow_reuse_address == (os.name != "nt")
+
+
+# ---------------------------------------------------------------- safe mode (privacy)
+
+def test_build_command_prefers_safe_mode():
+    cmd = gw.build_command("claude", "haiku", setting_sources=True, safe_mode=True)
+    assert "--safe-mode" in cmd and "--setting-sources" not in cmd
+    assert "--safe-mode" not in gw.build_command("claude", "haiku", setting_sources=True)
+
+
+def test_run_claude_uses_safe_mode_when_supported():
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        if "--help" in cmd:
+            return _proc("  --safe-mode  x  --setting-sources <s>")
+        seen["cmd"] = cmd
+        return _proc(json.dumps({"is_error": False, "result": "ok", "usage": {}}))
+
+    gw.supports_setting_sources.cache_clear()
+    try:
+        with mock.patch.object(gw.subprocess, "run", side_effect=fake_run):
+            gw.run_claude("x", "haiku", "claude-safe-bin", 5)
+    finally:
+        gw.supports_setting_sources.cache_clear()
+    assert "--safe-mode" in seen["cmd"] and "--setting-sources" not in seen["cmd"]

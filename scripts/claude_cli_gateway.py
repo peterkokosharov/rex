@@ -20,7 +20,8 @@ list, so a warning is printed), else the REX_GATEWAY_TOKEN environment variable.
 Binds to 127.0.0.1 only. Requests whose Host header is not 127.0.0.1 or
 localhost are refused (DNS rebinding), POST bodies must be application/json,
 and with a token every request needs "Authorization: Bearer <token>".
-Each CLI call runs in its own private temporary directory, removed afterwards.
+Each CLI call runs in its own private temporary directory, removed afterwards,
+with --safe-mode (no user CLAUDE.md/memory/settings; login kept) when the CLI has it.
 Logs method, path, model, duration and status only.
 """
 
@@ -123,11 +124,14 @@ def flatten_messages(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(out)
 
 
-def build_command(claude_bin: str, model: str, setting_sources: bool = False) -> list[str]:
+def build_command(claude_bin: str, model: str, setting_sources: bool = False,
+                  safe_mode: bool = False) -> list[str]:
     """Argument list for one non-interactive, tool-less Claude call.
 
-    With ``setting_sources`` only the user's own settings are loaded, never
-    project or local settings from the working directory.
+    ``safe_mode`` (`--safe-mode`) disables all customizations, including the
+    user's global CLAUDE.md, memory, hooks and settings, while keeping the
+    login. Without it, ``setting_sources`` loads only the user's own settings,
+    never project or local ones (the user's CLAUDE.md still loads then).
     """
     cmd = [
         claude_bin, "-p",
@@ -137,22 +141,38 @@ def build_command(claude_bin: str, model: str, setting_sources: bool = False) ->
         "--strict-mcp-config",
         "--no-session-persistence",
     ]
-    if setting_sources:
+    if safe_mode:
+        cmd.append("--safe-mode")
+    elif setting_sources:
         cmd += ["--setting-sources", "user"]
     return cmd
 
 
 @functools.lru_cache(maxsize=8)
-def supports_setting_sources(claude_bin: str) -> bool:
-    """True when `claude --help` lists --setting-sources (checked once per binary)."""
+def _help_text(claude_bin: str) -> bytes:
+    """`claude --help` output (checked once per binary); empty when unavailable."""
     try:
         proc = subprocess.run([claude_bin, "--help"], capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return b""
     out = proc.stdout or b""
     if isinstance(out, str):
         out = out.encode("utf-8", errors="replace")
-    return b"--setting-sources" in out
+    return out
+
+
+def supports_setting_sources(claude_bin: str) -> bool:
+    """True when `claude --help` lists --setting-sources."""
+    return b"--setting-sources" in _help_text(claude_bin)
+
+
+def supports_safe_mode(claude_bin: str) -> bool:
+    """True when `claude --help` lists --safe-mode."""
+    return b"--safe-mode" in _help_text(claude_bin)
+
+
+supports_setting_sources.cache_clear = _help_text.cache_clear  # type: ignore[attr-defined]
+supports_safe_mode.cache_clear = _help_text.cache_clear  # type: ignore[attr-defined]
 
 
 def run_claude(prompt: str, model: str, claude_bin: str, timeout: float) -> dict[str, Any]:
@@ -161,7 +181,8 @@ def run_claude(prompt: str, model: str, claude_bin: str, timeout: float) -> dict
     The CLI runs in a fresh private directory (mode 0700 on POSIX) that is
     removed after the call, so it never sees another request's files.
     """
-    cmd = build_command(claude_bin, model, supports_setting_sources(claude_bin))
+    cmd = build_command(claude_bin, model, supports_setting_sources(claude_bin),
+                        supports_safe_mode(claude_bin))
     workdir = tempfile.mkdtemp(prefix="claude-gw-")
     try:
         proc = subprocess.run(
@@ -449,8 +470,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"error: cannot listen on {HOST}:{args.port}: {exc.strerror or exc}", file=sys.stderr)
         return 1
-    if not supports_setting_sources(claude_bin):
-        print("note: this claude CLI has no --setting-sources; project settings may load", file=sys.stderr)
+    if supports_safe_mode(claude_bin):
+        pass
+    elif supports_setting_sources(claude_bin):
+        print("note: this claude CLI has no --safe-mode; your user CLAUDE.md/settings load into every request",
+              file=sys.stderr)
+    else:
+        print("note: this claude CLI has no --safe-mode or --setting-sources; "
+              "project and user settings may load", file=sys.stderr)
     print(f"claude-cli-gateway on http://{HOST}:{args.port}/v1 (default model {args.default_model})",
           file=sys.stderr)
     try:

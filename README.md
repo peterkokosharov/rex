@@ -189,8 +189,12 @@ cli:
 - `stream: true` is answered as SSE (one content chunk, a stop chunk, `[DONE]`).
 - Logs only method, path, model, duration and status. Timeout per call: `--timeout` (default 300 s).
 - Each call runs in a fresh private temporary directory (0700 on POSIX) that is removed afterwards, with
-  `--setting-sources user` when the installed CLI supports it, so no project or local settings load.
-  Your user-level Claude Code settings and `CLAUDE.md` still load and can change the reply style.
+  `--safe-mode` when the installed CLI supports it: no `CLAUDE.md`, memory, hooks or settings (user or
+  project) load, while the CLI login still works, so replies do not know your personal instructions.
+  Older CLIs without `--safe-mode` fall back to `--setting-sources user` (no project or local settings, but
+  your user-level `CLAUDE.md` and settings still load and can change replies); the gateway prints a note then.
+- A second gateway on the same port fails with "port N already in use" and a non-zero exit (on Windows the
+  port is bound exclusively).
 
 ```bash
 python3 scripts/claude_cli_gateway.py --port 4000 --default-model haiku
