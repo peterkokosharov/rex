@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${1:-${VERSION:-0.2.1}}"
+VERSION="${1:-${VERSION:-0.2.2}}"
 ARCH="${ARCH:-amd64}"
 BUILD="$ROOT/build-deb"
 STAGE="$BUILD/stage"

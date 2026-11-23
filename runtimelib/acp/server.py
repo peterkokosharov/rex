@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, IO, Optional
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.1"
+AGENT_VERSION = "0.2.2"
 READY_TIMEOUT = 30.0
 CLOSE_TIMEOUT = 5.0
 

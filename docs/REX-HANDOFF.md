@@ -106,8 +106,8 @@ command allowlist selected at container start, per role. Also
 
 ### P1 — portability
 
-`REX_ROOT=$HOME/tools/rex` is a local symlink. The `v0.2.1` release assets
-(`rex_0.2.1_amd64.deb`, `rex-win.zip`) have not been verified. The workspace
+`REX_ROOT=$HOME/tools/rex` is a local symlink. The `v0.2.2` release assets
+(`rex_0.2.2_amd64.deb`, `rex-win.zip`) are not yet verified. The workspace
 README lists opencode, Gemini, goose, Claude and codex, but not rex. Add rex to
 the runtime matrix and run one identical smoke test through each runtime.
 

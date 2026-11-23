@@ -4,6 +4,16 @@ LLM: nvidia nemotron ultra
 Licensed under MIT License
 -->
 
+# Release v0.2.2
+
+- Windows start without readline/fcntl.
+- Local-tools confinement: fileops/git/bash cwd; env scrub as a guard rail.
+- Orphan tool-call repair and compaction safety.
+- Streaming tool-call index fix.
+- /config secret masking.
+- Claude Code CLI gateway (chat only).
+- Stream chunk extra fields fix.
+
 # Runtime AI - Release v0.1.0
 
 ## Overview
