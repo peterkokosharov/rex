@@ -6,6 +6,7 @@
 
 """Tests for scripts/claude_cli_gateway.py (claude subprocess mocked)."""
 
+import errno
 import importlib.util
 import json
 import subprocess
@@ -360,8 +361,60 @@ def test_resolve_token_errors(tmp_path, token, name, content):
 
 def test_second_bind_on_same_port_fails(server):
     port = server.server_address[1]
-    with pytest.raises(OSError):
-        gw.make_server(port=port, claude_bin="claude", runner=lambda *a: None)
+    second = None
+    try:
+        with pytest.raises(OSError):
+            second = gw.make_server(port=port, claude_bin="claude", runner=lambda *a: None)
+    finally:
+        if second is not None:
+            second.server_close()
+
+
+@pytest.mark.parametrize("exc, text", [
+    (OSError(errno.EACCES, "denied"), "not allowed (in use exclusively, reserved, or privileged)"),
+    (OSError(errno.EADDRINUSE, "in use"), "already in use"),
+])
+def test_main_bind_error_messages(exc, text, capsys):
+    with mock.patch.object(gw.shutil, "which", return_value="claude"), \
+            mock.patch.object(gw, "make_server", side_effect=exc):
+        assert gw.main(["--port", "4000"]) == 1
+    assert text in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("help_out, note", [
+    (None, "could not run 'claude --help'; safe mode unknown"),
+    (b"  --setting-sources <s>", "has no --safe-mode; your user CLAUDE.md/settings load"),
+    (b"nothing useful", "no --safe-mode or --setting-sources"),
+    (b"  --safe-mode", None),
+])
+def test_main_fallback_notes(help_out, note, capsys):
+    fake = mock.Mock()
+    fake.serve_forever.side_effect = KeyboardInterrupt
+    with mock.patch.object(gw.shutil, "which", return_value="claude"), \
+            mock.patch.object(gw, "make_server", return_value=fake), \
+            mock.patch.object(gw, "_help_text", return_value=help_out):
+        assert gw.main(["--port", "4000"]) == 0
+    err = capsys.readouterr().err
+    if note:
+        assert note in err
+    else:
+        assert "note:" not in err
+
+
+def test_help_probe_failure_not_cached():
+    gw.supports_safe_mode.cache_clear()
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) <= 2:
+            raise OSError("boom")
+        return _proc("  --safe-mode")
+
+    with mock.patch.object(gw.subprocess, "run", side_effect=fake_run):
+        assert gw._help_text("bin-x") is None  # two attempts, nothing cached
+        assert gw.supports_safe_mode("bin-x") is True
+    gw.supports_safe_mode.cache_clear()
 
 
 def test_main_reports_port_in_use(server, capsys):

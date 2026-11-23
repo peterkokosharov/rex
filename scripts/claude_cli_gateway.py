@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import functools
 import hmac
 import json
 import os
@@ -50,7 +49,8 @@ DEFAULT_MODEL = "haiku"
 DEFAULT_TIMEOUT = 300.0
 ALIASES = ("haiku", "sonnet", "opus")
 MAX_BODY = 32 * 1024 * 1024
-_ADDR_IN_USE = (errno.EADDRINUSE, errno.EACCES)
+_ADDR_IN_USE = (errno.EADDRINUSE,)
+_ADDR_DENIED = (errno.EACCES,)
 
 
 class GatewayError(Exception):
@@ -148,31 +148,41 @@ def build_command(claude_bin: str, model: str, setting_sources: bool = False,
     return cmd
 
 
-@functools.lru_cache(maxsize=8)
-def _help_text(claude_bin: str) -> bytes:
-    """`claude --help` output (checked once per binary); empty when unavailable."""
-    try:
-        proc = subprocess.run([claude_bin, "--help"], capture_output=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return b""
-    out = proc.stdout or b""
-    if isinstance(out, str):
-        out = out.encode("utf-8", errors="replace")
-    return out
+_HELP_CACHE: dict[str, bytes] = {}
+
+
+def _help_text(claude_bin: str) -> bytes | None:
+    """`claude --help` output, cached per binary; None when it cannot be run.
+
+    A failed probe is retried once and is not cached, so a later call tries again.
+    """
+    if claude_bin in _HELP_CACHE:
+        return _HELP_CACHE[claude_bin]
+    for _ in range(2):
+        try:
+            proc = subprocess.run([claude_bin, "--help"], capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        out = proc.stdout or b""
+        if isinstance(out, str):
+            out = out.encode("utf-8", errors="replace")
+        _HELP_CACHE[claude_bin] = out
+        return out
+    return None
 
 
 def supports_setting_sources(claude_bin: str) -> bool:
     """True when `claude --help` lists --setting-sources."""
-    return b"--setting-sources" in _help_text(claude_bin)
+    return b"--setting-sources" in (_help_text(claude_bin) or b"")
 
 
 def supports_safe_mode(claude_bin: str) -> bool:
     """True when `claude --help` lists --safe-mode."""
-    return b"--safe-mode" in _help_text(claude_bin)
+    return b"--safe-mode" in (_help_text(claude_bin) or b"")
 
 
-supports_setting_sources.cache_clear = _help_text.cache_clear  # type: ignore[attr-defined]
-supports_safe_mode.cache_clear = _help_text.cache_clear  # type: ignore[attr-defined]
+supports_setting_sources.cache_clear = _HELP_CACHE.clear  # type: ignore[attr-defined]
+supports_safe_mode.cache_clear = _HELP_CACHE.clear  # type: ignore[attr-defined]
 
 
 def run_claude(prompt: str, model: str, claude_bin: str, timeout: float) -> dict[str, Any]:
@@ -472,12 +482,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token)
     except OSError as exc:
-        if exc.errno in _ADDR_IN_USE or getattr(exc, "winerror", None) in (10013, 10048):
+        winerror = getattr(exc, "winerror", None)
+        if exc.errno in _ADDR_IN_USE or winerror == 10048:
             print(f"error: port {args.port} already in use (is another gateway running?)", file=sys.stderr)
+        elif exc.errno in _ADDR_DENIED or winerror == 10013:
+            print(f"error: port {args.port} not allowed (in use exclusively, reserved, or privileged)",
+                  file=sys.stderr)
         else:
             print(f"error: cannot listen on {HOST}:{args.port}: {exc.strerror or exc}", file=sys.stderr)
         return 1
-    if supports_safe_mode(claude_bin):
+    if _help_text(claude_bin) is None:
+        print("note: could not run 'claude --help'; safe mode unknown - user CLAUDE.md may be sent",
+              file=sys.stderr)
+    elif supports_safe_mode(claude_bin):
         pass
     elif supports_setting_sources(claude_bin):
         print("note: this claude CLI has no --safe-mode; your user CLAUDE.md/settings load into every request",
