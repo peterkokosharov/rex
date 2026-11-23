@@ -12,11 +12,14 @@ locally logged-in `claude` CLI, without an API key. Chat only: Claude's own
 tools are disabled, request `tools` are ignored, `tool_calls` are never returned.
 
 Usage:
-    python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku] [--token T]
+    python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku] [--token-file F]
+
+The token comes from --token-file F, else --token T (visible in the process
+list, so a warning is printed), else the REX_GATEWAY_TOKEN environment variable.
 
 Binds to 127.0.0.1 only. Requests whose Host header is not 127.0.0.1 or
 localhost are refused (DNS rebinding), POST bodies must be application/json,
-and with --token every request needs "Authorization: Bearer <token>".
+and with a token every request needs "Authorization: Bearer <token>".
 Each CLI call runs in its own private temporary directory, removed afterwards.
 Logs method, path, model, duration and status only.
 """
@@ -27,6 +30,7 @@ import argparse
 import functools
 import hmac
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -38,6 +42,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 4000
+TOKEN_ENV = "REX_GATEWAY_TOKEN"
 DEFAULT_MODEL = "haiku"
 DEFAULT_TIMEOUT = 300.0
 ALIASES = ("haiku", "sonnet", "opus")
@@ -370,6 +375,30 @@ def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
     return server
 
 
+def resolve_token(token: str | None, token_file: str | None, environ: Any = None) -> str | None:
+    """Pick the bearer token: --token-file, else --token (warns), else $REX_GATEWAY_TOKEN.
+
+    Raises ValueError for an unreadable or empty token file, or both flags given.
+    """
+    if token and token_file:
+        raise ValueError("use either --token or --token-file, not both")
+    if token_file:
+        try:
+            with open(token_file, encoding="utf-8") as fh:
+                value = fh.read().strip()
+        except OSError as exc:
+            raise ValueError(f"cannot read --token-file: {exc.strerror or exc}") from None
+        if not value:
+            raise ValueError("--token-file is empty")
+        return value
+    if token:
+        print(f"warning: --token is visible in the process list; prefer --token-file or {TOKEN_ENV}",
+              file=sys.stderr)
+        return token
+    env = os.environ if environ is None else environ
+    return env.get(TOKEN_ENV) or None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="OpenAI-compatible gateway to the local Claude Code CLI")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -377,15 +406,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="haiku, sonnet, opus or a full id like claude-sonnet-4-6")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds per CLI call")
     parser.add_argument("--token", default=None,
-                        help="if set, every request needs 'Authorization: Bearer <token>'")
+                        help="if set, every request needs 'Authorization: Bearer <token>' "
+                             f"(visible in the process list; prefer --token-file or ${TOKEN_ENV})")
+    parser.add_argument("--token-file", default=None,
+                        help="read the bearer token from this file (surrounding whitespace stripped)")
     args = parser.parse_args(argv)
+    try:
+        token = resolve_token(args.token, args.token_file)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not valid_model(args.default_model):
         parser.error(f"invalid --default-model '{args.default_model}'")
     claude_bin = shutil.which("claude")
     if not claude_bin:
         print("claude CLI not found on PATH", file=sys.stderr)
         return 2
-    server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=args.token)
+    server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token)
     if not supports_setting_sources(claude_bin):
         print("note: this claude CLI has no --setting-sources; project settings may load", file=sys.stderr)
     print(f"claude-cli-gateway on http://{HOST}:{args.port}/v1 (default model {args.default_model})",

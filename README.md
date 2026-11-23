@@ -178,8 +178,11 @@ cli:
 - Binds to `127.0.0.1` only; default port 4000. Requests whose `Host` header is not `127.0.0.1` or
   `localhost` (with or without this port) get 403, which stops DNS-rebinding attacks from a browser.
 - POST bodies must be sent as `Content-Type: application/json` (else 415).
-- Without `--token` any `Authorization` header is accepted. With `--token T` every request needs
+- Without a token any `Authorization` header is accepted. With a token `T` every request needs
   `Authorization: Bearer T` (constant-time compare); set `RUNTIME_LITELLM__API_KEY=T` in rex.
+  The token comes from `--token-file F` (file content, whitespace stripped), else `--token T`, else the
+  `REX_GATEWAY_TOKEN` environment variable. `--token` works but prints a warning: command-line
+  arguments are visible to other users in the process list.
 - Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6`.
 - Chat only: Claude's own tools are disabled, request `tools` are ignored, `tool_calls` are never returned,
   so rex's agent tools will not run through this backend.

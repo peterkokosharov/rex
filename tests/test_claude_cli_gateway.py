@@ -326,3 +326,31 @@ def test_build_command_setting_sources_flag():
     assert "--setting-sources" not in gw.build_command("claude", "haiku")
     cmd = gw.build_command("claude", "haiku", setting_sources=True)
     assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
+
+# ---------------------------------------------------------------- token sources
+
+def test_resolve_token_sources(tmp_path, capsys):
+    f = tmp_path / "tok"
+    f.write_text("  s3cret\n", encoding="utf-8")
+    env = {gw.TOKEN_ENV: "from-env"}
+    assert gw.resolve_token(None, str(f), env) == "s3cret"
+    assert capsys.readouterr().err == ""
+    assert gw.resolve_token("argv-tok", None, env) == "argv-tok"
+    assert "process list" in capsys.readouterr().err
+    assert gw.resolve_token(None, None, env) == "from-env"
+    assert gw.resolve_token(None, None, {}) is None
+    assert gw.resolve_token(None, None, {gw.TOKEN_ENV: ""}) is None
+
+
+@pytest.mark.parametrize("token, name, content", [
+    ("t", "tok", "x"),       # both flags
+    (None, "missing", None),  # unreadable file
+    (None, "empty", " \n"),   # empty file
+])
+def test_resolve_token_errors(tmp_path, token, name, content):
+    f = tmp_path / name
+    if content is not None:
+        f.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError):
+        gw.resolve_token(token, str(f), {})
