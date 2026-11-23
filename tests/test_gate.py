@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Gate tests: rules, hooks, asker and the loop. Fake tools, no network."""
@@ -247,6 +247,42 @@ class LoopGate(GateBase):
         loop = self.make_loop(tool, asker=ScriptedAsker("allow_once"), local=True)
         res, _ = self.run_call(loop, "bash", {"command": "ls"})
         self.assertTrue(res.success)
+
+    def test_mode_follows_local_toggle_on_live_loop(self):
+        # /local on in the REPL flips the config key; the gate must follow at once.
+        tool = FakeTool("bash")
+        loop = self.make_loop(tool)
+        self.assertEqual(loop.gate.mode, "guard")
+        res, _ = self.run_call(loop, "bash", {"command": "ls"})
+        self.assertTrue(res.success)  # guard default: allow
+        loop.config.set("cli.unsafe_local_tools", True)
+        self.assertEqual(loop.gate.mode, "local")
+        res, _ = self.run_call(loop, "bash", {"command": "ls"})
+        self.assertFalse(res.success)  # local: ask -> DenyAsker
+        self.assertEqual(len(tool.calls), 1)
+        loop.config.set("cli.unsafe_local_tools", False)
+        self.assertEqual(loop.gate.mode, "guard")
+
+    def test_hook_payload_gets_current_mode(self):
+        out = self.dir / "modes.txt"
+        script = self.script("m.py", f"""
+            import json, sys
+            with open({str(out)!r}, 'a') as f:
+                f.write(json.load(sys.stdin)['mode'] + '\\n')
+        """)
+        cfg = Config({**self.CFG, "hooks": {"pre_tool": [{"command": script}]}})
+        gate = PermissionGate.from_config(cfg, workspace=str(self.dir), persist=False)
+        gate.check("fileops", {"operation": "read", "path": "a"})
+        cfg.set("cli.unsafe_local_tools", True)
+        gate.check("fileops", {"operation": "read", "path": "a"})
+        self.assertEqual(out.read_text().split(), ["guard", "local"])
+
+    def test_pinned_mode_detaches_config(self):
+        cfg = Config(dict(self.CFG))
+        gate = PermissionGate.from_config(cfg, workspace=str(self.dir), persist=False)
+        gate.mode = "sandbox"
+        cfg.set("cli.unsafe_local_tools", True)
+        self.assertEqual(gate.mode, "sandbox")
 
 
 if __name__ == "__main__":

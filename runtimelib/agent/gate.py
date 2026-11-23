@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Permission gate for tool calls in the agent loop.
@@ -103,12 +103,29 @@ class PermissionGate:
         hooks: Optional[CommandHookRunner] = None,
         asker: Optional[Asker] = None,
         mode: str = MODE_GUARD,
+        config: Any = None,
     ) -> None:
         self.rules = rules
         self.hooks = hooks
         self.asker: Asker = asker or DenyAsker()
-        self.mode = mode
+        self._mode = mode
+        # With a config the mode is live: ``/local on`` in the REPL flips
+        # ``cli.unsafe_local_tools`` and the very next check sees local mode.
+        self._config = config
         self._counter = 0
+
+    @property
+    def mode(self) -> str:
+        """Current mode; resolved from the config on every read when one is attached."""
+        if self._config is not None:
+            return resolve_mode(self._config)
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        """Pin the mode; detaches the config."""
+        self._mode = value
+        self._config = None
 
     @classmethod
     def from_config(
@@ -127,7 +144,7 @@ class PermissionGate:
         hooks = CommandHookRunner.from_config(
             hooks_cfg if isinstance(hooks_cfg, dict) else {}, cwd=workspace, session=session, mode=mode
         )
-        return cls(rules, hooks if hooks.has_hooks else None, asker, mode)
+        return cls(rules, hooks if hooks.has_hooks else None, asker, mode, config=config)
 
     def set_asker(self, asker: Optional[Asker]) -> None:
         self.asker = asker or DenyAsker()
@@ -135,13 +152,15 @@ class PermissionGate:
     # -- before the call
     def check(self, name: str, args: Mapping[str, Any] | None, tool: Optional[Tool] = None) -> GateDecision:
         clean = strip_internal(args)
-        verdict = self.rules.evaluate(name, clean, self.mode)
+        mode = self.mode
+        verdict = self.rules.evaluate(name, clean, mode)
         if verdict.decision == PermissionResult.DENY:
             return GateDecision(False, verdict.reason or "Permission denied", "rule")
 
         decision = verdict.decision
         hook_decision = None
         if self.hooks is not None:
+            self.hooks.mode = mode
             pre = self.hooks.run_pre(name, clean)
             hook_decision = pre.decision
             if pre.denied:
@@ -203,6 +222,7 @@ class PermissionGate:
         except (TypeError, ValueError):
             preview = str(result)
         try:
+            self.hooks.mode = self.mode
             return self.hooks.run_post(name, strip_internal(args), ok=ok, error=error,
                                        result_preview=preview[:2000])
         except Exception as exc:  # post hooks never break the call
