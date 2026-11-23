@@ -511,3 +511,185 @@ def test_handler_log_has_counts_only(make_srv, capsys):
         time.sleep(0.02)
     assert "tools=2 calls=1 retry=0" in err
     assert "a.txt" not in err and "read a.txt" not in err
+
+
+# ---------------------------------------------------------------- retry, deadline, error mapping
+
+def test_invalid_json_then_valid_retry(make_srv):
+    runner = Script('{"tool_calls": [', READ_CALL)
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        body = json.load(r)
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    assert body["usage"] == {"prompt_tokens": 20, "completion_tokens": 4, "total_tokens": 24}
+    first, second = runner.calls[0]["prompt"], runner.calls[1]["prompt"]
+    assert second.startswith(first)
+    assert "rejected: the reply is not valid JSON" in second
+
+
+def test_invalid_twice_is_502(make_srv):
+    srv = make_srv(Script("{nope", '{"content": 1}'))
+    code, body = post_error(srv, REQ)
+    assert code == 502 and body["error"]["type"] == "tool_protocol_error"
+    assert "twice" in body["error"]["message"]
+
+
+def test_unknown_tool_is_retried(make_srv):
+    runner = Script('{"tool_calls":[{"name":"bash","arguments":{"command":"rm -rf /"}}]}', READ_CALL)
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        (call,) = json.load(r)["choices"][0]["message"]["tool_calls"]
+    assert call["function"]["name"] == "fileops"
+    assert 'rejected: tool call 1: unknown tool "bash"' in runner.calls[1]["prompt"]
+
+
+def test_forced_tool_not_used(make_srv):
+    req = {**REQ, "tool_choice": {"type": "function", "function": {"name": "echo"}}}
+    srv = make_srv(Script(READ_CALL, READ_CALL))
+    code, body = post_error(srv, req)
+    assert code == 502 and "only the tool echo" in body["error"]["message"]
+    runner = Script("I will not.", '{"tool_calls":[{"name":"echo","arguments":{"text":"hi"}}]}')
+    srv = make_srv(runner)
+    with post(srv, req) as r:
+        assert json.load(r)["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "echo"
+    assert len(runner.calls) == 2
+
+
+def test_prose_before_brace_under_auto_is_content(make_srv):
+    text = 'Sure: {"tool_calls":[{"name":"fileops","arguments":{}}]}'
+    runner = Script(text)
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        msg = json.load(r)["choices"][0]["message"]
+    assert msg == {"role": "assistant", "content": text}
+    assert len(runner.calls) == 1
+
+
+def test_prose_under_required_is_retried(make_srv):
+    runner = Script("Sure, reading it now.", READ_CALL)
+    srv = make_srv(runner)
+    with post(srv, {**REQ, "tool_choice": "required"}) as r:
+        assert json.load(r)["choices"][0]["finish_reason"] == "tool_calls"
+    assert len(runner.calls) == 2 and "must be the JSON envelope" in runner.calls[1]["prompt"]
+
+
+def test_timeout_during_retry_is_504(make_srv):
+    srv = make_srv(Script("{bad", gw.GatewayError(504, "claude CLI timed out after 9s", "timeout")))
+    code, body = post_error(srv, REQ)
+    assert code == 504 and body["error"]["type"] == "timeout"
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_one_deadline_covers_both_attempts():
+    clock = Clock()
+    budgets = []
+
+    def runner(prompt, model, binary, timeout):
+        budgets.append(timeout)
+        clock.now += 100
+        return {"text": "{bad" if len(budgets) == 1 else READ_CALL, "usage": {}}
+
+    out = gw.run_tool_turn(runner, "P", "haiku", "claude", 300, spec(), clock=clock)
+    assert budgets == [300, 200] and out["retries"] == 1
+
+
+def test_retry_skipped_when_time_is_short():
+    clock = Clock()
+    calls = []
+
+    def runner(prompt, model, binary, timeout):
+        calls.append(timeout)
+        clock.now += 295
+        return {"text": "{bad", "usage": {}}
+
+    stats = {}
+    with pytest.raises(gw.GatewayError) as ei:
+        gw.run_tool_turn(runner, "P", "haiku", "claude", 300, spec(), stats=stats, clock=clock)
+    assert ei.value.status == 504 and calls == [300] and stats["retries"] == 0
+
+
+def test_cli_error_is_not_retried(make_srv):
+    runner = Script(gw.GatewayError(502, "claude CLI error (exit 1): x", "cli_error"))
+    srv = make_srv(runner)
+    code, body = post_error(srv, REQ)
+    assert code == 502 and body["error"]["type"] == "cli_error" and len(runner.calls) == 1
+
+
+# ---------------------------------------------------------------- --json-schema / --system-prompt path
+
+def test_structured_output_is_preferred():
+    result = {"text": "not json at all", "structured": {"tool_calls": [
+        {"name": "echo", "arguments": {"text": "hi"}}]}, "usage": {}}
+    assert gw.interpret_reply(result, spec()) == (None, [("echo", {"text": "hi"})])
+    with pytest.raises(gw.ProtocolError, match="unknown key"):
+        gw.interpret_reply({"text": "", "structured": {"answer": "x"}}, spec())
+
+
+@pytest.mark.parametrize("flags, use_schema, expected", [
+    ({"--safe-mode", "--json-schema", "--system-prompt"}, True, {"system_prompt", "json_schema"}),
+    ({"--safe-mode", "--json-schema", "--system-prompt"}, False, {"system_prompt"}),
+    ({"--safe-mode"}, True, set()),
+])
+def test_tool_run_kw_follow_probe(make_srv, flags, use_schema, expected):
+    runner = Script(READ_CALL, "chat answer")
+    srv = make_srv(runner, flags=flags, json_schema=use_schema)
+    post(srv, REQ).read()
+    post(srv, {"messages": [{"role": "user", "content": "hi"}]}).read()
+    tool_kw = {k for k in runner.calls[0] if k not in ("prompt", "timeout")}
+    chat_kw = {k for k in runner.calls[1] if k not in ("prompt", "timeout")}
+    assert tool_kw == expected and chat_kw == set()
+    if "json_schema" in expected:
+        assert runner.calls[0]["json_schema"] is gw.ENVELOPE_SCHEMA
+    if "system_prompt" in expected:
+        assert runner.calls[0]["system_prompt"] == gw.SYSTEM_PROMPT_LINE
+
+
+def test_build_command_tool_mode_stays_toolless():
+    cmd = gw.build_command(["py", "fake.py"], "haiku", safe_mode=True,
+                           system_prompt=gw.SYSTEM_PROMPT_LINE, json_schema=gw.ENVELOPE_SCHEMA)
+    assert cmd[:3] == ["py", "fake.py", "-p"]
+    assert cmd[cmd.index("--tools") + 1] == ""
+    assert "--strict-mcp-config" in cmd and "--safe-mode" in cmd and "--mcp-config" not in cmd
+    assert cmd[cmd.index("--system-prompt") + 1] == gw.SYSTEM_PROMPT_LINE
+    assert json.loads(cmd[cmd.index("--json-schema") + 1]) == gw.ENVELOPE_SCHEMA
+    assert "--json-schema" not in gw.build_command("claude", "haiku")
+
+
+def test_run_claude_returns_structured_output(monkeypatch):
+    out = json.dumps({"is_error": False, "result": "{\"content\":\"done\"}",
+                      "structured_output": {"content": "done"}, "usage": {}})
+
+    class P:
+        returncode = 0
+        pid = 1
+
+        def __init__(self, cmd, **kw):
+            P.cmd = cmd
+
+        def communicate(self, input=None, timeout=None):
+            return out.encode(), b""
+
+    monkeypatch.setattr(gw.subprocess, "Popen", P)
+    res = gw.run_claude("x", "haiku", "claude", 5, {"--safe-mode"}, json_schema=gw.ENVELOPE_SCHEMA)
+    assert res["structured"] == {"content": "done"} and "--json-schema" in P.cmd
+    assert "structured" not in gw.run_claude("x", "haiku", "claude", 5, {"--safe-mode"})
+
+
+def test_main_no_json_schema_switch():
+    from unittest import mock
+    fake = mock.Mock()
+    fake.serve_forever.side_effect = KeyboardInterrupt
+    with mock.patch.object(gw, "safe_which", return_value="claude"), \
+            mock.patch.object(gw, "make_server", return_value=fake) as ms, \
+            mock.patch.object(gw, "cli_flags", return_value={"--safe-mode", "--json-schema"}):
+        assert gw.main(["--port", "4000", "--no-json-schema"]) == 0
+        assert ms.call_args.kwargs["json_schema"] is False
+        assert gw.main(["--port", "4000"]) == 0
+        assert ms.call_args.kwargs["json_schema"] is True

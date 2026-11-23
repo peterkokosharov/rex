@@ -519,17 +519,22 @@ def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | N
     return content, calls
 
 
-def build_command(claude_bin: str, model: str, setting_sources: bool = False,
-                  safe_mode: bool = False) -> list[str]:
+def build_command(claude_bin: str | list[str], model: str, setting_sources: bool = False,
+                  safe_mode: bool = False, system_prompt: str | None = None,
+                  json_schema: dict[str, Any] | None = None) -> list[str]:
     """Argument list for one non-interactive, tool-less Claude call.
 
     ``safe_mode`` (`--safe-mode`) disables all customizations, including the
     user's global CLAUDE.md, memory, hooks and settings, while keeping the
     login. Without it, ``setting_sources`` loads only the user's own settings,
     never project or local ones (the user's CLAUDE.md still loads then).
+    Tool mode may add a short constant ``system_prompt`` and the fixed envelope
+    ``json_schema``; `--tools ""` stays and `--mcp-config` is never passed.
+    ``claude_bin`` may be a list (tests launch a fake as [python, fake.py]).
     """
-    cmd = [
-        claude_bin, "-p",
+    prefix = list(claude_bin) if isinstance(claude_bin, (list, tuple)) else [claude_bin]
+    cmd = prefix + [
+        "-p",
         "--model", model,
         "--output-format", "json",
         "--tools", "",
@@ -540,6 +545,10 @@ def build_command(claude_bin: str, model: str, setting_sources: bool = False,
         cmd.append("--safe-mode")
     elif setting_sources:
         cmd += ["--setting-sources", "user"]
+    if system_prompt:
+        cmd += ["--system-prompt", system_prompt]
+    if json_schema is not None:
+        cmd += ["--json-schema", json.dumps(json_schema, separators=(",", ":"))]
     return cmd
 
 
@@ -569,17 +578,20 @@ def cli_flags(claude_bin: str) -> set[str] | None:
     return None
 
 
-def run_claude(prompt: str, model: str, claude_bin: str, timeout: float,
-               flags: Any = frozenset()) -> dict[str, Any]:
-    """Run the CLI with the prompt on stdin; return {'text', 'usage'}.
+def run_claude(prompt: str, model: str, claude_bin: str | list[str], timeout: float,
+               flags: Any = frozenset(), system_prompt: str | None = None,
+               json_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the CLI with the prompt on stdin; return {'text', 'usage'} (+ 'structured').
 
     ``flags`` is the startup probe result (see cli_flags); nothing is probed here.
+    With ``json_schema`` the CLI's ``structured_output`` object is returned as 'structured'.
     The CLI runs in a fresh private directory (mode 0700 on POSIX) that is
     removed after the call, so it never sees another request's files. On a
     timeout the whole process tree is killed.
     """
     flags = flags or frozenset()
-    cmd = build_command(claude_bin, model, "--setting-sources" in flags, "--safe-mode" in flags)
+    cmd = build_command(claude_bin, model, "--setting-sources" in flags, "--safe-mode" in flags,
+                        system_prompt, json_schema)
     workdir = tempfile.mkdtemp(prefix="claude-gw-")
     try:
         proc = subprocess.Popen(
@@ -615,7 +627,10 @@ def run_claude(prompt: str, model: str, claude_bin: str, timeout: float,
         detail = str(data.get("result") or data.get("subtype") or "unknown error")[:300]
         raise GatewayError(502, f"claude CLI error (exit {proc.returncode}): {detail}", "cli_error")
     usage = data.get("usage") or {}
-    return {"text": str(data.get("result") or ""), "usage": usage}
+    out = {"text": str(data.get("result") or ""), "usage": usage}
+    if json_schema is not None and isinstance(data.get("structured_output"), dict):
+        out["structured"] = data["structured_output"]
+    return out
 
 
 def _openai_usage(usage: dict[str, Any]) -> dict[str, int]:
@@ -692,7 +707,11 @@ def interpret_reply(result: dict[str, Any], spec: ToolSpec) -> tuple[str | None,
     A reply that does not start with '{' is plain content, accepted only under tool_choice auto.
     """
     text = str(result.get("text") or "")
-    envelope = parse_envelope(text)
+    structured = result.get("structured")
+    if isinstance(structured, dict):  # --json-schema result: already an object
+        envelope = parse_envelope(json.dumps(structured))
+    else:
+        envelope = parse_envelope(text)
     if envelope is None:
         if not text.strip():
             raise ProtocolError("empty reply: give tool_calls or content")
@@ -702,19 +721,43 @@ def interpret_reply(result: dict[str, Any], spec: ToolSpec) -> tuple[str | None,
     return validate_envelope(envelope, spec)
 
 
-def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout: float,
-                  spec: ToolSpec) -> dict[str, Any]:
-    """One tool-mode request: run the CLI, then parse and validate its reply.
+MIN_RETRY_SECONDS = 10.0
 
-    Returns {"content", "calls", "usage", "retries"}. A broken reply raises GatewayError 502
-    tool_protocol_error; nothing half-valid is passed on.
+
+def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout: float,
+                  spec: ToolSpec, run_kw: dict[str, Any] | None = None,
+                  stats: dict[str, Any] | None = None, clock: Any = time.monotonic) -> dict[str, Any]:
+    """One tool-mode request: run the CLI, then parse and validate its reply; retry at most once.
+
+    One deadline (``timeout`` seconds) covers both attempts: the retry gets only the time left and
+    is skipped with 504 when less than MIN_RETRY_SECONDS remain. A second bad reply gives 502
+    tool_protocol_error; nothing half-valid is passed on. Prose under tool_choice auto is a valid
+    first answer and is never retried. ``run_kw`` goes to the runner (system_prompt, json_schema).
+    Returns ``stats`` updated with {"content", "calls", "usage", "retries"}.
     """
-    result = runner(prompt, model, claude_bin, timeout)
-    try:
-        content, calls = interpret_reply(result, spec)
-    except ProtocolError as exc:
-        raise GatewayError(502, f"the model broke the tool protocol: {exc}", "tool_protocol_error") from None
-    return {"content": content, "calls": calls, "usage": result.get("usage") or {}, "retries": 0}
+    stats = {} if stats is None else stats
+    stats.update(retries=0, calls=[], usage={})
+    deadline = clock() + timeout
+    attempt_prompt, budget = prompt, timeout
+    for attempt in (1, 2):
+        result = runner(attempt_prompt, model, claude_bin, budget, **(run_kw or {}))
+        stats["usage"] = sum_usage(stats["usage"], result.get("usage") or {})
+        try:
+            content, calls = interpret_reply(result, spec)
+        except ProtocolError as exc:
+            reason = str(exc)
+        else:
+            stats.update(content=content, calls=calls)
+            return stats
+        if attempt == 2:
+            break
+        budget = deadline - clock()
+        if budget < MIN_RETRY_SECONDS:
+            raise GatewayError(504, f"the model broke the tool protocol ({reason}) and too little time is "
+                               "left to retry", "timeout")
+        stats["retries"] = 1
+        attempt_prompt = retry_prompt(prompt, reason)
+    raise GatewayError(502, f"the model broke the tool protocol twice: {reason}", "tool_protocol_error")
 
 
 def error_body(message: str, err_type: str) -> dict[str, Any]:
@@ -849,8 +892,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     result = self.server.runner(prompt, model, self.server.claude_bin, self.server.timeout)
                     text, usage, calls = result["text"], result["usage"], None
                 else:
-                    turn = run_tool_turn(self.server.runner, prompt, model, self.server.claude_bin,
-                                         self.server.timeout, spec)
+                    run_tool_turn(self.server.runner, prompt, model, self.server.claude_bin,
+                                  self.server.timeout, spec, self.server.tool_run_kw, turn)
                     text, usage = turn["content"], turn["usage"]
                     calls = openai_tool_calls(turn["calls"]) or None
             finally:
@@ -912,8 +955,14 @@ class GatewayServer(ThreadingHTTPServer):
 def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
                 claude_bin: str | None = None, timeout: float = DEFAULT_TIMEOUT,
                 runner: Any = None, token: str | None = None, flags: Any = None,
-                max_concurrent: int = DEFAULT_MAX_CONCURRENT) -> ThreadingHTTPServer:
-    """Create the server bound to 127.0.0.1 (never another interface)."""
+                max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+                json_schema: bool = True) -> ThreadingHTTPServer:
+    """Create the server bound to 127.0.0.1 (never another interface).
+
+    ``claude_bin`` may be a list (a fake CLI in tests). In tool mode the runner gets
+    ``tool_run_kw``: the short --system-prompt line and, unless ``json_schema`` is False,
+    the fixed envelope --json-schema, each only when the startup probe lists the flag.
+    """
     server = GatewayServer((HOST, port), GatewayHandler)
     server.daemon_threads = True
     server.default_model = default_model
@@ -921,8 +970,13 @@ def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
     server.timeout = timeout
     server.cli_flags = frozenset(flags or ())  # probed once at startup, never again
     server.slots = threading.BoundedSemaphore(max(1, int(max_concurrent)))
-    server.runner = runner or (lambda prompt, model, binary, tmo: run_claude(
-        prompt, model, binary, tmo, server.cli_flags))
+    server.runner = runner or (lambda prompt, model, binary, tmo, **kw: run_claude(
+        prompt, model, binary, tmo, server.cli_flags, **kw))
+    server.tool_run_kw = {}
+    if "--system-prompt" in server.cli_flags:
+        server.tool_run_kw["system_prompt"] = SYSTEM_PROMPT_LINE
+    if json_schema and "--json-schema" in server.cli_flags:
+        server.tool_run_kw["json_schema"] = ENVELOPE_SCHEMA
     server.token = token or None
     return server
 
@@ -966,6 +1020,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="at most this many claude processes at once (default %(default)s)")
     parser.add_argument("--allow-unsafe", action="store_true",
                         help="start even when 'claude --help' cannot be probed (privacy flags unknown)")
+    parser.add_argument("--no-json-schema", action="store_true",
+                        help="in tool mode do not pass the fixed envelope schema with --json-schema "
+                             "(the reply is then parsed from plain text only)")
     args = parser.parse_args(argv)
     if args.max_concurrent < 1:
         parser.error("--max-concurrent must be at least 1")
@@ -992,7 +1049,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token,
-                             flags=flags, max_concurrent=args.max_concurrent)
+                             flags=flags, max_concurrent=args.max_concurrent,
+                             json_schema=not args.no_json_schema)
     except OSError as exc:
         winerror = getattr(exc, "winerror", None)
         if exc.errno in _ADDR_IN_USE or winerror == 10048:
