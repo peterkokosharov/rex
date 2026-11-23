@@ -516,7 +516,8 @@ permissions:
 Precedence is deny > ask > allow > mode default. **Allow is safe by construction**: a bash command is auto-allowed
 only when every part is a simple command (plain command word; no grouping, functions, reserved words, heredocs,
 herestrings, pipes into a shell or interpreter, command substitution, file redirection, extra `env`, or unclear
-quoting) and an allow rule matches it. **Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`,
+quoting) and an allow rule matches it. A bash command whose text contains a newline or CR is never auto-allowed
+(it always asks at least). **Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`,
 `timeout`, `bash -c`, `eval`, `xargs`, ...) and simple expansions before matching, but a deny rule cannot stop
 code run by an interpreter (`python -c`, `perl -e`, `node -e`) or obfuscated shell. Use the Docker guard (the real
 boundary) or allow-lists for anything that matters.

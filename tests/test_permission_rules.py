@@ -292,6 +292,41 @@ class BashTests(unittest.TestCase):
                 self.assertNotEqual(rules({"allow": ["bash(echo *)"]}).evaluate("bash", bash(cmd), "local").decision,
                                     R.ALLOW)
 
+    CONTINUATION_PAYLOADS = [
+        "{cmd} a\\\\\nrm -rf /",          # escaped backslash, then a real newline (2 backslashes)
+        "{cmd} a\\\\\\\\\nrm -rf /",      # 4 backslashes
+        "{cmd} hi # x\\\nrm -rf /",       # comments never continue
+        "{cmd} hi # x\\\\\nrm -rf /",     # comment ending in 2 backslashes
+        "{cmd} hi # x\\\\\\\\\nrm -rf /",  # comment ending in 4 backslashes
+        "{cmd} a\\\\\r\nrm -rf /",        # CRLF
+    ]
+
+    def test_continuation_bypasses(self):
+        allows = ["bash(echo *)", "bash(git status*)", "bash(pytest *)"]
+        deny = rules({"allow": allows, "deny": ["bash(rm *)"]})
+        loose = rules({"allow": allows})
+        for cmd in ("echo", "git status", "pytest -q"):
+            for payload in self.CONTINUATION_PAYLOADS:
+                text = payload.format(cmd=cmd)
+                with self.subTest(text=text):
+                    self.assertEqual(deny.evaluate("bash", bash(text), "guard").decision, R.DENY)
+                    self.assertNotEqual(loose.evaluate("bash", bash(text), "local").decision, R.ALLOW)
+                    self.assertNotEqual(loose.evaluate("bash", bash(text), "guard").decision, R.ALLOW)
+
+    def test_multi_line_never_auto_allowed(self):
+        pr = rules({"allow": ["bash(echo *)", "bash(ls*)"]})
+        for cmd in ("echo hi\nls", "echo hi\\\nthere", "echo hi\r\nls", "echo hi\rls"):
+            with self.subTest(cmd=cmd):
+                v = pr.evaluate("bash", bash(cmd), "guard")
+                self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+                self.assertIn("multi-line", v.reason)
+
+    def test_continuation_only_where_bash_joins(self):
+        self.assertEqual(split_bash("echo a\\\\\nls")[0], ["echo a\\\\", "ls"])
+        self.assertEqual(split_bash("echo hi # c\\\nls")[0], ["echo hi", "ls"])
+        self.assertEqual(split_bash('echo "a\\\nb"')[0], ['echo "ab"'])
+        self.assertEqual(split_bash("echo 'a\\\nb'; ls")[0], ["echo 'a\\\nb'", "ls"])
+
     def test_comments_and_ansi_c_quotes(self):
         self.assertEqual(split_bash("echo hi # it's; rm x\nls")[0], ["echo hi", "ls"])
         self.assertEqual(split_bash("echo a#b; ls")[0], ["echo a#b", "ls"])

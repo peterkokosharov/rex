@@ -19,9 +19,10 @@ fnmatch-style glob. The spec depends on the tool:
 Precedence: deny > ask > allow > mode default. Compound bash commands are split
 on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines (quote aware): any part that
 hits deny denies, any part that hits ask asks, "allow" needs every part allowed.
-The splitter understands comments, ``$'...'`` and line continuations and fails
-closed: an open quote, a part that cannot be split into words, or a line break
-inside quotes is never auto-allowed. The deny pass also splits a quote-blind
+A command whose text contains a newline or CR is never auto-allowed (always
+at least ask). The splitter understands comments, ``$'...'`` and line
+continuations and fails closed: an open quote or a part that cannot be split
+into words is never auto-allowed. The deny pass also splits a quote-blind
 copy of the command.
 Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
 (at least ask) and its content is also checked against deny rules. Deny and
@@ -194,7 +195,9 @@ def scan_bash(command: str) -> BashScan:
     """
     import shlex
 
-    command = join_continuations(command)
+    # No global pre-join of backslash-newline: it is only a continuation when
+    # the backslash is unquoted (or in double quotes), unescaped and not in a
+    # comment, which only the scanner below knows.
     parts: list[str] = []
     seps: list[str] = []
     buf: list[str] = []
@@ -234,8 +237,15 @@ def scan_bash(command: str) -> BashScan:
             i += 1
             continue
         if c == "\\" and i + 1 < n:
-            buf.append(command[i:i + 2])
-            i += 2
+            # Unquoted or in double quotes: backslash-newline is a line
+            # continuation and disappears; any other escaped char is kept.
+            if command.startswith("\\\n", i):
+                i += 2
+            elif command.startswith("\\\r\n", i):
+                i += 3
+            else:
+                buf.append(command[i:i + 2])
+                i += 2
             continue
         if c == "`" or command.startswith("$(", i):
             subst = True
@@ -341,9 +351,18 @@ def split_bash(command: str) -> tuple[list[str], bool]:
 
 
 def _quote_blind_parts(command: str) -> list[str]:
-    """Deny pass only: split on separators ignoring every quote and comment."""
-    text = join_continuations(command)
-    return [p.strip() for p in re.split(r"&&|\|\||[;|&\n\r]", text) if p.strip()]
+    """Deny pass only: split on separators ignoring every quote and comment.
+
+    Both the raw text and the text with backslash-newlines joined are split,
+    so neither reading of an ambiguous continuation hides a part.
+    """
+    out: list[str] = []
+    for text in (command, join_continuations(command)):
+        for p in re.split(r"&&|\|\||[;|&\n\r]", text):
+            p = p.strip()
+            if p and p not in out:
+                out.append(p)
+    return out
 
 
 def quote_mask(part: str) -> str:
@@ -1120,7 +1139,11 @@ class PermissionRules:
             command = str(args.get("command", ""))
             strict_subjects, too_deep = deny_subjects(command)
             scan = scan_bash(command)
-            if scan.unparseable:
+            if "\n" in command or "\r" in command:
+                # Hard rule: legal but rare in agent calls, and the source of
+                # every continuation/comment trick. Never auto-allowed.
+                unsafe = "A multi-line command is never auto-allowed"
+            elif scan.unparseable:
                 unsafe = "Unparseable command (open quote or bad quoting) is never auto-allowed"
             elif scan.substitution:
                 unsafe = "Command substitution is never auto-allowed"
