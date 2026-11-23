@@ -97,6 +97,22 @@ class PreHookTests(HookTestBase):
         r2 = self.runner(pre=[hook], on_error="ignore").run_pre("bash")
         self.assertIsNone(r2.decision)
 
+    def test_timeout_kills_child_and_returns_quickly(self):
+        marker = self.dir / "survivor.txt"
+        cmd = self.script("slow.py", f"""
+            import time
+            time.sleep(2.5)
+            open({str(marker)!r}, "w").write("alive")
+        """)
+        runner = self.runner(pre=[HookCommand("*", tuple(cmd), timeout=0.5)])
+        start = time.monotonic()
+        r = runner.run_pre("bash")
+        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertEqual(r.decision, "deny")
+        self.assertTrue(r.error)
+        time.sleep(3.0)
+        self.assertFalse(marker.exists(), "timed-out hook process was not killed")
+
     def test_missing_executable_is_error(self):
         hook = HookCommand("*", ("definitely-not-a-real-binary-xyz",))
         r = self.runner(pre=[hook]).run_pre("bash")

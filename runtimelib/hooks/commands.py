@@ -36,6 +36,8 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
+from runtimelib import procutil
+
 DEFAULT_TIMEOUT = 10.0
 MAX_NOTE_CHARS = 2048
 MAX_REASON_CHARS = 2048
@@ -242,20 +244,30 @@ class CommandHookRunner:
         except (TypeError, ValueError) as exc:  # pragma: no cover - default=str covers it
             return _Outcome(None, "", "", f"cannot encode payload: {exc}")
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 argv,
-                input=data,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=self.cwd or None,
-                timeout=hook.timeout,
                 shell=False,
+                **procutil.popen_group_kwargs(),
             )
-        except subprocess.TimeoutExpired:
-            return _Outcome(None, "", "", f"timed out after {hook.timeout:g}s")
         except (OSError, ValueError) as exc:
             return _Outcome(None, "", "", f"cannot run: {exc}")
-        return _Outcome(proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
+        try:
+            stdout, stderr = proc.communicate(data, timeout=hook.timeout)
+        except subprocess.TimeoutExpired:
+            procutil.kill_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+            return _Outcome(None, "", "", f"timed out after {hook.timeout:g}s")
+        except (OSError, ValueError) as exc:
+            procutil.kill_tree(proc)
+            return _Outcome(None, "", "", f"cannot run: {exc}")
+        return _Outcome(proc.returncode, _decode(stdout), _decode(stderr))
 
     def _on_error(self, hook: HookCommand, why: str) -> PreHookResult:
         if self.on_error == "ignore":
