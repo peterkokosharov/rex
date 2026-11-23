@@ -9,12 +9,17 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
+
+MAX_PAGES = 100  # safety bound for cursor paging
 
 
 @dataclass
@@ -26,6 +31,8 @@ class MCPServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     transport: str = "stdio"  # "stdio", "sse", "websocket"
     url: str = ""  # For SSE/WS transports
+    timeout: float = 60.0  # per-request timeout in seconds
+    init_timeout: float = 5.0  # initialize handshake timeout in seconds
 
 
 @dataclass
@@ -70,104 +77,195 @@ class MCPTransport(ABC):
 
 
 class StdioTransport(MCPTransport):
-    """Stdio transport for local MCP servers."""
+    """Stdio transport for local MCP servers (newline-delimited JSON-RPC 2.0).
 
-    def __init__(self, command: list[str], env: dict[str, str] | None = None) -> None:
+    A reader thread routes responses to waiting callers by id, answers requests the server
+    sends us (``ping`` -> ``{}``, anything else -> error -32601) and fails every pending call
+    at once when the server's stdout closes. A second thread drains stderr into a ring buffer
+    so a chatty server never blocks; the last lines are available via ``stderr_tail()``.
+    """
+
+    STDERR_LINES = 50
+
+    def __init__(self, command: list[str], env: dict[str, str] | None = None,
+                 cwd: str | None = None) -> None:
+        if not command:
+            raise ValueError("MCP stdio command is empty")
+        command = list(command)
+        resolved = shutil.which(command[0])
+        if resolved is None:
+            raise FileNotFoundError(f"MCP server command not found: {command[0]}")
+        command[0] = resolved
+        full_env = dict(os.environ)
+        if env:
+            full_env.update({str(k): str(v) for k, v in env.items()})
         self._proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
-            env=env or None,
+            env=full_env,
+            cwd=cwd,
         )
-        self._lock = threading.Lock()
-        self._response_thread: Optional[threading.Thread] = None
-        self._responses: dict[int, threading.Event] = {}
-        self._results: dict[int, Any] = {}
+        self._lock = threading.Lock()  # guards writes and the pending table
+        self._pending: dict[int, _Pending] = {}
         self._request_id = 0
-        self._start_reader()
+        self._eof = False
+        self._stderr: deque[str] = deque(maxlen=self.STDERR_LINES)
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._reader.start()
+        self._stderr_thread.start()
 
-    def _start_reader(self) -> None:
-        def read_loop():
-            if not self._proc.stdout:
-                return
-            for line in self._proc.stdout:
+    # -- background threads -------------------------------------------------
+
+    def _read_loop(self) -> None:
+        try:
+            for line in self._proc.stdout:  # type: ignore[union-attr]
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    resp = json.loads(line)
+                    msg = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(msg, dict):
+                    self._dispatch(msg)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._fail_all()
 
-                if "id" in resp and resp["id"] in self._responses:
-                    req_id = resp["id"]
-                    self._results[req_id] = resp
-                    self._responses[req_id].set()
+    def _dispatch(self, msg: dict[str, Any]) -> None:
+        method = msg.get("method")
+        if method is not None:
+            if "id" in msg:  # server request: must be answered or the server may hang
+                if method == "ping":
+                    reply: dict[str, Any] = {"jsonrpc": "2.0", "id": msg["id"], "result": {}}
+                else:
+                    reply = {"jsonrpc": "2.0", "id": msg["id"],
+                             "error": {"code": -32601, "message": f"Method not found: {method}"}}
+                try:
+                    self.send(reply)
+                except Exception:
+                    pass
+            return  # notifications from the server are ignored
+        with self._lock:
+            pending = self._pending.get(msg.get("id"))
+        if pending is not None:
+            pending.response = msg
+            pending.event.set()
 
-        self._response_thread = threading.Thread(target=read_loop, daemon=True)
-        self._response_thread.start()
+    def _fail_all(self) -> None:
+        with self._lock:
+            self._eof = True
+            waiting = list(self._pending.values())
+        for pending in waiting:
+            pending.event.set()
+
+    def _drain_stderr(self) -> None:
+        try:
+            for line in self._proc.stderr:  # type: ignore[union-attr]
+                self._stderr.append(line.rstrip("\r\n"))
+        except (OSError, ValueError):
+            pass
+
+    # -- public API -----------------------------------------------------------
+
+    def stderr_tail(self) -> str:
+        """The last lines the server wrote to stderr (up to 50)."""
+        return "\n".join(self._stderr)
+
+    @property
+    def alive(self) -> bool:
+        return self._proc.poll() is None and not self._eof
 
     def send(self, message: dict[str, Any]) -> None:
+        data = json.dumps(message) + "\n"
         with self._lock:
-            if self._proc and self._proc.stdin:
-                self._proc.stdin.write(json.dumps(message) + "\n")
-                self._proc.stdin.flush()
+            try:
+                self._proc.stdin.write(data)  # type: ignore[union-attr]
+                self._proc.stdin.flush()  # type: ignore[union-attr]
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(f"MCP server is gone: {exc}") from exc
 
     def receive(self) -> Optional[dict[str, Any]]:
-        # For request-response pattern, use call() instead
+        # Responses are routed by call(); there is no free-standing receive.
         return None
 
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        """Send a notification (no id, no response)."""
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        self.send(msg)
+
     def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> Any:
-        """Send request and wait for response."""
+        """Send a request and wait for its response."""
+        pending = _Pending()
         with self._lock:
+            if self._eof:
+                raise RuntimeError(self._gone_message())
             self._request_id += 1
             req_id = self._request_id
-            event = threading.Event()
-            self._responses[req_id] = event
-
-        request = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params or {},
-        }
-
+            self._pending[req_id] = pending
         try:
-            self.send(request)
-
-            if not event.wait(timeout):
-                raise TimeoutError(f"MCP request {method} timed out")
-
-            result = self._results.pop(req_id, None)
-            if not result:
-                raise RuntimeError("No response received")
-
-            if "error" in result:
-                raise RuntimeError(f"MCP error: {result['error']['message']}")
-
-            return result.get("result")
-
+            self.send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}})
+            if not pending.event.wait(timeout):
+                raise TimeoutError(f"MCP request {method} timed out after {timeout:g}s")
+            if pending.response is None:  # woken by EOF
+                raise RuntimeError(self._gone_message())
+            if "error" in pending.response:
+                err = pending.response["error"]
+                message = err.get("message", err) if isinstance(err, dict) else err
+                raise RuntimeError(f"MCP error: {message}")
+            return pending.response.get("result")
         finally:
-            self._responses.pop(req_id, None)
+            with self._lock:
+                self._pending.pop(req_id, None)
+
+    def _gone_message(self) -> str:
+        tail = self.stderr_tail()
+        msg = "MCP server exited"
+        return f"{msg}; stderr: {tail}" if tail else msg
 
     def close(self) -> None:
-        if self._proc:
-            self._proc.terminate()
+        proc = self._proc
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                self._proc.wait(timeout=5)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait()
+                proc.kill()
+                proc.wait()
+        self._fail_all()
+
+
+class _Pending:
+    """One in-flight request."""
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.response: dict[str, Any] | None = None
 
 
 class MCPClient:
     """MCP client for connecting to MCP servers."""
 
-    def __init__(self, transport: MCPTransport) -> None:
+    def __init__(self, transport: MCPTransport, timeout: float = 60.0,
+                 init_timeout: float = 5.0) -> None:
         self.transport = transport
+        self.timeout = timeout
+        self.init_timeout = init_timeout
         self._initialized = False
         self._tools: list[MCPTool] = []
         self._resources: list[MCPResource] = []
@@ -186,26 +284,33 @@ class MCPClient:
                 "name": "runtime-ai",
                 "version": "0.1.0",
             },
-        })
+        }, timeout=self.init_timeout)
+        self.transport.notify("notifications/initialized")
         self._initialized = True
         return result
 
     def list_tools(self) -> list[MCPTool]:
         """List available tools from MCP server."""
-        result = self.transport.call("tools/list", {})
         tools = []
-        for t in result.get("tools", []):
-            tools.append(MCPTool(
-                name=t["name"],
-                description=t.get("description", ""),
-                input_schema=t.get("inputSchema", {}),
-            ))
+        cursor: str | None = None
+        for _ in range(MAX_PAGES):
+            params = {"cursor": cursor} if cursor else {}
+            result = self.transport.call("tools/list", params, timeout=self.timeout) or {}
+            for t in result.get("tools", []):
+                tools.append(MCPTool(
+                    name=t["name"],
+                    description=t.get("description", ""),
+                    input_schema=t.get("inputSchema", {}),
+                ))
+            cursor = result.get("nextCursor")
+            if not cursor:
+                break
         self._tools = tools
         return tools
 
     def list_resources(self) -> list[MCPResource]:
         """List available resources from MCP server."""
-        result = self.transport.call("resources/list", {})
+        result = self.transport.call("resources/list", {}, timeout=self.timeout)
         resources = []
         for r in result.get("resources", []):
             resources.append(MCPResource(
@@ -219,7 +324,7 @@ class MCPClient:
 
     def list_prompts(self) -> list[MCPPrompt]:
         """List available prompts from MCP server."""
-        result = self.transport.call("prompts/list", {})
+        result = self.transport.call("prompts/list", {}, timeout=self.timeout)
         prompts = []
         for p in result.get("prompts", []):
             prompts.append(MCPPrompt(
@@ -235,18 +340,18 @@ class MCPClient:
         return self.transport.call("tools/call", {
             "name": name,
             "arguments": arguments,
-        })
+        }, timeout=self.timeout)
 
     def read_resource(self, uri: str) -> Any:
         """Read an MCP resource."""
-        return self.transport.call("resources/read", {"uri": uri})
+        return self.transport.call("resources/read", {"uri": uri}, timeout=self.timeout)
 
     def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         """Get an MCP prompt."""
         return self.transport.call("prompts/get", {
             "name": name,
             "arguments": arguments or {},
-        })
+        }, timeout=self.timeout)
 
     def close(self) -> None:
         self.transport.close()
@@ -272,13 +377,18 @@ class MCPClientManager:
         if not config:
             raise ValueError(f"MCP server not configured: {name}")
 
-        if config.transport == "stdio":
-            transport = StdioTransport(config.command + config.args, config.env)
-        else:
-            raise NotImplementedError(f"Transport {config.transport} not yet implemented")
+        if config.transport != "stdio":
+            raise NotImplementedError(f"Transport {config.transport} not supported (stdio only)")
 
-        client = MCPClient(transport)
-        client.initialize()
+        transport = StdioTransport(config.command + config.args, config.env)
+        client = MCPClient(transport, timeout=config.timeout, init_timeout=config.init_timeout)
+        try:
+            client.initialize()
+        except Exception as exc:
+            tail = transport.stderr_tail()
+            client.close()
+            detail = "\n" + tail if tail and tail not in str(exc) else ""
+            raise RuntimeError(f"MCP server '{name}' failed to start: {exc}{detail}") from exc
         self._clients[name] = client
         return client
 
@@ -292,13 +402,30 @@ class MCPClientManager:
             client.close()
 
     def disconnect_all(self) -> None:
-        for client in self._clients.values():
+        for client in list(self._clients.values()):
             client.close()
         self._clients.clear()
 
     def get_all_tools(self) -> dict[str, list[MCPTool]]:
         """Get tools from all connected servers."""
         return {name: client._tools for name, client in self._clients.items()}
+
+
+def tool_result_text(result: Any) -> tuple[str, bool]:
+    """Flatten a ``tools/call`` result into ``(text, is_error)``.
+
+    Text content blocks are joined with newlines; other block types are summarised as
+    ``[type]``. ``isError`` maps to the second element.
+    """
+    if not isinstance(result, dict):
+        return ("" if result is None else str(result)), False
+    parts: list[str] = []
+    for block in result.get("content") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif isinstance(block, dict):
+            parts.append("[" + str(block.get("type", "unknown")) + "]")
+    return "\n".join(parts), bool(result.get("isError"))
 
 
 # Global manager
