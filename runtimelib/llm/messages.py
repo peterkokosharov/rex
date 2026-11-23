@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """LLM message types."""
@@ -38,6 +38,17 @@ class ChatMessage:
         if self.tool_call_id:
             d["tool_call_id"] = self.tool_call_id
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatMessage":
+        """Inverse of ``to_dict``; unknown keys are ignored."""
+        tcs = data.get("tool_calls")
+        return cls(
+            role=data.get("role") or "user",
+            content=data.get("content"),
+            tool_calls=[ToolCall.from_dict(tc) for tc in tcs] if tcs else None,
+            tool_call_id=data.get("tool_call_id"),
+        )
 
     @classmethod
     def user(cls, content: str) -> "ChatMessage":
