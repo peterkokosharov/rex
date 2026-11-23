@@ -109,7 +109,12 @@ class BashTool(Tool):
 
 
 # Variables that look like credentials are never passed to agent commands.
-_SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
+# This scrub and the `git push` check below are guard rails against accidents,
+# NOT a security boundary: on Linux a command can still read the parent's
+# environment from /proc/<ppid>/environ. Real isolation needs the Docker guard.
+_SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL",
+                      "AUTH", "COOKIE", "DATABASE_URL")
+_SECRET_SUFFIXES = ("_PAT",)
 _SECRET_PREFIXES = ("RUNTIME_LITELLM", "LITELLM")
 
 # `git push` check. This is a guard rail against an accidental push by the
@@ -120,7 +125,18 @@ _GIT_PUSH_RE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
 
 def is_secret_env_name(name: str) -> bool:
     upper = name.upper()
-    return upper.startswith(_SECRET_PREFIXES) or any(part in upper for part in _SECRET_NAME_PARTS)
+    return (
+        upper.startswith(_SECRET_PREFIXES)
+        or upper.endswith(_SECRET_SUFFIXES)
+        or any(part in upper for part in _SECRET_NAME_PARTS)
+    )
+
+
+def is_secret_env(name: str, value: str) -> bool:
+    """Name looks like a credential, or a proxy URL carries user:pass@."""
+    if is_secret_env_name(name):
+        return True
+    return "PROXY" in name.upper() and "@" in (value or "")
 
 
 def scrubbed_env(base: Mapping[str, str] | None = None, extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -132,7 +148,7 @@ def scrubbed_env(base: Mapping[str, str] | None = None, extra: Mapping[str, str]
     source = dict(os.environ if base is None else base)
     if extra:
         source.update(extra)
-    return {k: v for k, v in source.items() if not is_secret_env_name(k)}
+    return {k: v for k, v in source.items() if not is_secret_env(k, v)}
 
 
 def blocks_git_push(command: str) -> bool:

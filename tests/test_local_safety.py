@@ -599,3 +599,17 @@ def test_compaction_latest_user_first_in_single_turn():
     assert [m.content for m in out if m.role == "user"].count(question) == 1
     _assert_compaction_honest(msgs, out)
 
+
+
+# ---------------------------------------------------------------- env scrub (more names)
+
+def test_env_scrub_more_secret_shapes():
+    base = {
+        "PATH": "/bin", "GH_PAT": "x", "AZURE_DEVOPS_PAT": "x", "BASIC_AUTH": "x", "AUTHORIZATION": "x",
+        "SESSION_COOKIE": "x", "DATABASE_URL": "postgres://u:p@h/db", "MY_DATABASE_URL": "x",
+        "HTTPS_PROXY": "http://user:pw@proxy:8080", "http_proxy": "http://u:p@proxy:3128",
+        "NO_PROXY": "localhost", "HTTP_PROXY_PLAIN": "x", "ALL_PROXY": "http://proxy:3128",
+        "PATCH_LEVEL": "1", "COMPATH": "x",
+    }
+    env = scrubbed_env(base)
+    assert set(env) == {"PATH", "NO_PROXY", "HTTP_PROXY_PLAIN", "ALL_PROXY", "PATCH_LEVEL", "COMPATH"}

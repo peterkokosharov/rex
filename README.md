@@ -289,6 +289,14 @@ Useful flags:
 
 > Guard is the secure default. Use `--local-tools` only for local dev/smoke tests.
 
+With `--local-tools` the bash tool refuses commands containing `git push` and runs commands with a scrubbed
+environment: variables whose names contain `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`,
+`COOKIE` or `DATABASE_URL`, names ending in `_PAT`, `LITELLM*` variables, and proxy variables whose value contains
+`@` (user:pass) are dropped. The `cwd` of the bash and git tools must stay inside the workspace. These are
+**guard rails against accidents, not a security boundary**: a command can still reach the network through aliases or
+scripts, and on Linux it can read the parent's full environment from `/proc/<ppid>/environ`. Real isolation is the
+Docker guard.
+
 ### Docker Guard (secure mode)
 
 Tool execution defaults to Docker Guard. Build the image from repo root:
