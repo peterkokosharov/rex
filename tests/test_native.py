@@ -98,3 +98,42 @@ class TestNativeFallbackParity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMalformedNativeOutput(unittest.TestCase):
+    """Garbage from the native library must not read as "no matches"."""
+
+    def _fake_native(self):
+        from unittest import mock
+
+        lib = mock.Mock()
+        lib.rex_glob.return_value = 1
+        lib.rex_grep.return_value = 1
+        return mock.patch.multiple(native, NATIVE_AVAILABLE=True, _lib=lib,
+                                   _str=lambda ptr: "{not json")
+
+    def test_glob_raises(self):
+        with self._fake_native():
+            with self.assertRaises(RuntimeError):
+                native.glob(".", "*.py")
+
+    def test_grep_falls_back(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "a.txt").write_text("hello\n", encoding="utf-8")
+            with self._fake_native():
+                hits = native.grep(td, "hello")
+            self.assertEqual(len(hits), 1)
+
+    def test_fileops_glob_falls_back(self):
+        from runtimelib.config import Config
+        from runtimelib.tools.fileops import FileOpsTool
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "a.py").write_text("x\n", encoding="utf-8")
+            old = os.getcwd()
+            os.chdir(td)
+            try:
+                with self._fake_native():
+                    res = FileOpsTool(Config({"cli": {"unsafe_local_tools": True}})).execute(operation="glob", pattern="*.py")
+            finally:
+                os.chdir(old)
+        self.assertEqual(len(res["matches"]), 1)

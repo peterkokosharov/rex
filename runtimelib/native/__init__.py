@@ -103,8 +103,9 @@ def grep(root: str, pattern: str, include: str | None = None, exclude: str | Non
     raw = _str(ptr)
     try:
         return json.loads(raw)
-    except Exception:
-        return []
+    except ValueError:
+        # Malformed native output must not look like "no matches".
+        return _fallback.grep(root, pattern, include, exclude, max_matches)
 
 
 def glob(root: str, pattern: str) -> list[str]:
@@ -117,8 +118,10 @@ def glob(root: str, pattern: str) -> list[str]:
     raw = _str(ptr)
     try:
         return json.loads(raw)
-    except Exception:
-        return []
+    except ValueError as exc:
+        # Raise instead of returning [] so callers (fileops) fall back to the
+        # Python glob rather than reporting "no matches".
+        raise RuntimeError(f"native glob returned malformed JSON: {exc}") from None
 
 
 __all__ = ["NATIVE_AVAILABLE", "backend", "json_escape", "json_get_string", "parse_sse_data", "grep", "glob"]
