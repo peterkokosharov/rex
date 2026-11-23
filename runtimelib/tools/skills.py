@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..skills import Skill, discover_skills, read_skill_file
+from ..skills import FILE_SIZE_CAP, Skill, discover_skills, read_skill_file
 from .base import Tool, ToolSchema
 
 LOAD_DESCRIPTION = (
@@ -51,7 +51,10 @@ class LoadSkillTool(_SkillTool):
         skill = self._find(kwargs.get("name"))
         if skill is None:
             return self._unknown(kwargs.get("name"))
-        return {"ok": True, "name": skill.name, "instructions": skill.body, "files": list(skill.files)}
+        body = skill.body
+        if len(body.encode("utf-8")) > FILE_SIZE_CAP:
+            body = body.encode("utf-8")[:FILE_SIZE_CAP].decode("utf-8", errors="ignore") + "\n[truncated]"
+        return {"ok": True, "name": skill.name, "instructions": body, "files": list(skill.files)}
 
 
 class ReadSkillFileTool(_SkillTool):

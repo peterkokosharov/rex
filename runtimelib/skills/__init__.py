@@ -34,6 +34,10 @@ class Skill:
     path: Path  # skill folder
     body: str = ""
     files: list[str] = field(default_factory=list)  # relative POSIX paths, SKILL.md excluded
+    real_root: Path | None = None  # folder.resolve() at discovery time; file access is pinned to it
+    project: bool = False  # found under <workspace>/.rex/skills (repository content, untrusted by default)
+    trusted: bool = True  # False for project skills when skills.trust_workspace is not set
+    container: Path | None = None  # resolved search root a project skill must stay inside
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -42,7 +46,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     Quoted values lose their quotes; ``>`` / ``|`` block values are joined from the indented lines.
     Without frontmatter the whole text is the body.
     """
-    text = text.lstrip("﻿").replace("\r\n", "\n")
+    text = text.lstrip("\ufeff").replace("\r\n", "\n")
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
         return {}, text
@@ -104,18 +108,28 @@ def load_skill_folder(folder: Path, warnings: list[str] | None = None) -> Skill 
         _warn(f"skill {folder}: missing description, skipped", warnings)
         return None
     name = meta.get("name", "").strip() or folder.name
-    return Skill(name=name, description=description, path=folder, body=body, files=_list_files(folder))
+    return Skill(name=name, description=description, path=folder, body=body, files=_list_files(folder),
+                 real_root=folder.resolve())
 
 
-def search_roots(workspace: Path | str, config: Any = None, home: Path | None = None) -> list[Path]:
-    """Skill roots in precedence order: workspace, user config dir, then config ``skills.paths``."""
+def trust_workspace(config: Any) -> bool:
+    """True only when config key ``skills.trust_workspace`` is set to true."""
+    value = config.get("skills.trust_workspace") if config is not None else None
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return value is True
+
+
+def search_roots(workspace: Path | str, config: Any = None, home: Path | None = None) -> list[tuple[Path, bool]]:
+    """(root, is_project) in precedence order: user config dir, config ``skills.paths``, then the workspace."""
     home = home if home is not None else Path.home()
-    roots = [Path(workspace) / ".rex" / "skills", home / ".config" / "runtime" / "skills"]
+    roots: list[tuple[Path, bool]] = [(home / ".config" / "runtime" / "skills", False)]
     extra = config.get("skills.paths") if config is not None else None
     if isinstance(extra, str):
         extra = [extra]
     if isinstance(extra, (list, tuple)):
-        roots.extend(Path(str(p)).expanduser() for p in extra if p)
+        roots.extend((Path(str(p)).expanduser(), False) for p in extra if p)
+    roots.append((Path(workspace) / ".rex" / "skills", True))
     return roots
 
 
@@ -125,13 +139,26 @@ def discover_skills(
     home: Path | None = None,
     roots: Iterable[Path] | None = None,
     warnings: list[str] | None = None,
+    include_untrusted: bool = False,
 ) -> list[Skill]:
-    """Find skills in the search roots. A later duplicate name is ignored with a warning."""
+    """Find skills in the search roots. A later duplicate name is ignored with a warning.
+
+    Project skills (``<workspace>/.rex/skills``) are repository content: they are returned only when
+    ``skills.trust_workspace`` is true, or (marked ``trusted=False``) with ``include_untrusted=True``.
+    """
+    trusted_ws = trust_workspace(config)
+    if roots is not None:
+        root_list = [(Path(r), False) for r in roots]
+    else:
+        root_list = search_roots(workspace, config, home)
     found: dict[str, Skill] = {}
-    for root in (list(roots) if roots is not None else search_roots(workspace, config, home)):
+    for root, project in root_list:
+        if project and not trusted_ws and not include_untrusted:
+            continue
         try:
             if not root.is_dir():
                 continue
+            container = root.resolve()
             children = sorted(p for p in root.iterdir() if p.is_dir() and (p / SKILL_FILE).is_file())
         except OSError:
             continue
@@ -139,6 +166,11 @@ def discover_skills(
             skill = load_skill_folder(child, warnings)
             if skill is None:
                 continue
+            if project:
+                if not skill.real_root.is_relative_to(container):
+                    _warn(f"skill {child} skipped: resolves outside {container}", warnings)
+                    continue
+                skill.project, skill.trusted, skill.container = True, trusted_ws, container
             if skill.name in found:
                 _warn(f"skill {skill.name!r} at {child} ignored: already defined at {found[skill.name].path}", warnings)
                 continue
@@ -154,7 +186,7 @@ def skill_index(skills: list[Skill], cap: int = INDEX_CAP_BYTES) -> str:
         desc = s.description
         if len(desc) > DESC_MAX_CHARS:
             desc = desc[: DESC_MAX_CHARS - 3].rstrip() + "..."
-        line = f"- {s.name}: {desc}"
+        line = f"- {s.name}: {desc}" + (" (project)" if s.project else "")
         size = len(line.encode("utf-8")) + 1
         if used + size > cap - _TAIL_RESERVE:
             lines.append(f"- (+{len(skills) - n} more skills not listed)")
@@ -175,7 +207,11 @@ def resolve_skill_file(skill: Skill, relpath: Any) -> Path:
         raise PermissionError(f"absolute paths are not allowed: {relpath}")
     if any(seg == ".." for seg in norm.split("/")):
         raise PermissionError(f"'..' is not allowed: {relpath}")
-    root = skill.path.resolve()
+    root = skill.real_root if skill.real_root is not None else skill.path.resolve()
+    if skill.path.resolve() != root:
+        raise PermissionError(f"skill folder changed since discovery: {skill.name}")
+    if skill.project and (skill.container is None or not root.is_relative_to(skill.container)):
+        raise PermissionError(f"skill folder is outside the project skills folder: {skill.name}")
     resolved = (root / norm).resolve()
     if not resolved.is_relative_to(root):
         raise PermissionError(f"path is outside the skill folder: {relpath}")
@@ -205,6 +241,7 @@ __all__ = [
     "load_skill_folder",
     "search_roots",
     "discover_skills",
+    "trust_workspace",
     "skill_index",
     "resolve_skill_file",
     "read_skill_file",

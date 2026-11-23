@@ -348,8 +348,10 @@ description: Write release notes from the git log. Use when asked for a changelo
 3. Follow `references/style.md` for tone.
 ```
 
-Skills are searched in `<workspace>/.rex/skills/`, `~/.config/runtime/skills/`, then the folders in the config key
-`skills.paths` (a list). If two skills share a name the first one wins and a warning is logged. A missing `name`
+Skills are searched in `~/.config/runtime/skills/`, then the folders in the config key `skills.paths` (a list), then
+`<workspace>/.rex/skills/` (project skills, marked `(project)`). Project skills come from the repository and are
+untrusted: they load only when `skills.trust_workspace` is `true` (default `false`; `rex skills` still lists them as
+not trusted). If two skills share a name the first one wins and a warning is logged. A missing `name`
 falls back to the folder name; a skill without `description` is skipped with a warning.
 
 At session start only a compact index (`- name: description`, about 2 KB at most) is added to the system prompt.

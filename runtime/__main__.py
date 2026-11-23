@@ -57,7 +57,7 @@ def main() -> int:
         return acp_main(argv[1:])
 
     # `rex skills [show <name>]` lists the SKILL.md skills; a normal prompt otherwise.
-    if argv and argv[0] == "skills":
+    if argv and argv[0] == "skills" and (len(argv) == 1 or argv[1] == "show"):
         from runtimelib.skills.cli import run_skills
         return run_skills(argv[1:], get_config())
 

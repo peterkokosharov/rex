@@ -131,8 +131,8 @@ class DefaultPermissionPolicy(PermissionPolicy):
 
     # Default fallback for unknown roles
     DEFAULT_RULES = [
-            PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
-            PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
+        PermissionRule(tool="load_skill", operation=None, result=PermissionResult.ALLOW),
+        PermissionRule(tool="read_skill_file", operation=None, result=PermissionResult.ALLOW),
         PermissionRule(tool="fileops", operation="read *", result=PermissionResult.ALLOW),
         PermissionRule(tool="fileops", operation="list *", result=PermissionResult.ALLOW),
         PermissionRule(tool="bash", operation="pytest *", result=PermissionResult.ALLOW),

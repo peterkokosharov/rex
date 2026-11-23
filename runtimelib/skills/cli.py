@@ -20,7 +20,7 @@ def run_skills(argv: list[str], config: Any = None, workspace: Path | None = Non
     out = out or sys.stdout
     err = err or sys.stderr
     warnings: list[str] = []
-    skills = discover_skills(workspace or Path.cwd(), config, warnings=warnings)
+    skills = discover_skills(workspace or Path.cwd(), config, warnings=warnings, include_untrusted=True)
     for w in warnings:
         print(f"warning: {w}", file=err)
 
@@ -28,7 +28,10 @@ def run_skills(argv: list[str], config: Any = None, workspace: Path | None = Non
         if not skills:
             print("No skills found.", file=out)
         for s in skills:
-            print(f"{s.name}\t{s.path}\t{s.description}", file=out)
+            mark = ""
+            if s.project:
+                mark = " (project)" if s.trusted else " (project, not trusted - set skills.trust_workspace)"
+            print(f"{s.name}\t{s.path}\t{s.description}{mark}", file=out)
         return 0
     if argv[0] == "show" and len(argv) == 2:
         skill = next((s for s in skills if s.name == argv[1]), None)
