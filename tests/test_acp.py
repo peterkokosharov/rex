@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import queue
+import tempfile
 import threading
 import time
 import unittest
@@ -124,7 +125,7 @@ class ACPBridgeTest(unittest.TestCase):
 
     def test_prompt_streams_and_answers(self) -> None:
         self.stdout.wait_id(self.request("initialize", {"protocolVersion": 1}))
-        sid = self.stdout.wait_id(self.request("session/new", {"cwd": "/tmp"}))["result"]["sessionId"]
+        sid = self.stdout.wait_id(self.request("session/new", {"cwd": tempfile.gettempdir()}))["result"]["sessionId"]
 
         rid = self.request("session/prompt", {
             "sessionId": sid,
@@ -143,7 +144,7 @@ class ACPBridgeTest(unittest.TestCase):
 
     def test_cancel_maps_to_stop(self) -> None:
         self.stdout.wait_id(self.request("initialize", {"protocolVersion": 1}))
-        sid = self.stdout.wait_id(self.request("session/new", {"cwd": "/tmp"}))["result"]["sessionId"]
+        sid = self.stdout.wait_id(self.request("session/new", {"cwd": tempfile.gettempdir()}))["result"]["sessionId"]
         self.stdin.send(json.dumps({
             "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": sid},
         }) + "\n")

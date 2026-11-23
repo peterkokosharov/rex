@@ -15,6 +15,7 @@ from runtimelib.config import Config
 from runtimelib.cli.parser import ArgumentParser
 from runtimelib.cli.render import Renderer
 from runtimelib.cli.registry import CommandRegistry
+from runtimelib.cli.readline import READLINE_AVAILABLE
 
 
 class TestConfigSet(unittest.TestCase):
@@ -121,6 +122,7 @@ class TestCLIFlags(unittest.TestCase):
 
 
 class TestModelCompleter(unittest.TestCase):
+    @unittest.skipUnless(READLINE_AVAILABLE, "needs GNU readline or pyreadline3")
     def test_model_completion_uses_cache(self):
         from runtime.__main__ import completer, _MODEL_CACHE
         import runtime.__main__ as mainmod

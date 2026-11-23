@@ -19,6 +19,10 @@ from runtimelib.cli import is_shell_line, run_shell, shell_command
 
 REPO_ROOT = Path(__file__).parent.parent
 
+import pytest
+
+posix_shell = pytest.mark.skipif(sys.platform == "win32", reason="uses POSIX shell syntax; Windows shell=True runs cmd.exe")
+
 
 def test_detect_shell_line():
     assert is_shell_line("! pwd")
@@ -34,6 +38,7 @@ def test_strip_bang_and_normalize_bash():
     assert shell_command("! bash script.sh") == "bash script.sh"
 
 
+@posix_shell
 def test_run_shell_output_and_exit_code(tmp_path):
     ok = run_shell("printf 'hello\\n'", cwd=tmp_path)
     assert ok.ok
@@ -62,6 +67,7 @@ def test_one_shot_cli_runs_shell_without_llm_config():
     assert "bash-ok" in result.stdout
 
 
+@posix_shell
 def test_one_shot_cli_with_bin_bash_prefix():
     env = dict(os.environ)
     for key in list(env):
