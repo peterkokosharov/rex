@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Default tool wiring: edit, webfetch, MCP tools; no fake websearch."""
@@ -101,6 +101,38 @@ class McpWiring(unittest.TestCase):
     def test_names_sanitised(self):
         self.assertEqual(mcp_tool_name("my server", "a.b"), "mcp__my_server__a_b")
         self.assertEqual(len(mcp_tool_name("s", "x" * 100)), 64)
+
+    def test_double_underscore_server_and_duplicate_tool_names_skipped(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from runtimelib.tools import mcp_tool
+
+        listed = [SimpleNamespace(name=n, description="", input_schema={}) for n in ("a.b", "a_b", "c")]
+
+        class FakeManager:
+            def __init__(self):
+                self.added = []
+
+            def add_server(self, cfg):
+                self.added.append(cfg.name)
+
+            def connect(self, name, cwd=None):
+                return SimpleNamespace(list_tools=lambda: listed)
+
+            def disconnect(self, name):
+                pass
+
+        servers = {"bad__name": {"command": ["x"]}, "bad..dots": {"command": ["x"]}, "ok": {"command": ["x"]}}
+        err = io.StringIO()
+        with mock.patch.object(mcp_tool, "MCPClientManager", FakeManager), redirect_stderr(err):
+            tools, manager = mcp_tool.load_mcp_tools(Config({"mcp": {"servers": servers}}))
+        self.assertEqual(manager.added, ["ok"])
+        self.assertEqual([t.name for t in tools], ["mcp__ok__a_b", "mcp__ok__c"])
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertIn("'bad__name' skipped", lines[0])
+        self.assertIn("'bad..dots' skipped", lines[1])
+        self.assertIn("duplicate name mcp__ok__a_b", lines[2])
 
     def test_tools_in_schema_and_callable_through_gate(self):
         asker = Asker("allow_once")

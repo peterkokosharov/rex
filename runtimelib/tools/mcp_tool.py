@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Tools backed by MCP servers (stdio), named ``mcp__<server>__<tool>``.
@@ -84,8 +84,12 @@ def load_mcp_tools(config: Any, workspace: str | None = None) -> tuple[list[Tool
     servers = config.get("mcp.servers", {}) if config is not None else {}
     if not isinstance(servers, dict):
         return tools, manager
+    seen: set[str] = set()
     for name, raw in servers.items():
         try:
+            if "__" in _safe(str(name)):
+                # mcp__<server>__<tool> must split unambiguously (rules, hooks, UIs).
+                raise ValueError("server names must not contain '__'")
             cfg = _server_config(str(name), raw)
             if cfg is None:
                 continue
@@ -97,7 +101,15 @@ def load_mcp_tools(config: Any, workspace: str | None = None) -> tuple[list[Tool
                 manager.disconnect(cfg.name)
                 raise
             for t in listed:
-                tools.append(McpTool(cfg.name, client, t.name, t.description, t.input_schema))
+                tool = McpTool(cfg.name, client, t.name, t.description, t.input_schema)
+                if tool.name in seen:
+                    # Sanitising and the 64-char cut can map two tools to one name;
+                    # a silent overwrite would let rules approve the wrong tool.
+                    print(f"rex: MCP tool '{t.name}' of server '{name}' skipped: "
+                          f"duplicate name {tool.name}", file=sys.stderr)
+                    continue
+                seen.add(tool.name)
+                tools.append(tool)
         except Exception as exc:
             first = (str(exc).splitlines() or [type(exc).__name__])[0]
             print(f"rex: MCP server '{name}' skipped: {first}", file=sys.stderr)
