@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """REX Runtime API — Main entry point for orchestrators (RONI, Archeo)."""
@@ -172,6 +172,12 @@ class REX:
             return AgentResult(success=False, output="", error=str(e))
         finally:
             self._active_agents.pop(agent_id, None)
+            close_mcp = getattr(loop, "close_mcp", None)
+            if callable(close_mcp):
+                try:
+                    close_mcp()  # MCP server processes must not outlive the agent
+                except Exception:
+                    pass
 
     async def spawn_subagent(
         self,

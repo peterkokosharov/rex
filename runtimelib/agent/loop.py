@@ -189,9 +189,11 @@ class AgentLoop:
             atexit.register(self.close_mcp)
 
     def close_mcp(self) -> None:
-        """Disconnect the MCP servers (also runs at interpreter exit)."""
+        """Disconnect the MCP servers (also runs at interpreter exit). Idempotent."""
         manager, self._mcp_manager = self._mcp_manager, None
         if manager is not None:
+            # Drop the exit hook too: it keeps the loop (and its tools) alive.
+            atexit.unregister(self.close_mcp)
             manager.disconnect_all()
 
     def _build_system_prompt(self, include_tools: bool = True) -> str:

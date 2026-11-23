@@ -333,8 +333,9 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
 
     @registry.register("reset", "Нова сесия/контекст (изчиства текущия разговор)")
     def cmd_reset(args: dict[str, Any]) -> int:
-        global _REPL_LOOP
-        _REPL_LOOP = None
+        # Keep the loop: dropping it would leak its MCP server processes.
+        if _REPL_LOOP is not None:
+            _REPL_LOOP.reset_context()
         print("Контекстът е изчистен.")
         return 0
 
