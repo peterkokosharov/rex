@@ -613,3 +613,42 @@ def test_env_scrub_more_secret_shapes():
     }
     env = scrubbed_env(base)
     assert set(env) == {"PATH", "NO_PROXY", "HTTP_PROXY_PLAIN", "ALL_PROXY", "PATCH_LEVEL", "COMPATH"}
+
+
+# ---------------------------------------------------------------- config masking (more shapes)
+
+def test_mask_secret_key_names():
+    from runtimelib.config.config import is_secret_key
+
+    for name in ("authorization", "Authorization", "auth", "basic_auth", "github_pat", "GH_PAT",
+                 "cookie", "session_cookie", "cookies", "api_key", "apiKey"):
+        assert is_secret_key(name), name
+    for name in ("max_tokens", "keep_recent", "auth_type", "path", "author", "pattern"):
+        assert not is_secret_key(name), name
+
+
+def test_mask_secrets_lists_urls_and_nested():
+    from runtimelib.config.config import mask_secrets, mask_value
+
+    data = {
+        "headers": {"Authorization": "Bearer abc", "Accept": "json"},
+        "secrets": ["t1", "t2", {"inner": "t3"}],
+        "api_key": ["k1", "k2"],
+        "credentials": {"user": "u", "pass": "p"},
+        "proxy": "http://alice:s3cret@proxy:8080",
+        "mirrors": ["https://ghp_tok@github.com/x.git", "https://plain.example/y"],
+        "base_url": "http://127.0.0.1:4000",
+        "max_tokens": 5,
+    }
+    out = mask_secrets(data)
+    dumped = json.dumps(out)
+    for leaked in ("abc", "t1", "t2", "t3", "s3cret", "alice", "ghp_tok", '"u"', '"p"'):
+        assert leaked not in dumped, leaked
+    assert out["headers"]["Accept"] == "json"
+    assert out["secrets"] == ["***", "***", {"inner": "***"}]
+    assert out["api_key"] == ["***", "***"]
+    assert out["proxy"] == "http://***@proxy:8080"
+    assert out["mirrors"] == ["https://***@github.com/x.git", "https://plain.example/y"]
+    assert out["base_url"] == "http://127.0.0.1:4000" and out["max_tokens"] == 5
+    assert mask_value("net.proxy", "https://u:p@h") == "https://***@h"
+    assert mask_value("x.github_pat", "abc") == "***"

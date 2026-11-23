@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Configuration system using kikolib.yaml_lite and kikolib.dotenv."""
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -162,31 +163,53 @@ class Config:
         yaml_lite.save(path, self._data)
 
 
-SECRET_WORDS = {"key", "apikey", "token", "secret", "password", "passwd", "credential", "credentials"}
+SECRET_WORDS = {
+    "key", "apikey", "token", "secret", "password", "passwd", "credential", "credentials",
+    "secrets", "passwords", "authorization", "auth", "pat", "cookie", "cookies",
+}
 MASK = "***"
+
+# scheme://user:pass@host or scheme://token@host -> scheme://***@host
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
 
 
 def is_secret_key(name: str) -> bool:
     """True for config keys whose values must never be printed.
 
-    ``api_key``, ``apiKey``, ``auth_token``, ``client_secret`` match;
-    ``max_tokens`` and ``keep_recent`` do not.
+    ``api_key``, ``apiKey``, ``auth_token``, ``client_secret``, ``github_pat``,
+    ``Authorization`` and ``session_cookie`` match; ``max_tokens``,
+    ``keep_recent`` and ``auth_type`` do not.
     """
-    import re as _re
-    snake = _re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name)).lower().replace("-", "_")
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name)).lower().replace("-", "_")
     words = [w for w in snake.split("_") if w]
     if not words:
         return False
     return words[-1] in SECRET_WORDS or "secret" in words or "password" in words
 
 
+def mask_url_credentials(text: str) -> str:
+    """Hide the user:pass (or token) part of URLs inside ``text``."""
+    return _URL_USERINFO_RE.sub(lambda m: m.group(1) + MASK + "@", text)
+
+
+def _mask_all(value: Any) -> Any:
+    """Everything under a secret key: every non-empty scalar becomes MASK."""
+    if isinstance(value, dict):
+        return {k: _mask_all(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_all(v) for v in value]
+    return MASK if value not in (None, "") else value
+
+
 def mask_value(key: str, value: Any) -> Any:
     """Mask ``value`` when ``key`` (dot path or leaf name) names a secret."""
     leaf = str(key).rsplit(".", 1)[-1]
+    if is_secret_key(leaf):
+        return _mask_all(value)
     if isinstance(value, (dict, list)):
         return mask_secrets(value)
-    if is_secret_key(leaf) and value not in (None, ""):
-        return MASK
+    if isinstance(value, str):
+        return mask_url_credentials(value)
     return value
 
 
@@ -196,6 +219,8 @@ def mask_secrets(data: Any) -> Any:
         return {k: mask_value(k, v) for k, v in data.items()}
     if isinstance(data, list):
         return [mask_secrets(v) for v in data]
+    if isinstance(data, str):
+        return mask_url_credentials(data)
     return data
 
 
