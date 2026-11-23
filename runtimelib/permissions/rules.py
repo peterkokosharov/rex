@@ -25,12 +25,19 @@ inside quotes is never auto-allowed. The deny pass also splits a quote-blind
 copy of the command.
 Command substitution (``$(``, backticks, ``<(``, ``>(``) is never auto-allowed
 (at least ask) and its content is also checked against deny rules. Deny and
-ask rules also see every part normalised (``NAME=value`` prefixes and wrappers
-such as ``sudo``/``env``/``nohup``/``nice``/``timeout``/``stdbuf`` stripped, ``/bin/rm`` -> ``rm``, whitespace
-squeezed) and the commands run by ``sh -c``, ``eval``, ``xargs`` and
-``find -exec`` (see :func:`deny_subjects`). An unquoted output redirect to a
-file (anything but ``/dev/null`` or ``>&N``) is never auto-allowed either,
-unless the allow rule that covers the part itself contains ``>``.
+ask rules also see every part normalised (``NAME=value`` prefixes, reserved
+words and wrappers such as ``sudo``/``env``/``nohup``/``nice``/``timeout``
+stripped, ``/bin/rm`` -> ``rm``, whitespace squeezed, simple expansions) and
+the commands run by ``sh -c``, ``eval``, ``xargs``, ``find -exec`` and similar
+(see :func:`deny_subjects`). An unquoted output redirect to a file (anything
+but ``/dev/null`` or ``>&N``) is never auto-allowed either, unless the allow
+rule that covers the part itself contains ``>``.
+
+Design: ALLOW is safe by construction - only simple commands are eligible for
+an allow rule (see :func:`allow_blocker`); everything else asks at least.
+Bash DENY is best effort: it does not stop code run by an interpreter
+(``python -c``, ``perl -e``, ``node -e``) or obfuscated shell. The Docker
+guard is the real boundary; use it or allow-lists for anything that matters.
 
 fileops ``list`` / ``glob`` / ``grep`` are also checked as a read of their
 search root and of any entry below it, so a root inside a path whose reading is
@@ -371,12 +378,22 @@ def writes_file(part: str) -> bool:
 
 
 MAX_NEST_DEPTH = 6
-_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "mksh", "fish", "csh", "tcsh"}
+# Programs that run code they read from stdin or an argument.
+_INTERPRETERS = _SHELLS | {
+    "busybox", "python", "python2", "python3", "pypy", "pypy3", "perl", "ruby", "node", "nodejs", "deno", "bun",
+    "php", "lua", "tclsh", "wish", "Rscript", "pwsh", "powershell", "osascript", "cmd", "cmd.exe",
+}
 _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Shell reserved words and grouping tokens (only meaningful as the first word).
+_RESERVED = {"{", "}", "(", ")", "!", "if", "then", "elif", "else", "fi", "while", "until", "do",
+             "done", "case", "esac", "function", "time", "coproc", "select", "[[", "]]"}
+_FUNC_DEF = re.compile(r"^[\w.:-]+\(\)\{?$")
+_PLAIN_WORD = re.compile(r"^[A-Za-z0-9_./:+,@%=-]+$")
 # Wrappers that run the rest of the line as a command, with the options of
 # each that take a separate argument (so the argument is skipped too).
 _WRAPPERS: dict[str, set[str]] = {
-    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "env": {"-u", "--unset", "-C", "--chdir"},
     "command": set(),
     "builtin": set(),
     "exec": {"-a"},
@@ -392,12 +409,25 @@ _WRAPPERS: dict[str, set[str]] = {
     "chrt": {"-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline"},
     "taskset": set(),
     "setsid": set(),
+    "busybox": set(),
+    "watch": {"-n", "--interval", "-q", "--equexit"},
+    "flock": {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code", "-c", "--command"},
+    "chroot": {"--userspec", "--groups"},
+    "unshare": {"-S", "--setuid", "-G", "--setgid", "-R", "--root", "-w", "--wd"},
+    "nsenter": {"-t", "--target", "-S", "--setuid", "-G", "--setgid"},
+    "runuser": {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-c", "--command"},
+    "systemd-run": {"-p", "--property", "-u", "--unit", "-E", "--setenv", "--uid", "--gid", "-M",
+                    "--machine", "--description", "--slice", "-H", "--host", "--working-directory",
+                    "--nice"},
 }
 # Wrappers with positional arguments before the command (timeout DURATION,
-# chrt PRIORITY, taskset MASK).
-_WRAPPER_POSITIONALS = {"timeout": 1, "chrt": 1, "taskset": 1}
+# chrt PRIORITY, taskset MASK, flock LOCKFILE, chroot NEWROOT).
+_WRAPPER_POSITIONALS = {"timeout": 1, "chrt": 1, "taskset": 1, "flock": 1, "chroot": 1}
+# Programs whose -c / --command option value is a shell command.
+_DASH_C = {"su", "script", "runuser", "flock"}
 _XARGS_ARG_OPTS = {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "--max-args", "--max-procs",
                    "--delimiter", "--max-lines", "--max-chars", "--eof", "--arg-file", "--replace"}
+_SHELL_ARG_OPTS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 
 
 def _basename(word: str) -> str:
@@ -414,28 +444,55 @@ def _words(part: str) -> list[str]:
         return part.split()
 
 
+def _env_split(opt: str, words: list[str], i: int) -> tuple[list[str], int] | None:
+    """``env -S 'cmd args'``: the value is itself a command line. Returns (words, i) or None."""
+    if opt in ("-S", "--split-string"):
+        if i < len(words):
+            return _words(words[i]) + words[i + 1:], 0
+        return [], 0
+    if opt.startswith("--split-string="):
+        return _words(opt.split("=", 1)[1]) + words[i:], 0
+    if opt.startswith("-S") and len(opt) > 2:
+        return _words(opt[2:]) + words[i:], 0
+    return None
+
+
 def _strip_wrappers(words: list[str]) -> list[str]:
-    """Drop leading ``NAME=value`` words and wrapper commands (``sudo``, ``env`` ...)."""
+    """Drop leading ``NAME=value`` words, reserved words / grouping tokens and
+    wrapper commands (``sudo``, ``env``, ``timeout`` ...)."""
     i, n = 0, len(words)
     while i < n:
         w = words[i]
-        if _ASSIGN.match(w):
+        if _ASSIGN.match(w) or w in _RESERVED or _FUNC_DEF.match(w):
             i += 1
+            if w == "function":
+                i += 1  # the function name
             continue
         name = _basename(w)
         if name not in _WRAPPERS:
             break
         arg_opts = _WRAPPERS[name]
         i += 1
+        restart = None
         while i < n and words[i].startswith("-") and words[i] != "-":
             opt = words[i]
             i += 1
             if opt == "--":
                 break
+            if name == "env":
+                restart = _env_split(opt, words, i)
+                if restart is not None:
+                    break
             if opt in arg_opts and "=" not in opt:
                 i += 1  # option argument
+        if restart is not None:
+            words, i = restart
+            n = len(words)
+            continue
         i += _WRAPPER_POSITIONALS.get(name, 0)
     out = words[i:]
+    if out and any(ch in out[0] for ch in " \t\n"):
+        out = _words(" ".join(out))  # watch 'rm -rf /': one word holding a command line
     if out:
         out = [_basename(out[0])] + out[1:]
     return out
@@ -471,19 +528,60 @@ def _substitution_bodies(command: str) -> list[str]:
     return [b for b in bodies if b.strip()]
 
 
+def _shell_c_arg(words: list[str]) -> str | None:
+    """The command string of ``bash [options] -c [--] 'cmd'``, or None."""
+    k, has_c = 1, False
+    while k < len(words):
+        w = words[k]
+        if w == "--":
+            k += 1
+            break
+        if w in _SHELL_ARG_OPTS:
+            k += 2
+            continue
+        if w.startswith("--"):
+            k += 1
+            continue
+        if len(w) > 1 and w[0] in "-+":
+            if w[0] == "-" and "c" in w[1:]:
+                has_c = True
+            k += 1
+            continue
+        break
+    if has_c and k < len(words):
+        return words[k]
+    return None
+
+
+def _dash_c_value(words: list[str]) -> str | None:
+    """Value of ``-c`` / ``--command`` (also ``-qc``, ``--command=``) anywhere in ``words``."""
+    for k, w in enumerate(words[1:], 1):
+        if w.startswith("--command="):
+            return w.split("=", 1)[1]
+        if w == "--command" or (w.startswith("-") and not w.startswith("--") and w.endswith("c")):
+            return words[k + 1] if k + 1 < len(words) else None
+    return None
+
+
 def _inner_commands(words: list[str]) -> list[str]:
-    """Command texts a part runs indirectly: ``sh -c``, ``eval``, ``xargs``, ``find -exec``."""
+    """Command texts a part runs indirectly: ``sh -c``, ``su -c``, ``eval``,
+    ``xargs``, ``find -exec``, ``cmd /c``."""
     if not words:
         return []
-    head = words[0]
+    head = _basename(words[0])
     inner: list[str] = []
     if head in _SHELLS:
+        text = _shell_c_arg(words)
+        if text is not None:
+            inner.append(text)
+    elif head in _DASH_C:
+        text = _dash_c_value(words)
+        if text is not None:
+            inner.append(text)
+    elif head.lower() in ("cmd", "cmd.exe"):
         for k, w in enumerate(words[1:], 1):
-            if w.startswith("-") and not w.startswith("--") and "c" in w[1:]:
-                if k + 1 < len(words):
-                    inner.append(words[k + 1])
-                break
-            if not w.startswith("-"):
+            if w.lower() in ("/c", "//c", "/k", "//k"):
+                inner.append(" ".join(words[k + 1:]))
                 break
     elif head == "eval":
         inner.append(" ".join(words[1:]))
@@ -512,17 +610,60 @@ def _inner_commands(words: list[str]) -> list[str]:
     return [t for t in inner if t.strip()]
 
 
+def _herestring(part: str) -> str | None:
+    """The word after an unquoted ``<<<``, quotes removed, or None."""
+    mask = quote_mask(part)
+    k = mask.find("<<<")
+    if k < 0:
+        return None
+    rest = part[k + 3:].lstrip()
+    words = _words(rest)
+    return words[0] if words else None
+
+
+def _reads_stdin_code(words: list[str]) -> bool:
+    """An interpreter with no script/command argument (``sh``, ``python -``) or ``source /dev/stdin``."""
+    if not words:
+        return False
+    head = _basename(words[0])
+    if head in ("source", "."):
+        return any(w in ("/dev/stdin", "-", "/proc/self/fd/0", "/dev/fd/0") for w in words[1:])
+    if head not in _INTERPRETERS:
+        return False
+    args = [w for w in words[1:] if not (w.startswith("-") and w != "-")]
+    return not args or args[0] in ("-", "/dev/stdin")
+
+
+def _expand_variants(part: str, assigns: dict[str, str]) -> list[str]:
+    """Deny pass: forms of ``part`` with simple shell expansions applied.
+
+    ``$IFS`` -> space, ``$NAME`` of earlier ``NAME=value`` parts, brace lists
+    ``{a,b}`` -> ``a b``, function headers and grouping characters removed.
+    """
+    text = re.sub(r"\$\{IFS\}|\$IFS\b", " ", part)
+    for name, value in assigns.items():
+        text = re.sub(r"\$\{" + re.escape(name) + r"\}|\$" + re.escape(name) + r"\b",
+                      lambda _m, v=value: v, text)
+    text = re.sub(r"\{([^{}\s]*,[^{}\s]*)\}", lambda m: m.group(1).replace(",", " "), text)
+    text = re.sub(r"[\w.:-]+\s*\(\s*\)", " ", text)
+    text = re.sub(r"(?<!\$)[(){}]", " ", text)
+    return [text] if text != part else []
+
+
 def deny_subjects(command: str) -> tuple[list[str], bool]:
     """Subjects used for deny (and ask) matching; returns (subjects, too_deep).
 
-    For every part: the part with whitespace squeezed, and the part with
-    leading ``NAME=value`` words and wrappers stripped and the command word
-    reduced to its basename (``sudo /bin/rm -rf /`` -> ``rm -rf /``). The
-    bodies of command substitutions (any nesting level) and the commands run
-    by ``sh -c``, ``eval``, ``xargs`` and ``find -exec`` are checked the same
-    way; ``sh -c`` / ``eval`` nesting is followed up to :data:`MAX_NEST_DEPTH`
-    levels, deeper nesting sets ``too_deep`` (the caller then never
-    auto-allows the command).
+    Best effort, never a boundary. For every part (quote-aware split plus a
+    quote-blind split): the part with whitespace squeezed, and the part with
+    leading ``NAME=value`` words, reserved words / grouping tokens and
+    wrappers stripped and the command word reduced to its basename
+    (``sudo /bin/rm -rf /`` -> ``rm -rf /``), also after simple expansions
+    (``$IFS``, earlier ``x=...`` assignments, ``{a,b}``). The bodies of
+    command substitutions (any nesting level) and the commands run by
+    ``sh -c``, ``su -c``, ``env -S``, ``eval``, ``xargs``, ``find -exec``,
+    ``cmd /c``, a herestring or ``echo ... |`` fed to a shell are checked the
+    same way; that nesting is followed up to :data:`MAX_NEST_DEPTH` levels,
+    deeper nesting sets ``too_deep`` (the caller then never auto-allows).
     """
     seen: list[str] = []
     too_deep = False
@@ -536,23 +677,78 @@ def deny_subjects(command: str) -> tuple[list[str], bool]:
         nonlocal too_deep
         nested: list[str] = []
         for text in [command] + _substitution_bodies(command):
-            # The quote-aware split plus a quote-blind one: a quoting trick
-            # that fools the scanner still shows its parts to deny rules.
-            candidates = split_bash(text)[0] + _quote_blind_parts(text)
+            scan = scan_bash(text)
+            assigns: dict[str, str] = {}
+            prev_words: list[str] = []
+            for idx, part in enumerate(scan.parts):
+                words = _words(part)
+                if words and all(_ASSIGN.match(w) for w in words):
+                    for w in words:
+                        name, _, value = w.partition("=")
+                        assigns[name] = value
+                stripped = _strip_wrappers(words)
+                here = _herestring(part)
+                if here and stripped and _basename(stripped[0]) in _INTERPRETERS:
+                    nested.append(here)
+                if (scan.seps[idx] == "|" and _reads_stdin_code(stripped) and prev_words
+                        and prev_words[0] in ("echo", "printf")):
+                    nested.append(" ".join(w for w in prev_words[1:] if not w.startswith("-")))
+                prev_words = stripped
+                for variant in _expand_variants(part, assigns):
+                    words_v = _strip_wrappers(_words(variant))
+                    add(" ".join(words_v))
+                    nested.extend(_inner_commands(words_v))
+            candidates = scan.parts + _quote_blind_parts(text)
             for part in candidates:
                 add(" ".join(part.split()))
                 for variant in (part, part.replace("'", "").replace('"', "")):
-                    words = _strip_wrappers(_words(variant))
+                    raw = _words(variant)
+                    words = _strip_wrappers(raw)
                     add(" ".join(words))
-                    nested.extend(_inner_commands(words))
+                    nested.extend(_inner_commands(raw) + _inner_commands(words))
         if nested and depth >= MAX_NEST_DEPTH:
             too_deep = True
             return
-        for text in nested:
+        for text in dict.fromkeys(nested):
             walk(text, depth + 1)
 
     walk(command, 0)
     return seen, too_deep
+
+
+def allow_blocker(part: str, sep: str = "") -> str:
+    """Why ``part`` can never be auto-allowed by a rule, or ``""``.
+
+    Only simple commands are eligible: the command word is a plain word (no
+    ``$``, braces, backslash, glob or quote characters), no reserved word or
+    grouping (``{ } ( ) !``, ``if``, ``while``, ``f()`` ...), no heredoc or
+    herestring, and no pipe into a shell or interpreter (or
+    ``source /dev/stdin``).
+    """
+    mask = quote_mask(part)
+    if "<<" in mask:
+        return "heredoc or herestring"
+    if re.search(r"[(){}]", mask):
+        return "grouping, function or brace expansion"
+    command_word = None
+    for m in re.finditer(r"\S+", mask):
+        token = part[m.start():m.end()]
+        if _ASSIGN.match(m.group()) and "\x01" not in m.group().split("=", 1)[0]:
+            continue
+        command_word = token
+        break
+    if command_word is None:
+        return ""
+    if command_word in _RESERVED:
+        return f"shell keyword {command_word!r}"
+    if not _PLAIN_WORD.match(command_word):
+        return "the command word is not a plain word"
+    words = _strip_wrappers(_words(part))
+    if sep == "|" and words and _basename(words[0]) in _INTERPRETERS:
+        return "pipe into a shell or interpreter"
+    if _reads_stdin_code(words) and words and _basename(words[0]) in ("source", "."):
+        return "code read from stdin"
+    return ""
 
 
 def _deny_parts(command: str) -> list[str]:
@@ -880,6 +1076,9 @@ class PermissionRules:
                 unsafe = "Command substitution is never auto-allowed"
             elif any("\n" in p or "\r" in p for p in scan.parts):
                 unsafe = "A command with a line break inside quotes is never auto-allowed"
+            elif any(allow_blocker(p, sep) for p, sep in zip(scan.parts, scan.seps)):
+                why = next(b for b in (allow_blocker(p, sep) for p, sep in zip(scan.parts, scan.seps)) if b)
+                unsafe = f"Only simple commands are auto-allowed ({why})"
             elif too_deep:
                 unsafe = "Nested shell commands too deep to check"
             elif any(writes_file(p) and not self._allowed_redirect(p) for p in subjects):

@@ -500,6 +500,25 @@ liteLLM:
   model: "gemini/gemini-flash"
 ```
 
+### Permission rules
+In the user config only (never from the repository):
+
+```yaml
+permissions:
+  defaults: {guard: allow, sandbox: ask}     # local mode always asks
+  allow: ["bash(pytest *)", "fileops(read:**)", "edit(src/**)", "webfetch(domain:docs.python.org)"]
+  ask:   ["bash(git push*)"]
+  deny:  ["bash(rm *)", "edit(**/.env)", "mcp__github__delete_*"]
+```
+
+Precedence is deny > ask > allow > mode default. **Allow is safe by construction**: a bash command is auto-allowed
+only when every part is a simple command (plain command word; no grouping, functions, reserved words, heredocs,
+herestrings, pipes into a shell or interpreter, command substitution, file redirection, extra `env`, or unclear
+quoting) and an allow rule matches it. **Bash deny rules are best effort**: rex normalises wrappers (`sudo`, `env`,
+`timeout`, `bash -c`, `eval`, `xargs`, ...) and simple expansions before matching, but a deny rule cannot stop
+code run by an interpreter (`python -c`, `perl -e`, `node -e`) or obfuscated shell. Use the Docker guard (the real
+boundary) or allow-lists for anything that matters.
+
 ### Role Configs
 `~/.config/runtime/roles/{ORCHESTRATOR,CODER,TESTER,...}.yaml` — see `arch-docs/role-based-agent-architecture.md` §10.1
 

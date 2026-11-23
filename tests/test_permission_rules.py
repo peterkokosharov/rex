@@ -298,6 +298,72 @@ class BashTests(unittest.TestCase):
         self.assertEqual(split_bash("echo $'a\\'b;c' ; ls")[0], ["echo $'a\\'b;c'", "ls"])
         self.assertEqual(split_bash("ec\\\nho hi")[0], ["echo hi"])
 
+    REVIEW_PROBES = [
+        "f(){ rm -rf /; }; f",
+        "{ rm -rf /; }",
+        "( rm -rf / )",
+        "(rm -rf /)",
+        "if true; then rm -rf /; fi",
+        "! rm -rf /",
+        "coproc rm -rf /",
+        "r\\\nm -rf /",
+        "rm${IFS}-rf${IFS}/",
+        "{rm,-rf,/}",
+        "x=rm; $x -rf /",
+        "env -S 'rm -rf /'",
+        "bash -o errexit -c 'rm -rf /'",
+        "bash -c -- 'rm -rf /'",
+        "sh <<< 'rm -rf /'",
+        "echo rm -rf / | sh",
+        "busybox rm -rf /",
+        "su -c 'rm -rf /'",
+        "watch rm -rf /",
+        "watch -n 1 'rm -rf /'",
+        "cmd //c del x",
+    ]
+
+    def test_review_probes_never_allowed_in_local(self):
+        # Allow rules for the harmless-looking pieces must not let them through.
+        # (An explicit allow for a wrapper such as bash(sudo *) or bash(bash *) is
+        # the user's choice and is honoured.)
+        pr = rules({"allow": ["bash(echo *)", "bash(f)", "bash(true)", "bash(x=rm)", "bash(fi)",
+                              "bash(sh)", "bash(coproc *)", "bash(then *)", "bash(! *)"]})
+        for cmd in self.REVIEW_PROBES:
+            with self.subTest(cmd=cmd):
+                self.assertIn(pr.evaluate("bash", bash(cmd), "local").decision, (R.ASK, R.DENY))
+
+    def test_review_probes_denied_by_rm_rule(self):
+        pr = rules({"deny": ["bash(rm *)"]})
+        for cmd in self.REVIEW_PROBES:
+            if cmd.startswith("cmd "):
+                continue  # del is not rm
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "local").decision, R.DENY)
+        pr = rules({"deny": ["bash(del *)"]})
+        self.assertEqual(pr.evaluate("bash", bash("cmd //c del x"), "local").decision, R.DENY)
+        self.assertEqual(pr.evaluate("bash", bash("cmd.exe /C del x"), "local").decision, R.DENY)
+
+    def test_more_wrappers_denied(self):
+        pr = rules({"deny": ["bash(rm *)"]})
+        for cmd in ("flock /tmp/l rm -rf /", "flock -c 'rm -rf /' /tmp/l", "chroot / rm -rf /",
+                    "unshare -r rm -rf /", "nsenter -t 1 -m rm -rf /", "runuser -u bob -- rm -rf /",
+                    "runuser -l bob -c 'rm -rf /'", "systemd-run --user -p X=1 rm -rf /",
+                    "script -qc 'rm -rf /' /dev/null", "sh -c 'echo rm -rf / | bash'",
+                    "function f { rm -rf /; }", "while true; do rm -rf /; done"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.DENY)
+
+    def test_only_simple_commands_auto_allowed(self):
+        pr = rules({"allow": ["bash(cat *)", "bash(python *)", "bash(source *)", "bash(make *)"]})
+        for cmd in ("cat <<EOF\nx\nEOF", "cat x | python", "cat x | sudo python3 -", "source /dev/stdin",
+                    "make {a,b}", "$MAKE all", "\\make all", "'make' all", "m*ke all"):
+            with self.subTest(cmd=cmd):
+                v = pr.evaluate("bash", bash(cmd), "guard")
+                self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+        for cmd in ("make all", "cat a | make -f -", "FOO=1 make", "python tool.py", "make 'a b'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.ALLOW)
+
     def test_unparseable_never_auto_allowed(self):
         pr = rules({"allow": ["bash(echo *)"]})
         for cmd in ("echo 'open", 'echo "open', "echo $'open"):
