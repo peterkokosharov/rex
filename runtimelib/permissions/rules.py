@@ -137,8 +137,9 @@ def escape_glob(text: str) -> str:
 def split_bash(command: str) -> tuple[list[str], bool]:
     """Split a command line into parts. Returns (parts, has_substitution).
 
-    Splits on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines outside quotes.
-    ``has_substitution`` is true for ``$(``, backticks, ``<(``, ``>(`` outside
+    Splits on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines outside quotes;
+    an ``&`` or ``|`` that belongs to a redirect (``&>``, ``>&``, ``2>&1``,
+    ``<&``, ``>|``) does not split. ``has_substitution`` is true for ``$(``, backticks, ``<(``, ``>(`` outside
     single quotes.
     """
     parts: list[str] = []
@@ -182,6 +183,10 @@ def split_bash(command: str) -> tuple[list[str], bool]:
         elif command.startswith(("&&", "||"), i):
             flush()
             i += 1
+        elif c == "&" and (command.startswith("&>", i) or (buf and buf[-1] in ("<", ">"))):
+            buf.append(c)  # redirect: &> file, >&2, 2>&1, <&3 - not a separator
+        elif c == "|" and buf and buf[-1] == ">":
+            buf.append(c)  # >| file (clobber) - not a pipe
         elif c in ";|&\n\r":
             flush()
         else:
@@ -698,7 +703,12 @@ class PermissionRules:
         if tool == "webfetch":
             host = _host(subjects[0])
             return [f"webfetch(domain:{host})"] if host else []
-        if tool in ("bash", "git", "edit"):
+        if tool == "bash":
+            # Never store junk such as bash(1) or bash(>&2): a part made only of
+            # digits and redirect characters is not a command.
+            return [f"bash({escape_glob(s)})" for s in subjects
+                    if s and not re.fullmatch(r"[\d\s<>&|-]*", s)]
+        if tool in ("git", "edit"):
             return [f"{tool}({escape_glob(s)})" for s in subjects if s]
         if tool == "fileops":
             op, _, path = subjects[0].partition(":")

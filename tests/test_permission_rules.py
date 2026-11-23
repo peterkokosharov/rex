@@ -143,6 +143,12 @@ class BashTests(unittest.TestCase):
         self.assertEqual(split_bash("echo 'a;b'")[0], ["echo 'a;b'"])
         self.assertEqual(split_bash("a & b")[0], ["a", "b"])
 
+    def test_redirect_ampersand_does_not_split(self):
+        for cmd in ("make 2>&1", "make >&2", "make &> /dev/null", "read x <&3", "make >| out"):
+            self.assertEqual(split_bash(cmd)[0], [cmd], cmd)
+        self.assertEqual(split_bash("make 2>&1 | tee log & ls")[0], ["make 2>&1", "tee log", "ls"])
+        self.assertEqual(split_bash("a |& b")[0], ["a", "b"])
+
     def test_substitution_flags(self):
         for cmd in ("echo $(id)", "echo `id`", "cat <(ls)", "tee >(wc)", 'echo "$(id)"'):
             self.assertTrue(split_bash(cmd)[1], cmd)
@@ -317,6 +323,12 @@ class AllowAlwaysTests(unittest.TestCase):
         added = pr.add_allow_always("bash", bash("make a && make b"))
         self.assertEqual(added, ["bash(make a)", "bash(make b)"])
         self.assertEqual(pr.evaluate("bash", bash("make b"), "local").decision, R.ALLOW)
+
+    def test_no_junk_rules(self):
+        pr = rules()
+        self.assertEqual(pr.add_allow_always("bash", bash("make 2>&1")), ["bash(make 2>&1)"])
+        self.assertEqual(pr.exact_rules("bash", bash("1 & 2>&1")), [])
+        self.assertNotIn("bash(1)", [r.text for r in pr.allow])
 
     def test_deny_still_beats_allow_always(self):
         pr = rules()
