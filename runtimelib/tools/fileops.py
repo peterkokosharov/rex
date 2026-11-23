@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """File operations tool using guard client."""
@@ -171,11 +171,13 @@ class FileOpsTool(Tool):
             pattern = kwargs["pattern"]
             _check_pattern(pattern)
             base = resolve_in_workspace(kwargs.get("root", "."), root)
-            from ..native import glob as native_glob
+            from ..native import glob as native_glob, _fallback
             try:
                 found = native_glob(str(base), pattern)
             except Exception:
-                found = []
+                # The native library failed: use the pure-Python glob instead
+                # of silently returning nothing.
+                found = _fallback.glob(str(base), pattern)
             return {"matches": sorted(_inside(found, root))}
         if operation == "grep":
             pattern = kwargs["pattern"]
@@ -236,6 +238,8 @@ def _check_pattern(pattern: Any) -> None:
         raise ValueError("pattern must be a non-empty string")
     if _is_absolute_like(pattern) or pattern.startswith("~"):
         raise PermissionError(f"absolute glob patterns are not allowed: {pattern}")
+    if any(seg == ".." for seg in pattern.replace("\\", "/").split("/")):
+        raise PermissionError(f"'..' is not allowed in glob patterns: {pattern}")
 
 
 def _relative_inside(path: Any, root: Path) -> str | None:

@@ -91,9 +91,18 @@ def test_fileops_glob_rejects_escaping_patterns(workspace):
     tool = FileOpsTool(LOCAL)
     with pytest.raises(PermissionError):
         tool.execute(operation="glob", pattern="/etc/*")
-    # A relative pattern that climbs out finds nothing outside the root.
-    res = tool.execute(operation="glob", pattern="../*.txt")
-    assert res["matches"] == []
+    for bad in ("../*.txt", "src/../../*.txt", "..", "src\\..\\..\\*", "**/../*"):
+        with pytest.raises(PermissionError):
+            tool.execute(operation="glob", pattern=bad)
+    # '..' inside a name is not a segment and stays allowed.
+    assert tool.execute(operation="glob", pattern="*..txt")["matches"] == []
+
+
+def test_fileops_glob_falls_back_when_native_raises(workspace):
+    tool = FileOpsTool(LOCAL)
+    with mock.patch("runtimelib.native.glob", side_effect=OSError("native broke")):
+        res = tool.execute(operation="glob", pattern="src/*.py")
+    assert res["matches"] == ["src/a.py"]
 
 
 def _symlink_or_skip(link: Path, target: Path) -> None:
@@ -652,3 +661,41 @@ def test_mask_secrets_lists_urls_and_nested():
     assert out["base_url"] == "http://127.0.0.1:4000" and out["max_tokens"] == 5
     assert mask_value("net.proxy", "https://u:p@h") == "https://***@h"
     assert mask_value("x.github_pat", "abc") == "***"
+
+
+# ---------------------------------------------------------------- Windows path shapes
+
+@pytest.mark.parametrize("bad", [r"\\?\C:\Windows\win.ini", r"\\?\UNC\host\share\f", r"\\.\C:\x",
+                                 "C:foo", r"C:..\outside.txt", "c:", "/C:/x"])
+def test_fileops_rejects_device_and_drive_relative(workspace, bad):
+    tool = FileOpsTool(LOCAL)
+    with pytest.raises(PermissionError):
+        tool.execute(operation="read", path=bad)
+    with pytest.raises(PermissionError):
+        tool.execute(operation="write", path=bad, content="x")
+    with pytest.raises(PermissionError):
+        tool.execute(operation="glob", pattern="*", root=bad)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are Windows-only")
+def test_fileops_rejects_junction_escape(workspace, tmp_path):
+    outside_dir = tmp_path / "outdir"
+    outside_dir.mkdir()
+    (outside_dir / "s.txt").write_text("secret-outside\n", encoding="utf-8")
+    link = workspace / "junc"
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside_dir)],
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or not link.exists():
+        pytest.skip(f"mklink /J failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    tool = FileOpsTool(LOCAL)
+    with pytest.raises(PermissionError):
+        tool.execute(operation="read", path="junc/s.txt")
+    with pytest.raises(PermissionError):
+        tool.execute(operation="write", path="junc/new.txt", content="x")
+    assert not (outside_dir / "new.txt").exists()
+    assert "junc" not in tool.execute(operation="glob", pattern="*")["matches"]
+    assert tool.execute(operation="grep", pattern="secret-outside")["matches"] == []
+    with mock.patch("subprocess.run") as run:
+        with pytest.raises(PermissionError):
+            GitTool(LOCAL).execute(operation="status", cwd="junc")
+    run.assert_not_called()
