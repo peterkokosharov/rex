@@ -205,3 +205,28 @@ def test_cli_jsonl_mode_stdout_is_pure_json():
     assert events[0]["type"] == "ready"
     assert {"type": "model_ok", "model": "gemini-lite"} in events
     assert events[-1] == {"type": "bye"}
+
+
+def test_force_utf8_stdio_reconfigures_streams(monkeypatch):
+    from runtimelib.cli import force_utf8_stdio
+
+    raw_out = io.BytesIO()
+    raw_in = io.BytesIO("\u043f\u0440\u0438\u0432\u0435\u0442\n".encode("utf-8"))
+    fake_out = io.TextIOWrapper(raw_out, encoding="cp1251", newline="\n")
+    fake_in = io.TextIOWrapper(raw_in, encoding="cp1251")
+    fake_err = io.TextIOWrapper(io.BytesIO(), encoding="cp1251")
+    monkeypatch.setattr(sys, "stdout", fake_out)
+    monkeypatch.setattr(sys, "stdin", fake_in)
+    monkeypatch.setattr(sys, "stderr", fake_err)
+    force_utf8_stdio()
+    assert fake_out.encoding == fake_in.encoding == fake_err.encoding == "utf-8"
+    assert fake_in.readline() == "\u043f\u0440\u0438\u0432\u0435\u0442\n"
+    print("\u0434\u0430", file=fake_out, flush=True)
+    assert raw_out.getvalue() == "\u0434\u0430\n".encode("utf-8")
+
+
+def test_force_utf8_stdio_ignores_plain_streams(monkeypatch):
+    from runtimelib.cli import force_utf8_stdio
+
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    force_utf8_stdio()  # StringIO has no reconfigure: must not raise

@@ -215,6 +215,25 @@ class JsonlBridge:
         return 0
 
 
+def force_utf8_stdio() -> None:
+    """Make stdin/stdout/stderr UTF-8 regardless of the OS code page.
+
+    On Windows a piped stdio defaults to the ANSI code page (e.g. cp1251), which
+    corrupts the JSON seen by front-ends. Streams without ``reconfigure``
+    (replaced by tests or wrappers) are left alone.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def run_jsonl(config: Any, **kwargs: Any) -> int:
     """Convenience wrapper used by ``python3 -m runtime --jsonl``."""
+    if "stream" not in kwargs and "out" not in kwargs:
+        force_utf8_stdio()
     return JsonlBridge(config, **kwargs).run()

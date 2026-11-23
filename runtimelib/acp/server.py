@@ -541,6 +541,9 @@ def run_acp(
     env_file: Optional[Path | str] = None,
 ) -> int:
     """Run the ACP server with an already loaded rex config."""
+    if stream_in is None and stream_out is None:
+        from ..cli.jsonl_bridge import force_utf8_stdio
+        force_utf8_stdio()
     return ACPServer(
         config,
         model=model,
