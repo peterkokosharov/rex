@@ -177,14 +177,14 @@ and can be switched off. (b3) turns the gateway into an agent.
 
 ## Status notes
 
-**Step 0 done (2026-11-23): `--json-schema` probe. Result: yes, use it.** Two live calls with Claude Code
+**Step 0 done (2026-11-23): `--json-schema` probe. Result: yes, use it.** Live calls with Claude Code
 2.1.328, model `haiku`, in an empty temporary folder, with exactly the gateway's flags plus the schema:
 `claude -p --model haiku --output-format json --tools "" --strict-mcp-config --no-session-persistence
 --safe-mode --json-schema <envelope>`, prompt on stdin. The envelope schema was the fixed one from (b1):
 `{"type":"object","properties":{"tool_calls":{"type":"array","items":{"type":"object","properties":
 {"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"]}},
 "content":{"type":"string"}},"additionalProperties":false}`.
-- Both calls exited 0 with `"is_error":false`, `"subtype":"success"`, `"permission_denials":[]`. No error
+- The first two calls exited 0 with `"is_error":false`, `"subtype":"success"`, `"permission_denials":[]`. No error
   about `--tools ""` or `--safe-mode`.
 - Output shape: the normal `json` result object plus a new top-level key `structured_output` that holds the
   envelope as a JSON *object*. `result` holds the same envelope as a JSON *string*. Example (call prompt):
@@ -193,13 +193,15 @@ and can be switched off. (b3) turns the gateway into an agent.
   Text prompt: `"result":"{\"content\":\"done\"}"`, `"structured_output":{"content":"done"}`.
 - Cost of the add-on: `"num_turns":2` and `"stop_reason":"tool_use"` in both calls (the CLI delivers the
   structured output through an internal turn). The extra turn is small (about 1-2 s, a fraction of a cent on haiku).
+- A third call added `--system-prompt "You are a model behind an API. Follow the protocol in the input."`
+  to the same flags: same shape, exit 0, valid `structured_output` with the `echo` call.
 - The model may fill both `content` and `tool_calls`; OpenAI allows that, so the gateway passes both on.
 - Decision: the gateway passes `--json-schema` with this fixed envelope schema in tool mode when the startup
   probe lists `--json-schema` (switch off with `--no-json-schema`). It reads `structured_output` when it is a
   JSON object and otherwise parses `result` with the plain parser. Per-tool schemas are never sent to the CLI.
 
 Sources:
-- `claude -p ... --json-schema` live probe, Claude Code 2.1.328, model haiku (run 2026-11-23, 2 calls)
+- `claude -p ... --json-schema` live probe, Claude Code 2.1.328, model haiku (run 2026-11-23, 3 calls)
 - `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453; startup probe and process handling updated later the same day)
 - `runtimelib/llm/client.py` (read 2026-11-23)
 - `runtimelib/agent/loop.py` (read 2026-11-23)
