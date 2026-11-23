@@ -758,7 +758,7 @@ def test_fileops_rejects_junction_escape(workspace, tmp_path):
 def test_find_bash_on_windows_rejects_bat_and_cmd(monkeypatch):
     from runtimelib.tools import bash as bash_mod
     monkeypatch.setattr(bash_mod.os, "name", "nt")
-    monkeypatch.setattr(bash_mod, "safe_which", lambda n: "C:\tools\bash.bat" if n == "bash" else None)
+    monkeypatch.setattr(bash_mod, "safe_which", lambda n: r"C:\tools\bash.bat" if n == "bash" else None)
     monkeypatch.setattr(bash_mod.os.path, "isfile", lambda p: False)
     assert bash_mod.find_bash() is None
 

@@ -4,6 +4,24 @@ LLM: nvidia nemotron ultra
 Licensed under MIT License
 -->
 
+# Release v0.3.0 (2026-11-23)
+
+- Permissions: allow/ask/deny rules, command hooks (pre_tool/post_tool), allow-always store.
+- JSONL permission messages (ask/reply) for all front-ends; REPL asks on the terminal; one-shot mode asks when it can.
+- Local mode: bash ALLOW is a whitelist (single simple command of safe characters); everything else asks.
+- Guard mode: the container is the boundary; the bash whitelist is not applied there.
+- Bash on Windows runs through Git Bash (required), never cmd.exe.
+- Edit tool: read-before-edit hash check, unified diff, refuses mixed CRLF/LF files.
+- Webfetch tool with SSRF protection (private-address block, DNS pinning, redirect checks, size cap).
+- MCP client: rewritten stdio transport, own process group, clean shutdown.
+- Context: 80% warning, mandatory compaction at 90%, window probe, context event.
+- Claude Code CLI gateway: tool calling emulated, clear 502/504 reasons, one retry.
+- Per-session store, AGENTS.md standing instructions, trust-gated project skills, render_diagram.
+- Guard Docker image fixed (rex-guard, Python 3.12).
+- Single version source (pyproject.toml and runtimelib must match).
+- Docs consolidated under docs/ (docs/INDEX.md).
+- CI: pytest on Linux/macOS/Windows with Python 3.12 and 3.14.
+
 # Release v0.2.2
 
 - Windows start without readline/fcntl.

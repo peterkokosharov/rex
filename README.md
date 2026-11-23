@@ -524,8 +524,10 @@ around whole words) that an allow rule matches. Everything else asks: `; & |`, r
 globs (`*` `?` `[`), `~`, `!`, `#`, `%`, `^`, grouping, newlines, tabs, non-ASCII characters, unbalanced quotes, and any
 command over 16 KB. So `pytest -q tests/test_x.py` runs without asking, `pytest tests/*` asks.
 In guard mode the container is the boundary: commands run unless a deny/ask rule matches.
-Allow rules are prefix globs: `git status*` also matches `git statusx` and `ls*` matches `lsof` (a first word with `=`
-such as `ls=1` never matches). An allowed program keeps its own dangerous options: `bash(git *)` allows
+Allow rules are prefix globs: `git status*` also matches `git statusx` and `ls*` matches `lsof` (a first word containing `=`
+or starting with `-` makes the command ask). Wrapper programs run whatever follows them, so never write allow rules
+whose prefix covers wrappers (`time`, `exec`, `env`, `eval`, `command`, `builtin`, `nohup`, `xargs`, `source`/`.`,
+`trap`, `bash`/`sh`): `bash(e*)` or `bash(t*)` is as wide as `bash(*)`. An allowed program keeps its own dangerous options: `bash(git *)` allows
 `git diff --output=FILE` and `git -c core.fsmonitor=... status`, `bash(pytest *)` allows `pytest -p plugin` and
 `pytest --basetemp=DIR`. Write narrow rules.
 

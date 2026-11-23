@@ -1,6 +1,6 @@
 [project]
 name = "runtime"
-version = "0.2.2"
+version = "0.3.0"
 description = "Small stdlib-only agent runtime for OpenAI-compatible endpoints"
 readme = "README.md"
 license = {text = "MIT"}
