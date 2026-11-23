@@ -456,6 +456,26 @@ def test_main_fails_closed_when_probe_fails(capsys):
     assert "--allow-unsafe" in capsys.readouterr().err
 
 
+def test_main_refuses_cli_without_privacy_flags(capsys):
+    with mock.patch.object(gw, "safe_which", return_value="claude"), \
+            mock.patch.object(gw, "make_server") as ms, \
+            mock.patch.object(gw, "cli_flags", return_value={"--print", "--model"}):
+        assert gw.main(["--port", "4000"]) == 2
+    ms.assert_not_called()
+    assert "--allow-unsafe" in capsys.readouterr().err
+
+
+def test_cli_flags_nonzero_exit_is_probe_failure():
+    with mock.patch.object(gw.subprocess, "run", return_value=_proc("--safe-mode\n", code=1)) as run:
+        assert gw.cli_flags("bin-x") is None
+    assert run.call_count == 2
+
+
+def test_cli_flags_empty_output_is_probe_failure():
+    with mock.patch.object(gw.subprocess, "run", return_value=_proc("no options here\n")):
+        assert gw.cli_flags("bin-x") is None
+
+
 def test_main_passes_flags_and_concurrency_to_server(capsys):
     fake = mock.Mock()
     fake.serve_forever.side_effect = KeyboardInterrupt

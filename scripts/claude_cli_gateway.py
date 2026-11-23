@@ -178,6 +178,8 @@ _FLAG_RE = re.compile(rb"--[a-z][a-z0-9-]*")
 def cli_flags(claude_bin: str) -> set[str] | None:
     """Option names listed by `claude --help`, or None when the probe fails (retried once).
 
+    A non-zero exit or an output without any option name counts as a failed probe.
+
     Called once at startup; requests never probe again.
     """
     for _ in range(2):
@@ -185,10 +187,14 @@ def cli_flags(claude_bin: str) -> set[str] | None:
             proc = subprocess.run([claude_bin, "--help"], capture_output=True, timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired):
             continue
+        if proc.returncode != 0:
+            continue
         out = proc.stdout or b""
         if isinstance(out, str):
             out = out.encode("utf-8", errors="replace")
-        return {m.decode("ascii") for m in _FLAG_RE.findall(out)}
+        found = {m.decode("ascii") for m in _FLAG_RE.findall(out)}
+        if found:  # an empty set means the output was not a help text: treat as a failed probe
+            return found
     return None
 
 
@@ -530,6 +536,11 @@ def main(argv: list[str] | None = None) -> int:
         print("error: could not run 'claude --help', so the privacy flags are unknown and your user "
               "CLAUDE.md/settings might be sent with every request; fix the CLI or pass --allow-unsafe",
               file=sys.stderr)
+        return 2
+    if not args.allow_unsafe and not (flags and ("--safe-mode" in flags or "--setting-sources" in flags)):
+        print("error: this claude CLI offers neither --safe-mode nor --setting-sources, so your user "
+              "CLAUDE.md/settings and project settings would be sent with every request; "
+              "upgrade the CLI or pass --allow-unsafe", file=sys.stderr)
         return 2
     try:
         server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token,
