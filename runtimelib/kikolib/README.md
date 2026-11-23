@@ -10,7 +10,6 @@ Small, standard-library-only library for kiko-lite (a stdlib proxy so Claude Cod
 NVIDIA / Groq / Gemini / Qwen / OpenAI). Version 0.1.0. Python >= 3.11 (import fails earlier).
 Primary target Linux (Debian 12, Q4OS, Mint); Windows also works.
 
-Inventory of the old third-party dependencies: [`docs/kikolib/INVENTORY.md`](../docs/kikolib/INVENTORY.md).
 
 ## Rules
 
