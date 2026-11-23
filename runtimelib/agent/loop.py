@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import signal
 import sys
@@ -20,7 +21,10 @@ from typing import Any, Callable, Optional
 from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
 from ..llm.models import get_registry
-from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool, DiagramTool
+from ..tools import FileOpsTool, BashTool, TaskSpawnTool, GitTool, DiagramTool
+from ..tools.edit import READ_TRACKER, EditTool
+from ..tools.mcp_tool import load_mcp_tools
+from ..tools.webfetch import WebFetchTool
 from ..tools.skills import LoadSkillTool, ReadSkillFileTool
 from ..skills import discover_skills, skill_index
 from ..trust import trust_workspace
@@ -116,6 +120,7 @@ class AgentLoop:
 
         # Initialize tools
         self.tools: dict[str, Tool] = {}
+        self._mcp_manager = None
         if tools:
             for tool in tools:
                 self.tools[tool.name] = tool
@@ -167,13 +172,27 @@ class AgentLoop:
         self.tools["fileops"] = FileOpsTool(self.config)
         self.tools["bash"] = BashTool(self.config)
         self.tools["task"] = TaskSpawnTool()
-        self.tools["websearch"] = WebSearchTool()
+        self.tools["edit"] = EditTool(self.config, READ_TRACKER)
+        # allow_private comes from the host config only; it is not in the model's schema.
+        self.tools["webfetch"] = WebFetchTool(
+            allow_private=bool(self.config.get("webfetch.allow_private", False)))
         self.tools["git"] = GitTool(self.config)
         self.tools["render_diagram"] = DiagramTool(self.config)
         skills = discover_skills(Path.cwd(), self.config)
         if skills:
             self.tools["load_skill"] = LoadSkillTool(self.config, skills)
             self.tools["read_skill_file"] = ReadSkillFileTool(self.config, skills)
+        mcp_tools, self._mcp_manager = load_mcp_tools(self.config, str(Path.cwd()))
+        for tool in mcp_tools:
+            self.tools[tool.name] = tool
+        if self._mcp_manager is not None:
+            atexit.register(self.close_mcp)
+
+    def close_mcp(self) -> None:
+        """Disconnect the MCP servers (also runs at interpreter exit)."""
+        manager, self._mcp_manager = self._mcp_manager, None
+        if manager is not None:
+            manager.disconnect_all()
 
     def _build_system_prompt(self, include_tools: bool = True) -> str:
         """Build system prompt, optionally with tool descriptions."""
@@ -216,7 +235,7 @@ You have access to the following tools:
 
 Guidelines:
 - Use tools to accomplish tasks. Think before acting.
-- For file operations, prefer reading before writing.
+- For file operations, prefer reading before writing. Read a file before editing it; the edit tool refuses files that were not read in this session.
 - For bash commands, explain what you're doing.
 - Be concise in your responses.
 - If you need to use a tool, call it. Don't describe what you would do.
