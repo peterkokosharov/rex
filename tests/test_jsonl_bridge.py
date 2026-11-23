@@ -461,6 +461,23 @@ def test_terminal_asker_ctrl_c_denies_and_interrupts():
     assert hits == [1]
 
 
+def test_terminal_asker_escapes_control_characters():
+    from runtime.__main__ import TerminalAsker
+
+    out = io.StringIO()
+    asker = TerminalAsker(input_fn=lambda p: "n", out=out)
+    request = PermissionRequest(
+        id="perm-1", tool="bash", kind="exec", summary="bash: ls\x1b[2K\rrm",
+        detail="a\tb\nc\x1b]0;x\x07\x9b", reason="r\x00",
+    )
+    assert asker.ask(request) == "deny"
+    text = out.getvalue()
+    assert "\x1b" not in text and "\x07" not in text and "\x9b" not in text and "\x00" not in text
+    assert "ls\\x1b[2K\\rrm" in text
+    assert "a\tb\nc\\x1b]0;x\\x07\\x9b" in text
+    assert "(r\\x00)" in text
+
+
 def test_terminal_asker_answers():
     from runtime.__main__ import TerminalAsker
 

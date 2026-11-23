@@ -122,6 +122,20 @@ def main() -> int:
     return run_interactive(registry, config)
 
 
+def _printable(text: Any) -> str:
+    """``text`` with control characters (except newline and tab) shown as escapes."""
+    out = []
+    for ch in str(text):
+        code = ord(ch)
+        if ch in "\n\t" or not (code < 32 or 0x7F <= code <= 0x9F):
+            out.append(ch)
+        elif ch == "\r":
+            out.append("\\r")
+        else:
+            out.append(f"\\x{code:02x}")
+    return "".join(out)
+
+
 class TerminalAsker:
     """REPL asker: shows the pending tool call on stderr and reads y / a / n.
 
@@ -148,11 +162,13 @@ class TerminalAsker:
             signal.signal(signal.SIGINT, previous)
 
     def ask(self, request: Any) -> str:
-        print(f"\nPermission needed: {request.tool}: {request.summary}", file=self._out)
+        # Everything shown comes from the model or a tool: escape control
+        # characters so ANSI sequences cannot rewrite or hide the prompt.
+        print(f"\nPermission needed: {_printable(request.tool)}: {_printable(request.summary)}", file=self._out)
         if request.detail:
-            print(request.detail, file=self._out)
+            print(_printable(request.detail), file=self._out)
         if request.reason:
-            print(f"({request.reason})", file=self._out)
+            print(f"({_printable(request.reason)})", file=self._out)
         try:
             answer = self._read("Allow? [y] once  [a] always  [N] deny: ").strip().lower()
         except EOFError:
