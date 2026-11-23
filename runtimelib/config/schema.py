@@ -128,6 +128,10 @@ def create_runtime_schema() -> ConfigSchema:
     agent.add_field("context_window", Field(type=int, default=0, description="Override model context window in tokens (0 = auto-detect)"))
     schema.add_nested("agent", agent)
 
+    instructions = ConfigSchema()
+    instructions.add_field("file", Field(type=str, default="", description="Explicit instructions file, loaded as user-level instructions"))
+    schema.add_nested("instructions", instructions)
+
     # cli section: auto-compaction settings
     cli = ConfigSchema()
     cli.add_field("compact_ratio", Field(type=float, default=0.9, description="Auto-compact at this fraction of the context window"))

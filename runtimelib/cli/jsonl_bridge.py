@@ -15,7 +15,7 @@ Wire format, one JSON object per line:
                 {"type":"stop"}
                 {"type":"bye"}
 
-    rex -> UI:  {"type":"ready","model":"..."}
+    rex -> UI:  {"type":"ready","model":"...","instructions":[paths]}  (instructions only when AGENTS.md files were loaded)
                 {"type":"token","text":"..."}
                 {"type":"tool_start","name":"...","args":{...}}
                 {"type":"tool_end","ok":true,"error":null}
@@ -201,7 +201,11 @@ class JsonlBridge:
 
     def run(self) -> int:
         self._ensure_loop()
-        self.emit("ready", model=self.config.get("liteLLM.model", ""))
+        extra = {}
+        paths = list(getattr(self.loop, "instruction_paths", None) or [])
+        if paths:
+            extra["instructions"] = paths
+        self.emit("ready", model=self.config.get("liteLLM.model", ""), **extra)
         reader = threading.Thread(target=self._reader, daemon=True)
         reader.start()
 

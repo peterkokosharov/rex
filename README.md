@@ -414,6 +414,23 @@ runtime-ai/
 
 ---
 
+## Standing instructions (AGENTS.md)
+
+rex reads the common `AGENTS.md` convention at session start and puts it into the system prompt:
+
+1. `~/.config/runtime/AGENTS.md` - your user-level instructions;
+2. `<workspace>/AGENTS.md` (or `agents.md`) - project instructions. A symlink pointing outside the workspace is refused with a warning.
+
+Each file is capped at 16 KB (a truncation marker is added). Project instructions never override safety rules or permissions. Files are re-read on restart and on `/reset`; there is no file watching. The startup banner lists loaded files, and `--jsonl` adds `"instructions": [paths]` to the `ready` event.
+
+Explicit file: set `instructions.file` in `config.yaml` (env: `RUNTIME_INSTRUCTIONS__FILE`) to load any file as trusted user-level instructions (same 16 KB cap, any location; a warning is printed once if it is missing). rex never loads the `AGENTS.md` of its own install folder unless that folder is the workspace.
+
+Example `~/.config/runtime/AGENTS.md`:
+
+```
+I write to you in Bulgarian. Always answer me in Russian.
+```
+
 ## Configuration
 
 ### Global Config (optional)

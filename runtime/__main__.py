@@ -406,6 +406,9 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
     model = config.get("liteLLM.model", "?")
     base = config.get("liteLLM.base_url", "?")
     print(ansi.bold("rex") + ansi.gray(f"  model={model}  endpoint={base}"))
+    from runtimelib.agent.instructions import load_instructions
+    for loaded in load_instructions(extra_file=str(config.get("instructions.file", "") or "")).paths:
+        print(ansi.gray(f"instructions: {loaded}"))
     print(ansi.gray("Команди: /help /model /models /context /reset /shell /doctor /exit  |  ! <команда> изпълнява локално  |  Ctrl+C прекъсва, Ctrl+D изход"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 

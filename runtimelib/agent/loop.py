@@ -23,6 +23,7 @@ from ..llm.models import get_registry
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, WebSearchTool, GitTool, DiagramTool
 from ..tools.skills import LoadSkillTool, ReadSkillFileTool
 from ..skills import discover_skills, skill_index
+from .instructions import Instructions, load_instructions
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
 from ..session import SessionManager, create_session_manager
@@ -73,6 +74,9 @@ class AgentState:
 class AgentLoop:
     """Main ReAct agent loop."""
 
+    _instructions = Instructions()
+    instruction_paths: list = []
+
     def __init__(
         self,
         config: Config,
@@ -112,8 +116,7 @@ class AgentLoop:
         self.tool_schemas = [t.to_openai() for t in self.tools.values()]
 
         # System prompts: with and without tools
-        self.system_prompt = self._build_system_prompt(include_tools=True)
-        self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
+        self._rebuild_prompts()
 
         # Session, hooks, checkpoints
         self.session_manager = session_manager or create_session_manager()
@@ -131,6 +134,13 @@ class AgentLoop:
         self.hook_engine.trigger(HookEvent.SESSION_START, session_id=self.session_manager.session_id)
         self.hook_engine.trigger(HookEvent.AGENT_START,
             session_id=self.session_manager.session_id, agent_id=agent_id, role=role, depth=depth)
+
+    def _rebuild_prompts(self) -> None:
+        """(Re)build both system prompts; re-reads AGENTS.md files."""
+        self._instructions = load_instructions(extra_file=str(self.config.get("instructions.file", "") or ""))
+        self.instruction_paths = list(self._instructions.paths)
+        self.system_prompt = self._build_system_prompt(include_tools=True)
+        self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
 
     def _init_default_tools(self) -> None:
         """Initialize default tools."""
@@ -185,12 +195,12 @@ Guidelines:
 - Maximum steps: {self.state.max_steps}
 {skills_block}
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
-"""
+{self._instructions.section()}"""
         else:
             return f"""You are Runtime, a helpful assistant. Answer questions concisely and accurately.
 
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
-"""
+{self._instructions.section()}"""
 
     def interrupt(self) -> None:
         """Request interruption of the current request (safe from another thread)."""
@@ -215,6 +225,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.interrupted = False
         self.state.turn = 0
         self._interrupt_event.clear()
+        self._rebuild_prompts()
 
     def run(self, prompt: str) -> str:
         """Run one request, reusing the conversation context from previous ones.
