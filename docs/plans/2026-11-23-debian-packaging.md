@@ -99,6 +99,11 @@ Decision (owner, 2026-11-23): kikolib lives in the kiko repo, which is its singl
 `python3-kikolib` deb; rex takes kikolib from there (deb dependency, and a pinned copy from a kiko release for the
 source checkout / Windows / macOS / Docker). No separate kikolib repo.
 
+Progress on step 2 (2026-11-23): done now - `guard/entrypoint.py` and `Dockerfile` use `runtimelib.kikolib` (the image
+copies only `runtimelib/kikolib` to `/app/runtimelib/kikolib`), image tag unified to `rex-guard:latest`, version read
+from `runtimelib.__version__` everywhere. Remaining - the move to `vendor/kikolib` + `VERSION` + sync test; when it
+happens the Dockerfile COPY path and the guard imports change again.
+
 ## Sources
 
 - `rex/packaging/build-deb.sh`, `rex/packaging/build-win-zip.sh`, `rex/pyproject.toml`, `rex/README.md`,

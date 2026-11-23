@@ -33,7 +33,7 @@ def create_parser() -> argparse.ArgumentParser:
         prog="runtime",
         description="Claude-like runtime for OpenAI-compatible models via LiteLLM proxy",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.2.2")
+    parser.add_argument("--version", action="version", version="%(prog)s " + runtimelib.__version__)
     parser.add_argument("--config", type=Path, default=None, help="Path to config file")
     parser.add_argument("--env-file", type=Path, default=None, help="Path to .env file")
     parser.add_argument("--model", default=None, help="Model alias/id to use")

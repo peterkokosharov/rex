@@ -358,10 +358,11 @@ Docker guard.
 Tool execution defaults to Docker Guard. Build the image from repo root:
 
 ```bash
-docker build -t runtime/guard:latest .
+docker build -t rex-guard:latest .
 ```
 
 If Docker permissions/image are missing, the CLI shows hints; for quick local dev you can use `--local-tools`.
+Details for Linux (docker group, uid, network): `docs/guard-docker.md`.
 
 ### Diagrams
 

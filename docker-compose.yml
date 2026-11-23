@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: runtime/guard:latest
+    image: rex-guard:latest
     container_name: runtime-guard
     # Security: no network by default, enable via GUARD_ALLOWED_DOMAINS
     network_mode: "none"
@@ -40,7 +40,8 @@ services:
     tty: true
     restart: "unless-stopped"
 
-  # LiteLLM proxy (optional, for local development)
+  # LiteLLM proxy (optional, for local development). Profile "proxy": needs a litellm_config.yaml
+  # next to this file; copy litellm_config.yaml.example and edit it, then: docker compose --profile proxy up
   litellm:
     image: ghcr.io/berriai/litellm:main
     container_name: runtime-litellm

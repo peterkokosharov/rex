@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from runtime.kikolib import posix_utils
+from runtimelib.kikolib import posix_utils
 
 
 class GuardError(Exception):
@@ -247,7 +247,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         if not _check_network_policy(url):
             raise GuardError(-32012, f"Network access denied for: {url}")
 
-        from runtime.kikolib import http_client
+        from runtimelib.kikolib import http_client
         client = http_client.client()
         try:
             resp = client.request(method, url, headers=headers, body=body.encode() if body else None, timeout=timeout)

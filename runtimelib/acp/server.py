@@ -46,8 +46,10 @@ import uuid
 from pathlib import Path
 from typing import Any, IO, Optional
 
+from runtimelib import __version__
+
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.2"
+AGENT_VERSION = __version__
 READY_TIMEOUT = 30.0
 CLOSE_TIMEOUT = 5.0
 

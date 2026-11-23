@@ -62,7 +62,7 @@ liteLLM:
   model: "gemini/gemini-flash"
 
 docker_guard:
-  image: "runtime/guard:latest"
+  image: "rex-guard:latest"
   memory: "2G"
   cpus: "2.0"
   network_mode: "bridge"

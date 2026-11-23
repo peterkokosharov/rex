@@ -24,7 +24,7 @@ class GuardClient:
 
     def __init__(
         self,
-        image: str = "runtime/guard:latest",
+        image: str = "rex-guard:latest",
         workspace: Optional[Path] = None,
         cpus: str = "2.0",
         memory: str = "4G",
@@ -52,7 +52,7 @@ class GuardClient:
     def from_config(cls, config: Config) -> "GuardClient":
         guard_cfg = config.get("docker_guard", {})
         return cls(
-            image=guard_cfg.get("image", "runtime/guard:latest"),
+            image=guard_cfg.get("image", "rex-guard:latest"),
             workspace=Path(guard_cfg.get("workspace_mount", "/workspace")).resolve()
                 if guard_cfg.get("workspace_mount") else Path.cwd(),
             cpus=guard_cfg.get("cpus", "2.0"),

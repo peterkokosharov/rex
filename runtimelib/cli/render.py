@@ -69,7 +69,7 @@ class Renderer:
             low = msg.lower()
             if "permission denied while trying to connect to the docker api" in low:
                 hint = " (hint: docker group/newgrp, or /local on for dev)"
-            elif "unable to find image 'runtime/guard:latest'" in low:
+            elif "unable to find image 'rex-guard:latest'" in low:
                 hint = " (hint: build guard image, or /local on for dev)"
             elif "path traversal attempt" in low:
                 hint = " (hint: guard path policy; use workspace path or /local on for dev)"

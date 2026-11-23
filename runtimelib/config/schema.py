@@ -112,7 +112,7 @@ def create_runtime_schema() -> ConfigSchema:
 
     # docker_guard section
     docker_guard = ConfigSchema()
-    docker_guard.add_field("image", Field(type=str, default="runtime-guard:latest", description="Guard container image"))
+    docker_guard.add_field("image", Field(type=str, default="rex-guard:latest", description="Guard container image"))
     docker_guard.add_field("memory_limit", Field(type=str, default="512m", description="Memory limit"))
     docker_guard.add_field("cpu_limit", Field(type=float, default=1.0, description="CPU limit"))
     docker_guard.add_field("network_mode", Field(type=str, default="none", choices=["none", "bridge", "host"], description="Network mode"))

@@ -1,0 +1,11 @@
+# Example LiteLLM proxy config for the optional "proxy" profile of docker-compose.yml.
+# Copy to litellm_config.yaml and fill in your own models and keys. Not needed for the guard.
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY

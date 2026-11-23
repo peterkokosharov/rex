@@ -4,7 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${1:-${VERSION:-0.2.2}}"
+# Single version source: runtimelib/__init__.py (__version__)
+SRC_VERSION="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ROOT/runtimelib/__init__.py" | head -n 1)"
+VERSION="${1:-${VERSION:-$SRC_VERSION}}"
+[ -n "$VERSION" ] || { echo "cannot determine version" >&2; exit 1; }
 ARCH="${ARCH:-amd64}"
 BUILD="$ROOT/build-deb"
 STAGE="$BUILD/stage"
