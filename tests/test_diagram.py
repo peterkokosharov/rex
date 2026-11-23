@@ -121,13 +121,13 @@ def test_find_merman_order(monkeypatch, tmp_path):
     exe_name = "merman-cli.exe" if os.name == "nt" else "merman-cli"
     (home / exe_name).write_text("x")
     monkeypatch.setenv("MERMAN_HOME", str(home))
-    monkeypatch.setattr(diagram.shutil, "which", lambda n: "/usr/bin/merman-cli")
+    monkeypatch.setattr(diagram, "safe_which", lambda n: "/usr/bin/merman-cli")
     assert find_merman() == str(home / exe_name)
     monkeypatch.setenv("MERMAN_HOME", str(tmp_path / "nowhere"))
     assert find_merman() == "/usr/bin/merman-cli"
     monkeypatch.delenv("MERMAN_HOME")
     assert find_merman() == "/usr/bin/merman-cli"
-    monkeypatch.setattr(diagram.shutil, "which", lambda n: None)
+    monkeypatch.setattr(diagram, "safe_which", lambda n: None)
     assert find_merman() is None
 
 
@@ -204,17 +204,42 @@ def test_unresolved_rel_path(ws, fake_binary):
 
 def test_merman_home_without_binary(ws, monkeypatch, tmp_path):
     monkeypatch.setenv("MERMAN_HOME", str(tmp_path))
-    monkeypatch.setattr(diagram.shutil, "which", lambda n: None)
+    monkeypatch.setattr(diagram, "safe_which", lambda n: None)
     r = DiagramTool().execute(source="graph TD; A-->B")
     assert f"MERMAN_HOME={tmp_path} has no merman-cli" in r["error"]
+
+
+def test_empty_merman_home_reported(ws, monkeypatch):
+    monkeypatch.setenv("MERMAN_HOME", "")
+    monkeypatch.setattr(diagram, "safe_which", lambda n: None)
+    r = DiagramTool().execute(source="graph TD; A-->B")
+    assert "MERMAN_HOME is set but empty" in r["error"]
+
+
+def test_find_merman_ignores_binary_in_cwd(ws, monkeypatch, tmp_path):
+    monkeypatch.delenv("MERMAN_HOME", raising=False)
+    make_fake(ws)  # planted merman-cli in the workspace (= cwd)
+    far = tmp_path / "elsewhere"
+    far.mkdir()
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(ws), str(far)]))
+    assert find_merman() is None
+    exe = make_fake(far / "bin")
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(ws), str(exe.parent)]))
+    assert Path(find_merman()).parent == exe.parent
+
+
+def test_safe_which_rejects_cwd_result(ws, monkeypatch):
+    from runtimelib import procutil
+    monkeypatch.setenv("PATH", "/nonexistent-dir")
+    monkeypatch.setattr(procutil.shutil, "which", lambda n, path=None: str(ws / "merman-cli"))
+    assert procutil.safe_which("merman-cli") is None
 
 
 def test_registered_and_described():
     from runtimelib.permissions.policy import DefaultPermissionPolicy
     t = DiagramTool()
     assert t.name == "render_diagram"
-    assert "box-drawing" in t.description and "Markdown image" in t.description
-    assert "say so in one line" in t.description
+    assert "Markdown image" in t.description and t.description.count(".") == 1  # one sentence
     assert DefaultPermissionPolicy().check("render_diagram", "", {"_role": "CODER"}).name == "ALLOW"
 
 

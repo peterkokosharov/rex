@@ -12,13 +12,13 @@ import hashlib
 import os
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..procutil import kill_tree, popen_group_kwargs, safe_which
 from .base import Tool, ToolSchema
 from .fileops import resolve_in_workspace
 
@@ -33,13 +33,8 @@ RESERVED_NAMES = frozenset(
 )
 
 DESCRIPTION = (
-    "Render a Mermaid diagram (flowchart, sequence, class, state, ER, gantt, UML-like) "
-    "to an image file in the workspace. Use it whenever the user asks for a diagram. "
-    "In the answer put a compact text sketch of the same diagram (Unicode box-drawing "
-    "characters, at most ~60 columns, inside a ``` block; if the diagram is too big, "
-    "sketch only the main path), followed by the returned Markdown image line. "
-    "Terminal front-ends show the sketch and can open the image on demand; GUI "
-    "front-ends show the image. If render_diagram fails, say so in one line and give only the compact sketch."
+    "Render Mermaid source (flowchart, sequence, class, state, ER, gantt) to an image file in the "
+    "workspace; returns a Markdown image line."
 )
 
 
@@ -52,14 +47,14 @@ def sanitize_name(name: Any) -> str:
 
 
 def find_merman() -> str | None:
-    """merman-cli from $MERMAN_HOME first, then from PATH."""
+    """merman-cli from $MERMAN_HOME first, then from PATH (never from the current directory)."""
     home = os.environ.get("MERMAN_HOME")
     if home:
         for exe in ("merman-cli", "merman-cli.exe"):
             cand = Path(home) / exe
             if cand.is_file():
                 return str(cand)
-    return shutil.which("merman-cli")
+    return safe_which("merman-cli")
 
 
 def build_command(binary: str, src: str, out: str, fmt: str) -> list[str]:
@@ -105,8 +100,14 @@ class DiagramTool(Tool):
         binary = find_merman()
         if binary is None:
             home = os.environ.get("MERMAN_HOME")
+            if home is not None and not home:
+                return {
+                    "ok": False,
+                    "error": "MERMAN_HOME is set but empty, and merman-cli is not on PATH "
+                    "(unset it or point it at the folder containing merman-cli)",
+                }
             if home:
-                return {"ok": False, "error": f"MERMAN_HOME={home} has no merman-cli(.exe)"}
+                return {"ok": False, "error": f"MERMAN_HOME={home} has no merman-cli(.exe), and merman-cli is not on PATH"}
             return {
                 "ok": False,
                 "error": "merman-cli not found: set MERMAN_HOME to the folder containing "
@@ -142,32 +143,9 @@ class DiagramTool(Tool):
         return {"ok": True, "path": rel, "markdown": f"![{label or stem}]({rel})"}
 
 
-def _kill_tree(proc: subprocess.Popen) -> None:
-    try:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output=True,
-                timeout=10,
-                shell=False,
-            )
-        else:
-            os.killpg(proc.pid, signal.SIGKILL)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
-
-
 def _run(cmd: list[str]) -> str | None:
     """Run merman; return an error message, or None on success. Timeout kills the process tree."""
-    kwargs: dict[str, Any] = {}
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
+    kwargs = popen_group_kwargs()
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -182,7 +160,7 @@ def _run(cmd: list[str]) -> str | None:
     try:
         stdout, stderr = proc.communicate(timeout=TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+        kill_tree(proc)
         try:
             proc.communicate(timeout=5)
         except (subprocess.TimeoutExpired, OSError, ValueError):
