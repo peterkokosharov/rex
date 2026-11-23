@@ -30,6 +30,7 @@ from ..guard import get_guard_client
 from ..session import SessionManager, create_session_manager
 from ..hooks import HookEngine, HookEvent, get_hook_engine
 from ..agent.state import CheckpointManager
+from .gate import Asker, PermissionGate
 from .context import (
     COMPACT_RATIO,
     compact_messages,
@@ -94,6 +95,8 @@ class AgentLoop:
         session_manager: Optional[SessionManager] = None,
         hook_engine: Optional[HookEngine] = None,
         checkpoint_manager: Optional[CheckpointManager] = None,
+        gate: Optional[PermissionGate] = None,
+        asker: Optional[Asker] = None,
         agent_id: str = "default",
         role: str = "CODER",
         depth: int = 0,
@@ -129,6 +132,13 @@ class AgentLoop:
         self.session_manager = session_manager or create_session_manager()
         self.hook_engine = hook_engine or get_hook_engine()
         self.checkpoint_manager = checkpoint_manager
+        # Permission gate: rules + hook commands + asker. Without an asker every
+        # "ask" is denied (one-shot, no UI); P4 passes the REPL/JSONL asker.
+        self.gate = gate or PermissionGate.from_config(
+            config, asker=asker, session=getattr(self.session_manager, "session_id", None)
+        )
+        if gate is not None and asker is not None:
+            self.gate.set_asker(asker)
         self.agent_id = agent_id
         self.role = role
         self.depth = depth
@@ -505,6 +515,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             tool_name = tc.function.get("name", "")
             tool = self.tools.get(tool_name)
             args: dict[str, Any] = {}
+            decision = None
 
             if not tool:
                 result = ToolResult(
@@ -518,7 +529,10 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                     args_str = tc.function.get("arguments", "{}")
                     args = _parse_tool_arguments(args_str)
 
-                    # Add role and agent context for permission checking
+                    # Gate first: a denied call never reaches execute().
+                    decision = self.gate.check(tool_name, args, tool)
+
+                    # Add role and agent context (kept out of rules and hook payloads)
                     args["_role"] = self.role
                     args["_agent_id"] = self.agent_id
 
@@ -530,14 +544,26 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                     # Notify tool start callback
                     self.on_tool_start(tool_name, args)
 
-                    # Execute tool
-                    result_data = tool.execute(**args)
-
-                    result = ToolResult(
-                        tool_name=tool_name,
-                        success=True,
-                        result=result_data,
-                    )
+                    if not decision.allowed:
+                        result = ToolResult(
+                            tool_name=tool_name,
+                            success=False,
+                            error=decision.reason or "Permission denied",
+                        )
+                    else:
+                        # Execute tool
+                        result_data = tool.execute(**args)
+                        result = ToolResult(
+                            tool_name=tool_name,
+                            success=True,
+                            result=result_data,
+                        )
+                        note = self.gate.post(tool_name, args, True, None, result_data)
+                        if note:
+                            result.result = (
+                                {**result_data, "hook_note": note} if isinstance(result_data, dict)
+                                else {"result": result_data, "hook_note": note}
+                            )
                 except json.JSONDecodeError as e:
                     result = ToolResult(
                         tool_name=tool_name,
@@ -550,6 +576,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                         success=False,
                         error=f"Tool execution failed: {e}"
                     )
+                    if args and decision is not None and decision.allowed:
+                        self.gate.post(tool_name, args, False, result.error)
 
             # Emit tool end hook
             self.hook_engine.trigger(HookEvent.POST_TOOL,
