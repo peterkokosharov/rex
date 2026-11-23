@@ -157,7 +157,8 @@ def test_timeout(ws, fake_binary, monkeypatch):
 
 
 def test_symlinked_target_rejected(ws, fake_binary, tmp_path):
-    victim = tmp_path / "victim.txt"
+    (ws / "src").mkdir()
+    victim = ws / "src" / "victim.txt"
     victim.write_text("keep")
     (ws / "diagrams").mkdir()
     try:
@@ -167,6 +168,27 @@ def test_symlinked_target_rejected(ws, fake_binary, tmp_path):
     r = DiagramTool().execute(source="graph TD; A-->B", name="x")
     assert r["ok"] is False and "symlink" in r["error"]
     assert victim.read_text() == "keep"
+
+
+def test_symlinked_diagrams_dir_inside_workspace_rejected(ws, fake_binary):
+    (ws / "src").mkdir()
+    try:
+        os.symlink(ws / "src", ws / "diagrams", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    r = DiagramTool().execute(source="graph TD; A-->B", name="x")
+    assert r["ok"] is False and "symlink" in r["error"]
+    assert not list((ws / "src").iterdir())
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+def test_fifo_target_rejected_without_hanging(ws, fake_binary):
+    (ws / "diagrams").mkdir()
+    os.mkfifo(ws / "diagrams" / "x.svg")
+    t0 = time.monotonic()
+    r = DiagramTool().execute(source="graph TD; A-->B", name="x")
+    assert r["ok"] is False
+    assert time.monotonic() - t0 < 10
 
 
 @pytest.mark.parametrize("bad", ["CON", "nul", "com1", "LPT9"])

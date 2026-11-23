@@ -217,7 +217,21 @@ def _store(root: Path, stem: str, fmt: str, data: bytes) -> None:
     if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
         dfd = os.open(ddir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+            # O_NONBLOCK: a FIFO planted at the target must not hang the open. O_TRUNC is
+            # applied only after the regular-file check below.
+            fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                0o644,
+                dir_fd=dfd,
+            )
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise PermissionError(f"{DIAGRAM_DIR}/{name} is not a regular file")
+                os.ftruncate(fd, 0)
+            except BaseException:
+                os.close(fd)
+                raise
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
         finally:
@@ -225,13 +239,22 @@ def _store(root: Path, stem: str, fmt: str, data: bytes) -> None:
         return
 
     tmp = ddir / f".{name}.{os.getpid()}.tmp"
-    try:
-        tmp.write_bytes(data)
+
+    def check() -> None:
         if _is_link(ddir) or _is_link(target) or not Path(os.path.realpath(ddir)).is_relative_to(root):
-            raise PermissionError("diagrams/ changed during write")
+            raise PermissionError("diagrams/ changed during write (symlink)")
+
+    created = False
+    try:
+        check()
+        with open(tmp, "xb") as f:  # exclusive: never follows or reuses an existing path
+            created = True
+            f.write(data)
+        check()
         os.replace(tmp, target)
     finally:
-        tmp.unlink(missing_ok=True)
+        if created:
+            tmp.unlink(missing_ok=True)
 
 
 def create_diagram_tool(config: Any = None) -> DiagramTool:
