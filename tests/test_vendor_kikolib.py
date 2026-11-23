@@ -52,3 +52,41 @@ def test_http_backend_pinned_to_stdlib():
     from kikolib.http import StdlibBackend
 
     assert isinstance(http.client(), StdlibBackend)
+
+
+def test_old_kikolib_is_rejected(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    fake = tmp_path / "kikolib"
+    fake.mkdir()
+    (fake / "__init__.py").write_text('__version__ = "0.1.9"\n', encoding="utf-8")
+    root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "PYTHONPATH": str(tmp_path) + os.pathsep + str(root)}
+    r = subprocess.run([sys.executable, "-c", "import runtimelib"], env=env,
+                       capture_output=True, text=True, cwd=str(tmp_path))
+    assert r.returncode != 0
+    assert "rex needs kikolib 0.2.x; found 0.1.9" in r.stderr
+    assert str(fake) in r.stderr
+
+
+def test_pyproject_packages_kikolib_from_vendor():
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    cfg = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    find = cfg["tool"]["setuptools"]["packages"]["find"]
+    assert "vendor" in find["where"]
+    assert "kikolib*" in find["include"]
+
+
+def test_yaml_config_is_read_only(tmp_path):
+    import pytest
+    from runtimelib.config import Config
+    from runtimelib.config.sources import FileSource
+
+    with pytest.raises(NotImplementedError, match="read-only"):
+        FileSource(tmp_path / "c.yaml").save({"a": 1})
+    with pytest.raises(NotImplementedError, match="read-only"):
+        Config({}).save(tmp_path / "c.yaml")

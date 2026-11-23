@@ -18,12 +18,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["runtime", "runtime.*", "runtimelib", "runtimelib.*", "kikolib"]
-namespaces = true
-
-[tool.setuptools.package-dir]
 # kikolib: pinned, unmodified copy in vendor/kikolib, installed as the top-level package `kikolib`
-kikolib = "vendor/kikolib"
+where = [".", "vendor"]
+include = ["runtime", "runtime.*", "runtimelib", "runtimelib.*", "kikolib*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

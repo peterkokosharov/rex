@@ -17,6 +17,15 @@ _VENDOR = str(_Path(__file__).resolve().parent.parent / "vendor")
 if _VENDOR not in _sys.path:
     _sys.path.append(_VENDOR)
 
+def _check_kikolib() -> None:
+    import kikolib as _k
+    _v = str(getattr(_k, "__version__", "unknown"))
+    if _v.split(".")[:2] != ["0", "2"]:
+        raise ImportError(f"rex needs kikolib 0.2.x; found {_v} at {getattr(_k, '__file__', '?')}")
+
+
+_check_kikolib()
+
 from kikolib import factory as _factory, http as _kikolib_http  # noqa: E402,F401
 
 # Pin the stdlib HTTP backend (never silently switch to WinHTTP on Windows).

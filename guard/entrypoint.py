@@ -22,6 +22,12 @@ try:  # kikolib: pinned copy in <repo>/vendor/kikolib (/app/vendor in the image)
 except ImportError:
     sys.path.append(str(Path(__file__).resolve().parent.parent / "vendor"))
 
+import kikolib as _kikolib  # noqa: E402
+
+_kv = str(getattr(_kikolib, "__version__", "unknown"))
+if _kv.split(".")[:2] != ["0", "2"]:
+    raise ImportError(f"rex needs kikolib 0.2.x; found {_kv} at {getattr(_kikolib, '__file__', '?')}")
+
 from kikolib import factory, posix  # noqa: E402
 
 

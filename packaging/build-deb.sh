@@ -26,9 +26,8 @@ g++ -std=c++17 -O2 -fPIC -shared -pthread \
 echo "==> Staging Python modules"
 cp -a "$ROOT/runtime" "$PYDIR/"
 cp -a "$ROOT/runtimelib" "$PYDIR/"
-# pinned kikolib copy: sibling "vendor" dir of runtimelib (runtimelib/__init__.py appends it to sys.path)
-mkdir -p "$PYDIR/vendor"
-cp -a "$ROOT/vendor/kikolib" "$PYDIR/vendor/"
+# pinned kikolib copy as the top-level package "kikolib" (imports succeed before runtimelib's vendor append)
+cp -a "$ROOT/vendor/kikolib" "$PYDIR/"
 find "$PYDIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 
 cat > "$STAGE/usr/bin/rex" <<'EOF'
@@ -54,7 +53,7 @@ Maintainer: Peter Kokosharov <peter.kokosharov@gmail.com>
 Depends: python3 (>= 3.12)
 Description: AI agent runtime with a JSON-lines bridge
  rex is the Python runtime driven by Layka and other front-ends over stdin/stdout.
- This package installs the 'rex' command, the runtime/runtimelib modules and the
+ This package installs the 'rex' command, the runtime/runtimelib modules, the pinned kikolib 0.2.x and the
  optional native helper as /usr/lib/python3/dist-packages/runtimelib/native/librex_native.so.
 EOF
 

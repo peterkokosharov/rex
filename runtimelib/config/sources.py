@@ -37,8 +37,7 @@ class FileSource(ConfigSource):
         return {}
 
     def save(self, data: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        yaml_lite.save(self.path, data)
+        raise NotImplementedError("YAML config is read-only")
 
 
 class EnvSource(ConfigSource):

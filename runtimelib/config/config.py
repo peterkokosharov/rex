@@ -157,10 +157,8 @@ class Config:
         return mask_secrets(self._data)
 
     def save(self, path: Optional[Path] = None) -> None:
-        """Save config to YAML file."""
-        path = path or DEFAULT_CONFIG_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        yaml_lite.save(path, self._data)
+        """YAML config is read-only (kikolib yaml_lite has no writer)."""
+        raise NotImplementedError("YAML config is read-only")
 
 
 SECRET_WORDS = {
