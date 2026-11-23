@@ -217,8 +217,9 @@ class PermissionGate:
         """webfetch redirect hook: None to follow, else the refusal reason.
 
         The target is always evaluated against the rules: deny refuses (also
-        on the same host, e.g. a denied URL glob), allow follows, ask follows
-        only on the same host (fetching the new URL directly asks the normal
+        on the same host, e.g. a denied URL glob), allow follows, an ask from
+        the mode default follows only on the same host, and an explicit ask
+        rule always refuses (fetching the new URL directly asks the normal
         way). Hooks and the asker are not consulted mid-call.
         """
         new_host = _host(to_url)
@@ -227,8 +228,11 @@ class PermissionGate:
             return f"redirect to {new_host or to_url} refused: {verdict.reason}"
         if verdict.decision == PermissionResult.ALLOW:
             return None
-        if new_host and new_host == _host(from_url):
-            return None
+        if verdict.source == "default" and new_host and new_host == _host(from_url):
+            return None  # only the mode default asks: same host, follow
+        if verdict.source != "default":
+            return (f"redirect to {new_host or to_url} refused: {verdict.reason}; "
+                    f"fetch {to_url} directly")
         return (f"redirect to another host ({new_host or to_url}) refused: it needs its own "
                 f"permission; fetch {to_url} directly")
 

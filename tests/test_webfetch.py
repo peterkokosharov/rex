@@ -137,6 +137,15 @@ def test_redirect_target_always_evaluated(server, tool):
     assert "refused" in g.check_redirect("http://a.example/x", "http://a.example/y")  # deny, same host
 
 
+def test_same_host_redirect_never_follows_explicit_ask_rule():
+    g = _gate({"ask": ["webfetch(*/admin*)"]})
+    why = g.check_redirect("http://a.example/x", "http://a.example/admin/delete")
+    assert why and "refused" in why and "Ask required" in why
+    assert g.check_redirect("http://a.example/x", "http://a.example/y") is None  # default ask: follow
+    g = _gate({"allow": ["webfetch(domain:a.example)"], "ask": ["webfetch(domain:a.example)"]})
+    assert "refused" in g.check_redirect("http://a.example/x", "http://a.example/y")
+
+
 def test_loop_wires_redirect_check():
     from runtimelib.agent.loop import AgentLoop
     from runtimelib.config import Config
