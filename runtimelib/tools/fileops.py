@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """File operations tool using guard client."""
@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .base import Tool, ToolSchema
+from .edit import READ_TRACKER, GuardFile, LocalFile, ReadTracker, apply_edit, sha256_bytes, sha256_text
 from ..guard import get_guard_client
 from ..config import Config
 
@@ -19,7 +20,7 @@ from ..config import Config
 class FileOpsTool(Tool):
     """File operations tool (read, write, edit, list, glob, grep)."""
 
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(self, config: Config | None = None, tracker: ReadTracker | None = None) -> None:
         schema = ToolSchema(
             name="fileops",
             description="File operations: read, write, edit, list, glob, grep",
@@ -76,6 +77,7 @@ class FileOpsTool(Tool):
         super().__init__("fileops", "File operations via guard", schema)
         self._config = config
         self._guard = None
+        self._tracker = tracker or READ_TRACKER
 
     def _get_guard(self):
         if self._guard is None:
@@ -90,19 +92,22 @@ class FileOpsTool(Tool):
 
         if operation == "read":
             path = kwargs.pop("path")
-            return guard.fs_read(path)
+            content = guard.fs_read(path)
+            if isinstance(content, str):
+                self._tracker.record(GuardFile(guard, path).key, sha256_text(content))
+            return content
         elif operation == "write":
             path = kwargs.pop("path")
             content = kwargs.pop("content", "")
             guard.fs_write(path, content)
+            self._tracker.record(GuardFile(guard, path).key, sha256_text(content))
             return {"ok": True, "path": path}
         elif operation == "edit":
             path = kwargs.pop("path")
             old_str = kwargs.pop("old_str")
             new_str = kwargs.pop("new_str")
             replace_all = kwargs.pop("replace_all", False)
-            guard.fs_edit(path, old_str, new_str, replace_all)
-            return {"ok": True, "path": path}
+            return apply_edit(GuardFile(guard, path), old_str, new_str, replace_all, self._tracker)
         elif operation == "list":
             path = kwargs.pop("path", ".")
             recursive = kwargs.pop("recursive", False)
@@ -140,28 +145,27 @@ class FileOpsTool(Tool):
 
         if operation == "read":
             path = resolve_in_workspace(kwargs["path"], root)
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                return f.read()
+            data = path.read_bytes()
+            self._tracker.record(LocalFile(kwargs["path"], path).key, sha256_bytes(data))
+            text = data.decode("utf-8", errors="replace")
+            return text.replace("\r\n", "\n").replace("\r", "\n")
         if operation == "write":
             path = resolve_in_workspace(kwargs["path"], root)
             content = kwargs.get("content", "")
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            data = content.encode("utf-8")
+            path.write_bytes(data)
+            self._tracker.record(LocalFile(kwargs["path"], path).key, sha256_bytes(data))
             return {"ok": True, "path": kwargs["path"]}
         if operation == "edit":
             path = resolve_in_workspace(kwargs["path"], root)
-            old_str = kwargs["old_str"]
-            new_str = kwargs["new_str"]
-            replace_all = kwargs.get("replace_all", False)
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                s = f.read()
-            if old_str not in s:
-                raise ValueError(f"old_str not found in {kwargs['path']}")
-            s = s.replace(old_str, new_str) if replace_all else s.replace(old_str, new_str, 1)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(s)
-            return {"ok": True, "path": kwargs["path"]}
+            return apply_edit(
+                LocalFile(kwargs["path"], path),
+                kwargs["old_str"],
+                kwargs["new_str"],
+                kwargs.get("replace_all", False),
+                self._tracker,
+            )
         if operation == "list":
             p = resolve_in_workspace(kwargs.get("path", "."), root)
             recursive = kwargs.get("recursive", False)
