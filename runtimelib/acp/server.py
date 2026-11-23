@@ -185,10 +185,16 @@ class ACPServer:
         local_tools: bool = False,
         stream_in: Optional[IO[str]] = None,
         stream_out: Optional[IO[str]] = None,
+        config_path: Optional[Path | str] = None,
+        env_file: Optional[Path | str] = None,
     ) -> None:
         self.config = config
         self.model = model
         self.local_tools = local_tools
+        # Child sessions run with cwd set to the client's project, so the
+        # parent's --config/--env-file are passed on as absolute paths.
+        self.config_path = Path(config_path).resolve() if config_path else None
+        self.env_file = Path(env_file).resolve() if env_file else None
         self.stdin = stream_in if stream_in is not None else sys.stdin
         self.stdout = stream_out if stream_out is not None else sys.stdout
         self.queue: queue.Queue[tuple[Any, ...]] = queue.Queue()
@@ -242,12 +248,21 @@ class ACPServer:
 
     # ---------- process management ----------
 
-    def _spawn(self, sid: str, cwd: str) -> Session:
+    def child_command(self) -> list[str]:
+        """Command line for one child rex session."""
         cmd = [sys.executable, "-m", "runtime", "--jsonl"]
+        if self.config_path:
+            cmd.extend(["--config", str(self.config_path)])
+        if self.env_file:
+            cmd.extend(["--env-file", str(self.env_file)])
         if self.model:
             cmd.extend(["--model", self.model])
         if self.local_tools:
             cmd.append("--local-tools")
+        return cmd
+
+    def _spawn(self, sid: str, cwd: str) -> Session:
+        cmd = self.child_command()
 
         env = dict(os.environ)
         root = str(REX_ROOT)
@@ -522,6 +537,8 @@ def run_acp(
     local_tools: bool = False,
     stream_in: Optional[IO[str]] = None,
     stream_out: Optional[IO[str]] = None,
+    config_path: Optional[Path | str] = None,
+    env_file: Optional[Path | str] = None,
 ) -> int:
     """Run the ACP server with an already loaded rex config."""
     return ACPServer(
@@ -530,6 +547,8 @@ def run_acp(
         local_tools=local_tools,
         stream_in=stream_in,
         stream_out=stream_out,
+        config_path=config_path,
+        env_file=env_file,
     ).run()
 
 
@@ -557,4 +576,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.model:
         config.set("liteLLM.model", args.model)
     config.set("cli.unsafe_local_tools", bool(args.local_tools))
-    return run_acp(config, model=args.model, local_tools=args.local_tools)
+    return run_acp(
+        config,
+        model=args.model,
+        local_tools=args.local_tools,
+        config_path=args.config,
+        env_file=args.env_file,
+    )

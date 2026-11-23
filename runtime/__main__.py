@@ -77,7 +77,13 @@ def main() -> int:
 
     if args.acp:
         from runtimelib.acp import run_acp
-        return run_acp(config, model=args.model, local_tools=args.unsafe_local_tools)
+        return run_acp(
+            config,
+            model=args.model,
+            local_tools=args.unsafe_local_tools,
+            config_path=args.config,
+            env_file=args.env_file,
+        )
 
     if args.jsonl:
         from runtimelib.cli import run_jsonl
