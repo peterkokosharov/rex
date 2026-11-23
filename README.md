@@ -168,7 +168,7 @@ cli:
   compact_ratio: 0.9             # 0.9 = compact at 90% of the window
 ```
 
-### Run with Claude Code CLI (no API key, chat only, no tools)
+### Run with Claude Code CLI (no API key; tools emulated, run by rex)
 
 `scripts/claude_cli_gateway.py` is a small stdlib-only OpenAI-compatible gateway that answers
 `/v1/models` and `/v1/chat/completions` by running the locally logged-in `claude` CLI
@@ -183,10 +183,29 @@ cli:
   `REX_GATEWAY_TOKEN` environment variable. `--token` works but prints a warning: command-line
   arguments are visible to other users in the process list.
 - Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6`.
-- Chat only: Claude's own tools are disabled, request `tools` are ignored, `tool_calls` are never returned,
-  so rex's agent tools will not run through this backend.
-- `stream: true` is answered as SSE (one content chunk, a stop chunk, `[DONE]`).
-- Logs only method, path, model, duration and status. Timeout per call: `--timeout` (default 300 s).
+- Tools are emulated and always run in rex, never in `claude`: the CLI keeps `--tools ""`, `--strict-mcp-config`
+  and `--safe-mode`, and never gets `--mcp-config`. When a request has `tools` and `tool_choice` is not
+  `"none"`, the gateway lists the tools once in the prompt, shows earlier calls as JSON and earlier results as
+  `<tool_result ... untrusted="true">` blocks (the model is told never to follow instructions found there), and
+  asks for one JSON object: `{"tool_calls":[{"name":...,"arguments":{...}}]}` or `{"content":"..."}`.
+  It checks each call (known tool name, the forced tool for `tool_choice` with a function name, at most one call
+  with `parallel_tool_calls:false`, at most 16 calls, arguments a JSON object that matches the tool's
+  `type`/`properties`/`required`/`enum`/`items`/`additionalProperties:false`) and returns OpenAI `tool_calls`
+  with fresh `call_...` ids and `finish_reason:"tool_calls"`. rex then runs the calls through its own guard,
+  permissions and hooks, as with any other backend.
+- A plain-text reply under `tool_choice:"auto"` is returned as the answer. A broken envelope, an invalid call,
+  or no call under `"required"`/a forced tool gets one retry; a second failure is HTTP 502
+  `tool_protocol_error` (a half-valid set of calls is never passed on). One `--timeout` deadline covers both
+  attempts; with less than 10 s left the retry is skipped (504). `usage` adds up both attempts.
+- When the CLI lists `--json-schema`, tool mode also passes a fixed envelope schema (never the tools' own
+  schemas) and a one-line `--system-prompt`; the gateway still checks every call itself. `--no-json-schema`
+  turns the schema off.
+- Caps: at most 64 tools, 16 KB per tool definition (else 413), a prompt of at most 1,000,000 characters
+  (else 413; nothing is cut, rex's compaction owns the context size), 256 KB of arguments per call.
+- `stream: true` is answered as SSE after the CLI has finished: one content chunk, a stop chunk, `[DONE]`; on
+  a tool turn the first chunk carries all calls complete and the finish reason is `tool_calls`.
+- Logs only method, path, model, duration and status (tool mode adds `tools=N calls=K retry=0/1`, never
+  prompt or argument text). Timeout per call: `--timeout` (default 300 s).
 - Each call runs in a fresh private temporary directory (0700 on POSIX) that is removed afterwards, with
   `--safe-mode` when the installed CLI supports it: no `CLAUDE.md`, memory, hooks or settings (user or
   project) load, while the CLI login still works, so replies do not know your personal instructions.

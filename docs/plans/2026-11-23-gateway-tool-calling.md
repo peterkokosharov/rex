@@ -200,6 +200,28 @@ and can be switched off. (b3) turns the gateway into an agent.
   probe lists `--json-schema` (switch off with `--no-json-schema`). It reads `structured_output` when it is a
   JSON object and otherwise parses `result` with the plain parser. Per-tool schemas are never sent to the CLI.
 
+**Steps 1-5 done (2026-11-23).** Implemented in `scripts/claude_cli_gateway.py` (still one file): `tool_spec`,
+`render_tool_prompt`, `retry_prompt`, `parse_envelope`, `check_args`, `validate_envelope`, `interpret_reply`,
+`run_tool_turn`, `openai_tool_calls`, `sum_usage`; `build_command`/`run_claude` take the optional
+`--system-prompt` line and envelope `--json-schema`, and `claude_bin` may be a list. Tests:
+`tests/test_claude_cli_gateway_tools.py` (protocol, bodies, handler with a stub runner, retry/deadline),
+`tests/test_claude_cli_gateway_e2e.py` with `tests/fakes/fake_claude.py` (argv safety, real subprocess path,
+`AgentLoop` round trip in both the json-schema and the plain-parser mode, optional live test).
+Choices made where the plan left room:
+- Tool names must match `[A-Za-z0-9_.-]{1,128}`; duplicate tool names, a non-list `tools`, more than 64 tools
+  and an unknown forced tool are 400; a tool definition over 16 KB and a prompt over the cap are 413.
+- Envelope keys other than `content` and `tool_calls` are rejected (retry), so a typo cannot silently drop a
+  call; duplicate JSON keys anywhere in the reply are rejected too. A missing `arguments` means `{}`. Arguments
+  over 256 KB are an invalid call (retry), because they come from the model, not from the request.
+- An empty reply (no calls, no content) counts as invalid and is retried, also under `auto`.
+- Earlier assistant text without calls is shown as `{"content":...}`, so the whole history uses one format.
+- The deadline starts when the request gets a CLI slot (the slot wait is limited by `--timeout` as before).
+- The end-to-end test uses a stub permission gate that allows every call, so it does not depend on rex's
+  permission rules (tested elsewhere). It ran on Windows with Python 3.14.7; no Python 3.12 is installed on the
+  test machine, and the code uses nothing newer than 3.10.
+- Not changed, because they are outside this change's files: `scripts/rex-claude-cli.example.yaml` (line 3 still
+  says "Chat only") and `RELEASE.md` (line 14, "Claude Code CLI gateway (chat only)"). Both need a one-line fix.
+
 Sources:
 - `claude -p ... --json-schema` live probe, Claude Code 2.1.328, model haiku (run 2026-11-23, 3 calls)
 - `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453; startup probe and process handling updated later the same day)

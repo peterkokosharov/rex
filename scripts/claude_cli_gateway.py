@@ -7,13 +7,21 @@
 
 """Tiny OpenAI-compatible gateway in front of the local Claude Code CLI.
 
-Lets rex (or any OpenAI-compatible client) chat with a Claude model through the
-locally logged-in `claude` CLI, without an API key. Chat only: Claude's own
-tools are disabled, request `tools` are ignored, `tool_calls` are never returned.
+Lets rex (or any OpenAI-compatible client) use a Claude model through the
+locally logged-in `claude` CLI, without an API key.
+
+Tools are emulated, executed by the client: `claude` itself always runs with
+its own tools disabled (`--tools ""`). When a request has `tools` (and
+tool_choice is not "none"), the gateway describes them in the prompt, asks for
+a JSON envelope {"tool_calls":[...]} or {"content":...}, checks the proposed
+calls against the tool schemas (one retry for a broken reply) and returns them
+as OpenAI `tool_calls` with finish_reason "tool_calls". The client runs the
+tools and sends the results back as role=tool messages, which the gateway
+shows to the model as untrusted data.
 
 Usage:
     python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku] [--token-file F]
-                                         [--max-concurrent 4] [--allow-unsafe]
+                                         [--max-concurrent 4] [--allow-unsafe] [--no-json-schema]
 
 The token comes from --token-file F, else --token T (visible in the process
 list, so a warning is printed), else the REX_GATEWAY_TOKEN environment variable.
@@ -26,7 +34,8 @@ with --safe-mode (no user CLAUDE.md/memory/settings; login kept) when the CLI ha
 `claude --help` is probed once at startup; if that fails the gateway refuses to start unless
 --allow-unsafe is given. At most --max-concurrent claude processes run at once (default 4);
 a timed-out call kills the whole process tree.
-Logs method, path, model, duration and status only.
+Logs method, path, model, duration and status only (in tool mode also the
+counts tools=N calls=K retry=0/1; never prompt or argument text).
 """
 
 from __future__ import annotations
