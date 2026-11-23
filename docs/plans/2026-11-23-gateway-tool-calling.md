@@ -1,6 +1,6 @@
 # Gateway tool calling (design plan)
 
-Date: 2026-11-23. Status: in progress (see "Status notes" at the end).
+Date: 2026-11-23. Status: implemented (steps 0-6 done; see "Status notes"). Remaining: the maintainer's live run with the real `claude` login (`REX_LIVE_CLAUDE=1`). Usage: README, section "Run with Claude Code CLI".
 
 **Goal.** rex (and front-ends built on it) should use Claude through `scripts/claude_cli_gateway.py` with
 tools. rex sends OpenAI `tools` and expects `tool_calls` back. Today the gateway drops `tools`, never returns
