@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Tests for the ACP bridge. No network, no keys, no rex subprocess."""
@@ -76,6 +76,7 @@ class FakeSession:
         self.cancel_requested = False
         for event in (
             {"type": "ready", "model": "gemini-lite"},
+            {"type": "permission", "id": "perm-1", "tool": "bash", "summary": "bash: make"},
             {"type": "token", "text": "O"},
             {"type": "token", "text": "K"},
             {"type": "final", "text": "OK"},
@@ -141,6 +142,14 @@ class ACPBridgeTest(unittest.TestCase):
                 and msg["params"]["update"].get("sessionUpdate") == "agent_message_chunk")
         ]
         self.assertEqual("".join(chunks), "OK")
+
+    def test_child_permission_is_denied_at_once(self) -> None:
+        self.stdout.wait_id(self.request("initialize", {"protocolVersion": 1}))
+        sid = self.stdout.wait_id(self.request("session/new", {"cwd": tempfile.gettempdir()}))["result"]["sessionId"]
+        rid = self.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "go"}]})
+        self.assertEqual(self.stdout.wait_id(rid)["result"]["stopReason"], "end_turn")
+        sent = self.server.sessions[sid].sent  # type: ignore[attr-defined]
+        self.assertIn({"type": "permission_reply", "id": "perm-1", "decision": "deny"}, sent)
 
     def test_cancel_maps_to_stop(self) -> None:
         self.stdout.wait_id(self.request("initialize", {"protocolVersion": 1}))

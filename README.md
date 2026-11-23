@@ -297,8 +297,10 @@ ACP sessions map to one rex `--jsonl` child each: `session/prompt` streams `agen
 `session/close` sends `bye`. stdout is JSON-RPC only; diagnostics go to stderr.
 
 Deliberately not advertised: `loadSession` (context lives in memory), image/audio prompts, MCP passthrough and
-permission gating. Tools run in the Docker guard by default; `--local-tools` runs them on the host with **no**
-permission prompts, so use it only for local demos. Cost reporting is absent because rex reports tokens, not prices.
+permission questions. The permission rules, hooks and mode defaults still apply in the rex child; until questions are
+mapped to `session/request_permission`, every question is answered **deny** at once (logged on stderr). Tools run in
+the Docker guard by default; with `--local-tools` they run on the host and every write or command without an allow
+rule is denied, so use it only for local demos. Cost reporting is absent because rex reports tokens, not prices.
 
 ### Run CLI (one-shot)
 

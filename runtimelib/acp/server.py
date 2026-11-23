@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Agent Client Protocol (ACP) server backed by rex's ``--jsonl`` bridge.
@@ -23,10 +23,14 @@ Mapping:
     session/close               bye + terminate
 
 Known limitations, deliberately advertised as such: no history replay
-(``loadSession`` is false), no image/audio prompts, no MCP passthrough,
-and no tool permission gating - tools run either inside the Docker guard or
-locally when ``--local-tools`` was passed explicitly. There is no cost
-reporting because rex reports tokens, not prices.
+(``loadSession`` is false), no image/audio prompts, no MCP passthrough, and
+no permission questions yet. The child's permission gate (rules, hooks, mode
+defaults) still applies; every ``permission`` question it asks is answered
+``deny`` at once and logged on stderr, until questions are mapped to
+``session/request_permission``. Calls that would need a question (network,
+MCP, and in ``--local-tools`` mode every write or command without an allow
+rule) are therefore refused. There is no cost reporting because rex reports
+tokens, not prices.
 """
 
 from __future__ import annotations
@@ -328,7 +332,8 @@ class ACPServer:
                 sid,
                 "warning",
                 "rex local tools",
-                "Tools run on the host without Docker guard and without permission prompts.",
+                "Tools run on the host without Docker guard. Permission questions are not "
+                "supported over ACP yet: calls without an allow rule are denied.",
             )
         self.respond(msg.get("id"), {"sessionId": sid})
 
@@ -425,6 +430,11 @@ class ACPServer:
                     message = str(event.get("message") or "rex error")
                     self._emit_message(sid, run, f"[rex error] {message}")
                     break
+                elif kind == "permission":
+                    # No ACP mapping yet: never leave the child waiting, never allow.
+                    self.log(f"{sid}: permission denied (not supported over ACP yet): "
+                             f"{event.get('tool')}: {event.get('summary')}")
+                    session.send({"type": "permission_reply", "id": event.get("id"), "decision": "deny"})
                 elif kind in ("ready", "reset_ok", "model_ok", "bye"):
                     continue
             if session.cancel_requested:
@@ -566,7 +576,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--local-tools",
         action="store_true",
-        help="Run tools on the host instead of in the Docker guard (no permission prompts)",
+        help="Run tools on the host instead of in the Docker guard (calls that need a permission question are denied)",
     )
     args = parser.parse_args(argv)
 
