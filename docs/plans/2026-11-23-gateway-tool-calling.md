@@ -2,7 +2,7 @@
 
 Date: 2026-11-23. Status: plan only, nothing implemented.
 
-**Goal.** rex (and Layka/Sisi on top of it) should use Claude through `scripts/claude_cli_gateway.py` with
+**Goal.** rex (and front-ends built on it) should use Claude through `scripts/claude_cli_gateway.py` with
 tools. rex sends OpenAI `tools` and expects `tool_calls` back. Today the gateway drops `tools`, never returns
 `tool_calls`, and turns history tool calls into lines like `[called tool X with ...]`. So rex's fileops, bash,
 render_diagram, load_skill and other tools never run.
@@ -17,6 +17,14 @@ render_diagram, load_skill and other tools never run.
 - The gateway buffers the whole CLI result before it answers, so its "SSE" is already one content chunk, then
   a stop chunk, then `[DONE]`.
 
+**Prerequisites (do these first).** The gateway must be safe to run before it grows a tool mode:
+1. A fail-closed startup probe: `claude --help` is run once at startup and the result (`cli_flags`) is kept on the
+   server. If the probe fails the gateway refuses to start unless `--allow-unsafe` is given; requests never probe.
+2. Robust process handling: a timed-out call kills the whole process tree, the number of concurrent `claude`
+   processes is capped (`--max-concurrent`), and unexpected errors and bad `Content-Length` give JSON 500/400.
+
+Both are implemented (see the git log) and every step below assumes them.
+
 ## 1. Options compared
 
 I checked `claude --help` (Claude Code 2.1.328) on 2026-11-23. Flags quoted below are exactly as listed there.
@@ -24,10 +32,10 @@ I checked `claude --help` (Claude Code 2.1.328) on 2026-11-23. Flags quoted belo
 | Option | Pros | Cons | Effort | Risk |
 |---|---|---|---|---|
 | **(a) Prompt-level emulation.** The gateway writes the tools and the history into the prompt, asks for a strict JSON envelope `{"tool_calls":[...]}` or `{"content":"..."}`, checks it against the tool schemas, maps it to OpenAI `tool_calls` with ids, and retries once on bad output | Stdlib only. Claude stays tool-less. Works with any CLI version. rex needs no changes | The model may break the format: costs one extra call, and sometimes fails. No real token streaming on tool turns. Slower and pricier than native tool use | M (about 300 lines + tests) | Low/medium. Bad output becomes a clean error, never a wrong action |
-| **(b1) `--json-schema <schema>`** ("JSON Schema for structured output validation (only works with --print)"), used *inside* (a) to force the envelope shape | Fewer parse failures and retries | We have not checked how it behaves with `--tools ""` and `--safe-mode`, where the result shows up in the `json` output, or what it costs in turns. Per-tool `anyOf` schemas may use keywords it does not support | S on top of (a) | Medium until checked live. Use it only after a probe, and keep the parser as the fallback |
+| **(b1) `--json-schema <schema>`** ("JSON Schema for structured output validation (only works with --print)"), used *inside* (a) to force the envelope shape | Fewer parse failures and retries | We have not checked how it behaves with `--tools ""` and `--safe-mode`, where the result shows up in the `json` output, or what it costs in turns. It would use one fixed envelope schema only (`tool_calls` = list of `{name, arguments}` objects, or `content`), never per-tool `anyOf` schemas: those may use keywords it does not support, and per-tool checks stay in the gateway's own validator | S on top of (a) | Medium until checked live. Use it only after a probe, and keep the parser as the fallback |
 | **(b2) `--output-format stream-json`** (+ `--include-partial-messages`, `--input-format stream-json`) | Real token streaming for plain text turns | Does nothing for tool calls. It is the CLI's own event format, so the gateway would need more parsing. We have not checked that stream-json input can carry rex's foreign tool history | M | Medium. Not needed now |
 | **(b3) `--mcp-config <configs...>` + `--strict-mcp-config`**, pointing at a tiny stdio MCP server inside the gateway that publishes rex's tool schemas | Native tool use, so Claude formats calls reliably | Claude's own agent loop would *call* the tool. The gateway would have to kill the process at the first call, or feed back fake results. It needs permission handling (`--permission-mode`, `--allowedTools`). The gateway stops being tool-less (see section 2). Also fragile across CLI versions | L | High. Rejected |
-| **(c) No gateway for tools.** rex uses tools only with a real API key elsewhere (home/kiko); at work the gateway stays chat-only | Clean native tool use. No emulation code | No tools at work, which is the main use. Needs a key and a budget | S (config only) | Low technically. It does not meet the goal |
+| **(c) No gateway for tools.** rex uses tools only with an endpoint that has a real API key; the gateway stays chat-only | Clean native tool use. No emulation code | No tools through the CLI login, which is the main use of this gateway. Needs a key and a budget | S (config only) | Low technically. It does not meet the goal |
 
 Other flags: `--system-prompt <prompt>` replaces the Claude Code default prompt, which describes tools that
 do not exist here. It is useful for a *short, fixed* gateway protocol text. The `--system-prompt-file`
@@ -37,9 +45,9 @@ because the Windows command line is limited to about 32k characters. `--tools ""
 
 ## 2. Recommendation
 
-Build **(a)**, with **(b1) as an optional add-on**. The add-on is on only when the help probe lists
-`--json-schema` and the step-0 live probe has passed. If it is unsupported or misbehaves, the gateway uses
-the plain parser. Keep **(c)** as the long-term clean path for home use. Reject (b2) for now. Reject (b3).
+Build **(a)**, with **(b1) as an optional add-on**. The add-on is on only when the startup probe (`cli_flags`) lists
+`--json-schema` and the step-0 live probe has passed. It uses the fixed envelope schema only. If it is unsupported or misbehaves, the gateway uses
+the plain parser. Keep **(c)** as the long-term clean path wherever an API key is available. Reject (b2) for now. Reject (b3).
 
 Reasons: (a) is stdlib only, needs no change in rex, and keeps the current security model. (b1) costs little
 and can be switched off. (b3) turns the gateway into an agent.
@@ -65,7 +73,8 @@ and can be switched off. (b3) turns the gateway into an agent.
   the reply to 1 call.
 - **System prompt:** the `system`/`developer` messages go first, as today. Then comes a fixed gateway block:
   the protocol rules, then a "Tools" section with one entry per tool (name, description, and the compact
-  JSON of `parameters`). Through `--system-prompt` only a short constant line goes ("You are a model behind
+  JSON of `parameters`). Tools are described once: this section is the only place the gateway lists them,
+  and the protocol rules and the closing instruction refer to tools by name without repeating schemas. Through `--system-prompt` only a short constant line goes ("You are a model behind
   an API; follow the protocol in the input"). Everything else goes on stdin.
 - **History:** a user message becomes `User: ...`. An assistant message with `tool_calls` is rendered *as
   the envelope the model itself would have written*, for example
@@ -75,8 +84,10 @@ and can be switched off. (b3) turns the gateway into an agent.
   from earlier `tool_call_id`s. A result whose id was never seen gets `name="unknown"`. The prompt ends with:
   "Reply with exactly one JSON object and nothing else: `{"tool_calls":[{"name":...,"arguments":{...}}]}`
   or `{"content":"final answer"}`."
-- **Envelope parsing:** strip one surrounding ```json fence, then `json.JSONDecoder.raw_decode` the first
-  object, and allow only whitespace after it. `content` may come with `tool_calls` (OpenAI allows both). An
+- **Envelope parsing:** strip one surrounding ```json fence. If the reply then starts with `{`, it is an
+  envelope attempt: `json.JSONDecoder.raw_decode` the first object and allow only whitespace after it.
+  Prose before the first `{` is never searched for JSON: under `tool_choice:"auto"` the reply is plain
+  `content`; under `"required"` or a forced tool it counts as a bad reply (one retry). `content` may come with `tool_calls` (OpenAI allows both). An
   empty `tool_calls` list together with no content is invalid.
 - **Response:** each call gets `id = "call_" + uuid4().hex[:24]` from the gateway (any id the model offers is
   ignored), `type:"function"`, and `function.arguments = json.dumps(args)` as a string.
@@ -97,12 +108,15 @@ and can be switched off. (b3) turns the gateway into an agent.
   Any other keyword is ignored, never treated as a failure. Arguments must be an object.
 - **Rejected:** unknown tool names, a tool other than the one forced by `tool_choice`, duplicate or missing
   `name`, more than `MAX_CALLS = 16` calls per reply, and arguments that are not JSON objects. Each of these
-  starts the single retry.
-- **Retry:** at most 1. The retry prompt is the same prompt plus "Your previous reply was rejected: <short
-  reason>. Reply again with only the JSON envelope." After a second failure:
-  - if the reply has no JSON at all and `tool_choice` is not `required` or forced, it is returned as plain
-    `content` with `finish_reason:"stop"` (the model simply answered);
-  - otherwise the gateway answers HTTP 502 `tool_protocol_error`. A half-valid call is never passed on.
+  starts the single retry (see the retry rule below).
+- **Plain prose is accepted on the first attempt** when `tool_choice` is `"auto"` (a reply that does not
+  start with `{`): it is returned as `content` with `finish_reason:"stop"`, with no retry. The model simply
+  answered.
+- **Retry:** at most 1, and only when the reply started like an envelope (`{`) but is invalid or rejected, or
+  when `tool_choice` is `"required"` or forces a tool and the reply is not a valid envelope. The retry prompt
+  is the same prompt plus "Your previous reply was rejected: <short reason>. Reply again with only the JSON
+  envelope." After a second failure the gateway answers HTTP 502 `tool_protocol_error`. A half-valid call is
+  never passed on.
 - **Size caps:** at most 64 tools, at most 16 KB of JSON per tool schema, a rendered prompt of at most
   `MAX_PROMPT_CHARS` (default 1,000,000), and at most 256 KB of arguments per call. Going over a cap gives
   HTTP 413/400 with a clear message. Nothing is truncated silently, because rex's compaction owns the
@@ -130,9 +144,9 @@ and can be switched off. (b3) turns the gateway into an agent.
   received to a file, so tests can check that `--tools ""`, `--strict-mcp-config` and `--safe-mode` are
   present and `--mcp-config` is absent. The fake is launched as `[sys.executable, fake_claude.py]`: in
   tests, `claude_bin` may be a list, which avoids `.cmd` shims on Windows.
-- **Scenarios:** valid call; invalid JSON followed by a valid retry; invalid twice (502); plain text on
-  retry under `auto` (returned as content); unknown tool; forced tool not used; timeout during the retry;
-  `tool_choice:"none"` (today's path, unchanged).
+- **Scenarios:** valid call; invalid JSON followed by a valid retry; invalid twice (502); unknown tool; forced tool not used; timeout during the retry;
+  `tool_choice:"none"` (today's path, unchanged); prose reply under `auto` (accepted without a retry);
+  prose before a `{` under `auto` (plain content) and under `required` (retry).
 - **End-to-end:** a real `AgentLoop` with `LiteLLMClient` against the gateway and the fake. Turn 1 makes a
   `fileops` read call, turn 2 gives the final answer. rex must run the tool, the history sent the second
   time must contain the tool result, and the run must return the answer.
@@ -159,10 +173,10 @@ and can be switched off. (b3) turns the gateway into an agent.
 5. **Docs:** gateway docstring ("tools emulated, executed by the client"), comment in
    `scripts/rex-claude-cli.example.yaml`, and a README section. Done when: no text still says "chat only".
 6. **Independent review** (Opus) of the diff against sections 2 to 4 of this plan, then one live run of
-   the optional test by the owner. Done when: the findings are fixed or written down.
+   the optional test by the maintainer. Done when: the findings are fixed or written down.
 
 Sources:
-- `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453)
+- `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453; startup probe and process handling updated later the same day)
 - `runtimelib/llm/client.py` (read 2026-11-23)
 - `runtimelib/agent/loop.py` (read 2026-11-23)
 - `runtimelib/tools/base.py`, `to_openai` (read 2026-11-23)

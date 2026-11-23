@@ -1,10 +1,10 @@
 [project]
 name = "runtime"
 version = "0.2.2"
-description = "Dual-mode AI runtime (Vibe Coding + Tool Provider for RONI/Archeo) via LiteLLM proxy"
+description = "Small stdlib-only agent runtime for OpenAI-compatible endpoints"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
@@ -23,16 +23,15 @@ namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false

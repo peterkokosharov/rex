@@ -39,7 +39,7 @@ EOF
 cat > "$STAGE/rex/README.txt" <<'EOF'
 rex for Windows (x64)
 
-1. Install Python 3.10 or newer and make sure `python` is in PATH.
+1. Install Python 3.12 or newer and make sure `python` is in PATH.
 2. Unzip this folder anywhere, e.g. C:\Tools\rex.
 3. Run:  rex.cmd --help
    or:   python -m runtime --jsonl --local-tools

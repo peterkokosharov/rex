@@ -45,7 +45,7 @@ Section: devel
 Priority: optional
 Architecture: $ARCH
 Maintainer: Peter Kokosharov <peter.kokosharov@gmail.com>
-Depends: python3 (>= 3.10)
+Depends: python3 (>= 3.12)
 Description: AI agent runtime with a JSON-lines bridge
  rex is the Python runtime driven by Layka and other front-ends over stdin/stdout.
  This package installs the 'rex' command, the runtime/runtimelib modules and the

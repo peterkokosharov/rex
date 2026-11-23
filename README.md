@@ -105,7 +105,7 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 
 ### Prerequisites
 
-- Python 3.10+ (stdlib-only runtime; no pip/venv required for basic CLI)
+- Python 3.12+ (older versions are no longer tested or supported; stdlib-only runtime; no pip/venv required for basic CLI)
 - An OpenAI-compatible endpoint (kiko-lite, LiteLLM, etc.)
 
 Example with a local kiko-lite endpoint:
@@ -192,6 +192,14 @@ cli:
   project) load, while the CLI login still works, so replies do not know your personal instructions.
   Older CLIs without `--safe-mode` fall back to `--setting-sources user` (no project or local settings, but
   your user-level `CLAUDE.md` and settings still load and can change replies); the gateway prints a note then.
+- Startup is fail-closed: `claude --help` is probed once; if that fails the gateway exits with an error
+  (it cannot tell whether `--safe-mode` exists, so your user `CLAUDE.md` might be sent) unless
+  `--allow-unsafe` is given. Requests never probe again.
+- At most `--max-concurrent` (default 4) `claude` processes run at once; more requests wait, then get 503.
+  A timed-out call kills the whole process tree. Unexpected errors come back as JSON 500, a bad
+  `Content-Length` as 400.
+- The `claude` binary is looked up on `PATH` only, never in the current directory. Without a token the
+  gateway prints a note at startup: any local process could then use it.
 - A second gateway on the same port fails with "port N already in use" and a non-zero exit (on Windows the
   port is bound exclusively).
 
@@ -350,8 +358,8 @@ description: Write release notes from the git log. Use when asked for a changelo
 
 Skills are searched in `~/.config/runtime/skills/`, then the folders in the config key `skills.paths` (a list), then
 `<workspace>/.rex/skills/` (project skills, marked `(project)`). Project skills come from the repository and are
-untrusted: they load only when `skills.trust_workspace` is `true` (default `false`; `rex skills` still lists them as
-not trusted). If two skills share a name the first one wins and a warning is logged. A missing `name`
+untrusted: they load only when `workspace.trust` is `true` (default `false`; `rex skills` still lists them as
+not trusted). The old key `skills.trust_workspace` still works as a deprecated alias (with a one-time warning). If two skills share a name the first one wins and a warning is logged. A missing `name`
 falls back to the folder name; a skill without `description` is skipped with a warning.
 
 At session start only a compact index (`- name: description`, about 2 KB at most) is added to the system prompt.
@@ -421,7 +429,18 @@ rex reads the common `AGENTS.md` convention at session start and puts it into th
 1. `~/.config/runtime/AGENTS.md` - your user-level instructions;
 2. `<workspace>/AGENTS.md` (or `agents.md`) - project instructions. A symlink pointing outside the workspace is refused with a warning.
 
-Each file is capped at 16 KB (a truncation marker is added). Project instructions never override safety rules or permissions. Files are re-read on restart and on `/reset`; there is no file watching. The startup banner lists loaded files, and `--jsonl` adds `"instructions": [paths]` to the `ready` event.
+`agents.md` (lower case) is also accepted in the user directory. Each file is capped at 16 KB (a truncation marker is added), so the
+total can reach 48 KB (user + explicit file + project). Files are re-read on restart and on `/reset`; there is no file watching.
+Loaded files are printed to stderr when the session starts (also in one-shot mode), and `--jsonl` adds `"instructions": [paths]` to the
+`ready` event.
+
+**Trust.** Project instructions come from the repository, so they are loaded only when the workspace is trusted: set
+`workspace.trust: true` in `config.yaml` (env: `RUNTIME_WORKSPACE__TRUST=true`; default `false`). The same key gates project skills.
+When a project `AGENTS.md` is present but the workspace is not trusted, it is not read and a one-line notice says how to trust it.
+Project text is placed before your user instructions (so yours come last), and lines in it that start with `===` or `---` get a
+`> ` prefix so they cannot fake section markers. The note that project instructions "never override safety rules or permissions" is
+advisory (it is a sentence in the prompt), not enforcement: the real limits are the permission policy and the Docker guard.
+**Do not open an untrusted repository with `--local-tools`**: there the tools run on the host without the guard.
 
 Explicit file: set `instructions.file` in `config.yaml` (env: `RUNTIME_INSTRUCTIONS__FILE`) to load any file as trusted user-level instructions (same 16 KB cap, any location; a warning is printed once if it is missing). rex never loads the `AGENTS.md` of its own install folder unless that folder is the workspace.
 
