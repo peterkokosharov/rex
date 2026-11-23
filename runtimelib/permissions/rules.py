@@ -60,7 +60,7 @@ import json
 import os
 import posixpath
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -165,14 +165,17 @@ class BashScan:
     ``seps``: for each part, the separator before it (``""`` for the first,
     else ``;``, ``&&``, ``||``, ``|``, ``&`` or ``\\n``).
     ``substitution``: ``$(``, backticks, ``<(``, ``>(`` seen outside single quotes.
-    ``unparseable``: a quote is left open, or a part cannot be split into
-    words; the command is never auto-allowed.
+    ``unparseable``: a quote is left open, a heredoc is not terminated, or a
+    part cannot be split into words; the command is never auto-allowed.
+    ``heredocs``: heredoc bodies (kept out of ``parts``). ``$(`` or a backtick
+    anywhere in a body counts as substitution, whatever the quoting.
     """
 
     parts: list[str]
     seps: list[str]
     substitution: bool = False
     unparseable: bool = False
+    heredocs: list[str] = field(default_factory=list)
 
 
 def join_continuations(command: str) -> str:
@@ -199,6 +202,9 @@ def scan_bash(command: str) -> BashScan:
     subst = False
     quote = ""
     i, n = 0, len(command)
+    pending: list[tuple[str, bool]] = []  # heredocs waiting for the end of the line
+    heredocs: list[str] = []
+    broken = False
 
     def flush(next_sep: str) -> None:
         nonlocal sep
@@ -248,6 +254,47 @@ def scan_bash(command: str) -> BashScan:
             buf.append("$'")
             i += 2
             continue
+        if command.startswith("<<<", i):
+            buf.append("<<<")
+            i += 3
+            continue
+        if command.startswith("<<", i):
+            j = i + 2
+            strip_tabs = j < n and command[j] == "-"
+            j += 1 if strip_tabs else 0
+            while j < n and command[j] in " \t":
+                j += 1
+            k = j
+            while k < n and command[k] not in " \t\r\n;|&<>()":
+                k += 1
+            delim = command[j:k].replace("'", "").replace('"', "").replace("\\", "")
+            if delim:
+                pending.append((delim, strip_tabs))
+            else:
+                broken = True
+            buf.append(command[i:k])
+            i = k
+            continue
+        if c in "\r\n" and pending:
+            flush("\n")
+            pos = i + (2 if command.startswith("\r\n", i) else 1)
+            for delim, strip_tabs in pending:
+                body: list[str] = []
+                found = False
+                while pos < n:
+                    end = command.find("\n", pos)
+                    line = command[pos:n if end < 0 else end]
+                    pos = n if end < 0 else end + 1
+                    check = line.rstrip("\r")
+                    if (check.lstrip("\t") if strip_tabs else check) == delim:
+                        found = True
+                        break
+                    body.append(line)
+                broken = broken or not found
+                heredocs.append("\n".join(body))
+            pending.clear()
+            i = pos
+            continue
         if c in "'\"":
             quote = c
             buf.append(c)
@@ -266,14 +313,16 @@ def scan_bash(command: str) -> BashScan:
         else:
             buf.append(c)
         i += 1
-    unparseable = bool(quote)
+    unparseable = bool(quote) or broken or bool(pending)
     flush("")
+    if any("$(" in body or "`" in body for body in heredocs):
+        subst = True
     for part in parts:
         try:
             shlex.split(part, comments=False, posix=True)
         except ValueError:
             unparseable = True
-    return BashScan(parts, seps, subst, unparseable)
+    return BashScan(parts, seps, subst, unparseable, heredocs)
 
 
 def _stronger(a: str, b: str) -> str:
@@ -698,6 +747,7 @@ def deny_subjects(command: str) -> tuple[list[str], bool]:
                     words_v = _strip_wrappers(_words(variant))
                     add(" ".join(words_v))
                     nested.extend(_inner_commands(words_v))
+            nested.extend(scan.heredocs)  # deny only: a body may be fed to a shell
             candidates = scan.parts + _quote_blind_parts(text)
             for part in candidates:
                 add(" ".join(part.split()))

@@ -364,6 +364,24 @@ class BashTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(pr.evaluate("bash", bash(cmd), "guard").decision, R.ALLOW)
 
+    def test_heredoc_bodies(self):
+        from runtimelib.permissions.rules import scan_bash
+        s = scan_bash("cat <<EOF > out\nit's fine; x\nEOF\nls")
+        self.assertEqual((s.parts, s.heredocs, s.unparseable), (["cat <<EOF > out", "ls"], ["it's fine; x"], False))
+        s = scan_bash("cat <<-'END'\n\tbody\n\tEND\n")
+        self.assertEqual((s.heredocs, s.unparseable), (["\tbody"], False))
+        for body in ("$(rm -rf /)", "`id`", "'$(id)'"):
+            for delim in ("EOF", "'EOF'", '"EOF"'):
+                with self.subTest(body=body, delim=delim):
+                    s = scan_bash(f"cat <<{delim}\n{body}\nEOF")
+                    self.assertTrue(s.substitution)
+        self.assertTrue(scan_bash("cat <<EOF\nno end").unparseable)
+        self.assertTrue(scan_bash("cat <<EOF").unparseable)
+        pr = rules({"allow": ["bash(cat *)"], "deny": ["bash(rm *)"]})
+        v = pr.evaluate("bash", bash("cat <<'EOF'\n$(id)\nEOF"), "guard")
+        self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+        self.assertEqual(pr.evaluate("bash", bash("sh <<EOF\nrm -rf /\nEOF"), "guard").decision, R.DENY)
+
     def test_unparseable_never_auto_allowed(self):
         pr = rules({"allow": ["bash(echo *)"]})
         for cmd in ("echo 'open", 'echo "open', "echo $'open"):
