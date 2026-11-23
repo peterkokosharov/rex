@@ -210,7 +210,7 @@ def completion_body(text: str, model: str, usage: dict[str, Any]) -> dict[str, A
 def sse_events(text: str, model: str) -> list[bytes]:
     """SSE chunks rex can parse: role+content chunk, stop chunk, [DONE].
 
-    rex builds ChatCompletionChunk(**chunk), so chunks carry only
+    rex ignores unknown chunk fields; these chunks carry only
     id/object/created/model/choices.
     """
     cid = "chatcmpl-" + uuid.uuid4().hex

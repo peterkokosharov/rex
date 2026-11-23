@@ -8,8 +8,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
+
+
+def _known_fields(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """Keep only keys that are fields of dataclass ``cls``.
+
+    OpenAI-compatible servers add fields over time (system_fingerprint,
+    usage, service_tier, ...); unknown keys must not crash construction.
+    """
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
 
 
 @dataclass
@@ -77,6 +87,11 @@ class ChatCompletionChunk:
     created: int
     object: str = "chat.completion.chunk"
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatCompletionChunk":
+        """Build from API JSON, ignoring fields this class does not know."""
+        return cls(**_known_fields(cls, data))
+
     @property
     def delta(self) -> dict[str, Any]:
         return self.choices[0].get("delta", {}) if self.choices else {}
@@ -105,6 +120,11 @@ class ChatCompletion:
     created: int
     object: str = "chat.completion"
     usage: dict[str, int] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatCompletion":
+        """Build from API JSON, ignoring fields this class does not know."""
+        return cls(**_known_fields(cls, data))
 
     @property
     def message(self) -> ChatMessage:

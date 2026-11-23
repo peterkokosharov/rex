@@ -10,12 +10,22 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, AsyncIterator, Iterator, Optional
 
 from ..config import Config
 from ..kikolib import http_client, retry
 from ..kikolib.http_client import HttpBackend, Response
+
+
+def _known_fields(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """Keep only keys that are fields of dataclass ``cls``.
+
+    OpenAI-compatible servers add fields over time (system_fingerprint,
+    usage, service_tier, ...); unknown keys must not crash construction.
+    """
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
 
 
 @dataclass
@@ -68,6 +78,11 @@ class ChatCompletionChunk:
     object: str = "chat.completion.chunk"
     error: Any = None
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatCompletionChunk":
+        """Build from API JSON, ignoring fields this class does not know."""
+        return cls(**_known_fields(cls, data))
+
     @property
     def delta(self) -> dict[str, Any]:
         return self.choices[0].get("delta", {}) if self.choices else {}
@@ -96,6 +111,11 @@ class ChatCompletion:
     created: int
     object: str = "chat.completion"
     usage: dict[str, int] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatCompletion":
+        """Build from API JSON, ignoring fields this class does not know."""
+        return cls(**_known_fields(cls, data))
 
     @property
     def message(self) -> ChatMessage:
@@ -246,7 +266,7 @@ class LiteLLMClient:
                     continue
                 if parsed.get("done"):
                     break
-                yield ChatCompletionChunk(**parsed)
+                yield ChatCompletionChunk.from_dict(parsed)
         finally:
             resp.close()
 
