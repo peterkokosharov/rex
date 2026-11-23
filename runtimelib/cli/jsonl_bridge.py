@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """JSON-lines stdio bridge for external UIs (the C++ Turbo Vision front-end).
@@ -23,7 +23,12 @@ Wire format, one JSON object per line:
                 {"type":"error","message":"..."}
                 {"type":"reset_ok"}
                 {"type":"model_ok","model":"..."}
+                {"type":"context","used":N,"limit":N,"percent":N,"model":"...","source":"config|endpoint|table|name|default"[,"warning":true]}
                 {"type":"bye"}
+
+``context`` follows every ``final`` and every ``model_ok`` (recomputed against
+the new model's window); ``warning`` appears only once per arm, when the
+estimate first reaches ``context.warn_percent`` (default 80).
 
 Everything is written to stdout with an explicit flush, because the caller
 reads line by line from a pipe. Human-readable diagnostics stay on stderr.
@@ -62,6 +67,7 @@ class JsonlBridge:
         self._emit_lock = threading.Lock()
         self.loop: Any = None
         self.tokens: list[str] = []
+        self._pending_context: Optional[dict] = None
 
     # ---------- output ----------
 
@@ -93,6 +99,15 @@ class JsonlBridge:
             error=getattr(result, "error", None),
         )
 
+    def on_context(self, status: dict) -> None:
+        """Keep the newest status; it is sent after ``final`` / ``model_ok``."""
+        self._pending_context = dict(status)
+
+    def _flush_context(self) -> None:
+        status, self._pending_context = self._pending_context, None
+        if status:
+            self.emit("context", **status)
+
     # ---------- setup ----------
 
     def _default_loop_factory(self, bridge: "JsonlBridge") -> Any:
@@ -101,11 +116,14 @@ class JsonlBridge:
             on_token=self.on_token,
             on_tool_start=self.on_tool_start,
             on_tool_end=self.on_tool_end,
+            on_context=self.on_context,
         )
 
     def _ensure_loop(self) -> Any:
         if self.loop is None:
             self.loop = self._loop_factory(self)
+            if hasattr(self.loop, "on_context"):
+                self.loop.on_context = self.on_context
         return self.loop
 
     # ---------- input ----------
@@ -147,12 +165,15 @@ class JsonlBridge:
             self.emit("error", message="empty chat text")
             return
         self.tokens = []
+        self._pending_context = None
         try:
             response = self._ensure_loop().run(text)
         except Exception as exc:  # protocol must never die on one bad request
+            self._pending_context = None
             self.emit("error", message=str(exc))
             return
         self.emit("final", text=response or "".join(self.tokens))
+        self._flush_context()
 
     def _handle_model(self, name: str) -> None:
         if not name:
@@ -163,6 +184,17 @@ class JsonlBridge:
         if hasattr(loop, "llm") and hasattr(loop.llm, "default_model"):
             loop.llm.default_model = name
         self.emit("model_ok", model=name)
+        # The new model has its own window: recompute the status right away.
+        self._pending_context = None
+        report = getattr(loop, "report_context", None)
+        if callable(report):
+            try:
+                status = report()
+                if self._pending_context is None and isinstance(status, dict):
+                    self._pending_context = status
+            except Exception as exc:
+                self.emit("error", message=f"context estimate failed: {exc}")
+        self._flush_context()
 
     def _dispatch(self, item: dict) -> bool:
         """Handle one command. Return False when the bridge should stop."""

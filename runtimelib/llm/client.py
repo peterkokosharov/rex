@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """LiteLLM client using kikolib.http_client for OpenAI-compatible API."""
@@ -148,6 +148,7 @@ class LiteLLMClient:
         self.timeout = timeout
         self._http = http_backend or http_client.client()
         self._retry_policy = retry.RetryPolicy()
+        self._window_cache: dict[str, Optional[int]] = {}
 
     @classmethod
     def from_config(cls, config: Config) -> "LiteLLMClient":
@@ -200,6 +201,59 @@ class LiteLLMClient:
             raise RuntimeError(f"Failed to list models: {resp.status}")
         data = resp.json()
         return data.get("data", [])
+
+    def context_window(self, model: Optional[str] = None, timeout: float = 3.0) -> Optional[int]:
+        """Context window the endpoint reports for ``model``, or None.
+
+        Tries the LiteLLM proxy ``GET /model/info`` (``max_input_tokens``) and
+        then ``GET /v1/models`` (``context_length`` and similar). One short
+        attempt per model, cached for the life of the client; any failure
+        returns None silently.
+        """
+        name = model or self.default_model
+        if name in self._window_cache:
+            return self._window_cache[name]
+        found: Optional[int] = None
+        try:
+            found = self._probe_model_info(name, timeout) or self._probe_v1_models(name, timeout)
+        except Exception:
+            found = None
+        self._window_cache[name] = found
+        return found
+
+    def _probe_get(self, path: str, timeout: float) -> Any:
+        resp = self._http.request("GET", f"{self.base_url}{path}", headers=self._headers(), timeout=timeout)
+        if resp.status != 200:
+            return None
+        return resp.json()
+
+    @staticmethod
+    def _positive(value: Any) -> Optional[int]:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    def _probe_model_info(self, name: str, timeout: float) -> Optional[int]:
+        data = self._probe_get("/model/info", timeout)
+        for entry in (data or {}).get("data") or []:
+            if not isinstance(entry, dict) or entry.get("model_name") != name:
+                continue
+            info = entry.get("model_info") or {}
+            return self._positive(info.get("max_input_tokens")) or self._positive(info.get("max_tokens"))
+        return None
+
+    def _probe_v1_models(self, name: str, timeout: float) -> Optional[int]:
+        data = self._probe_get("/v1/models", timeout)
+        for entry in (data or {}).get("data") or []:
+            if not isinstance(entry, dict) or entry.get("id") != name:
+                continue
+            for key in ("context_length", "context_window", "max_model_len", "max_context_length"):
+                value = self._positive(entry.get(key))
+                if value:
+                    return value
+        return None
 
     def chat_completion(
         self,

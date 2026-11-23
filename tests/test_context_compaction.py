@@ -69,7 +69,7 @@ def test_model_name_hint_and_config_override():
     assert resolve_context_window("claude-sonnet-4-0", _config(agent={"context_window": 32000})) == 32000
     cfg = _config(agent={"context_windows": {"custom-ctx": 500000}})
     assert resolve_context_window("custom-ctx", cfg) == 500000
-    assert resolve_context_window("unknown-model") == 200_000
+    assert resolve_context_window("unknown-model") == 32_000
 
 
 def test_estimate_tokens():

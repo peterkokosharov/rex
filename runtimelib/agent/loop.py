@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Agent loop - ReAct pattern with streaming and tool execution."""
@@ -34,10 +34,13 @@ from .context import (
     COMPACT_RATIO,
     compact_messages,
     CANCELLED_RESULT,
+    DEFAULT_WARN_PERCENT,
+    clamp_ratio,
     compact_threshold,
     context_tokens,
     ensure_tool_results,
-    resolve_context_window,
+    overhead_tokens,
+    resolve_context_window_info,
 )
 
 
@@ -87,6 +90,7 @@ class AgentLoop:
         on_tool_start: Optional[Callable[[str, dict], None]] = None,
         on_tool_end: Optional[Callable[[ToolResult], None]] = None,
         on_thinking: Optional[Callable[[str], None]] = None,
+        on_context: Optional[Callable[[dict], None]] = None,
         session_manager: Optional[SessionManager] = None,
         hook_engine: Optional[HookEngine] = None,
         checkpoint_manager: Optional[CheckpointManager] = None,
@@ -104,6 +108,8 @@ class AgentLoop:
         self.on_tool_start = on_tool_start or (lambda n, a: None)
         self.on_tool_end = on_tool_end or (lambda r: None)
         self.on_thinking = on_thinking or (lambda t: None)
+        self.on_context = on_context or (lambda c: None)
+        self._ctx_warned = False
 
         # Initialize tools
         self.tools: dict[str, Tool] = {}
@@ -237,10 +243,21 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.current_tool_calls = []
         self.state.interrupted = False
         self.state.turn = 0
+        self._ctx_warned = False
         self._interrupt_event.clear()
         self._rebuild_prompts()
 
     def run(self, prompt: str) -> str:
+        """Run one request and report the context status when it ends."""
+        try:
+            return self._run_request(prompt)
+        finally:
+            try:
+                self.report_context()
+            except Exception:  # status reporting must never break an answer
+                pass
+
+    def _run_request(self, prompt: str) -> str:
         """Run one request, reusing the conversation context from previous ones.
 
         The step budget and the interrupt flag belong to a single request. They
@@ -316,35 +333,94 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.messages.append(ChatMessage(role="assistant", content=""))
         return ""
 
-    def context_window(self) -> int:
-        """Context window in tokens for the currently selected model."""
-        return resolve_context_window(
-            getattr(self.llm, "default_model", "") or self.config.get("liteLLM.model", ""),
-            self.config,
-            get_registry(),
+    def _model_name(self) -> str:
+        return getattr(self.llm, "default_model", "") or self.config.get("liteLLM.model", "")
+
+    def _endpoint_window(self, model: str) -> Optional[int]:
+        probe = getattr(self.llm, "context_window", None)
+        if not callable(probe):
+            return None
+        value = probe(model)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def context_window_info(self) -> tuple[int, str]:
+        """Context window of the current model and its source (config/endpoint/table/name/default)."""
+        return resolve_context_window_info(
+            self._model_name(), self.config, get_registry(), self._endpoint_window
         )
 
+    def context_window(self) -> int:
+        """Context window in tokens for the currently selected model."""
+        return self.context_window_info()[0]
+
     def compact_threshold(self) -> int:
-        """Token count that triggers auto-compaction for the current model."""
-        ratio = float(self.config.get("cli.compact_ratio", COMPACT_RATIO))
+        """Token count that triggers auto-compaction for the current model.
+
+        Auto-compaction is mandatory: the ratio is clamped to 0.5-0.95.
+        """
+        ratio = clamp_ratio(self.config.get("cli.compact_ratio", COMPACT_RATIO))
         return compact_threshold(self.context_window(), ratio)
 
+    def overhead_tokens(self) -> int:
+        """Estimated tokens of the system prompt and tool schemas sent on every request."""
+        return overhead_tokens(self.system_prompt, self.tool_schemas)
+
     def context_usage(self) -> dict[str, int]:
-        """Token accounting for /context and tests."""
+        """Token accounting for /context and tests (``tokens`` = messages only)."""
+        messages = context_tokens(self.state.messages)
+        overhead = self.overhead_tokens()
         return {
-            "tokens": context_tokens(self.state.messages),
+            "tokens": messages,
+            "overhead": overhead,
+            "used": messages + overhead,
             "window": self.context_window(),
             "threshold": self.compact_threshold(),
             "messages": len(self.state.messages),
             "turn": self.state.turn,
         }
 
+    def warn_percent(self) -> int:
+        try:
+            value = int(self.config.get("context.warn_percent", DEFAULT_WARN_PERCENT))
+        except (TypeError, ValueError):
+            return DEFAULT_WARN_PERCENT
+        return min(100, max(1, value))
+
+    def report_context(self) -> dict[str, Any]:
+        """Recompute the context status, evaluate the warning and call ``on_context``.
+
+        The status is ``{"used","limit","percent","model","source"}`` plus
+        ``"warning": True`` the first time the estimate reaches the warning
+        percentage; falling below it (a larger model, a compaction) re-arms it.
+        """
+        window, source = self.context_window_info()
+        used = context_tokens(self.state.messages) + self.overhead_tokens()
+        percent = used * 100 // max(1, window)
+        status: dict[str, Any] = {
+            "used": used,
+            "limit": window,
+            "percent": percent,
+            "model": self._model_name(),
+            "source": source,
+        }
+        if percent >= self.warn_percent():
+            if not self._ctx_warned:
+                self._ctx_warned = True
+                status["warning"] = True
+        else:
+            self._ctx_warned = False
+        self.on_context(status)
+        return status
+
     def _compact_messages(self) -> None:
         """Auto-compact the shared context at 90% of the model's window."""
         threshold = self.compact_threshold()
-        compacted, changed = compact_messages(self.state.messages, threshold)
+        compacted, changed = compact_messages(
+            self.state.messages, threshold, overhead=self.overhead_tokens()
+        )
         if changed:
             self.state.messages = compacted
+            self._ctx_warned = False
             print(
                 f"[Context compacted: {context_tokens(compacted)} tokens, threshold {threshold}]",
                 file=sys.stderr,

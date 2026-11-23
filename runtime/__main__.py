@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Runtime CLI entry point."""
@@ -122,6 +122,40 @@ def main() -> int:
     return run_interactive(registry, config)
 
 
+_LAST_CONTEXT: dict[str, Any] = {}
+_DEFAULT_WINDOW_HINTED: set[str] = set()
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000 and n % 100_000 == 0:
+        return f"{n / 1_000_000:g}M"
+    if n >= 1_000:
+        return f"{n // 1_000}k"
+    return str(n)
+
+
+def _on_context(status: dict[str, Any], quiet: bool = False) -> None:
+    """Remember the newest context status; print the warning and the 32k hint once."""
+    _LAST_CONTEXT.clear()
+    _LAST_CONTEXT.update(status)
+    if quiet:
+        return
+    model = status.get("model", "")
+    if status.get("source") == "default" and model not in _DEFAULT_WINDOW_HINTED:
+        _DEFAULT_WINDOW_HINTED.add(model)
+        print(
+            f"Размерът на контекста на модел {model} е неизвестен (по подразбиране {_fmt_tokens(status['limit'])}); "
+            f"задай models.{model}.context_window в конфигурацията.",
+            file=sys.stderr,
+        )
+    if status.get("warning"):
+        print(
+            f"Контекст {status['percent']}% от {_fmt_tokens(status['limit'])} (модел {model}). "
+            "Ако работата е важна, смени с модел с по-голям контекст: /model",
+            file=sys.stderr,
+        )
+
+
 def register_core_commands(registry: CommandRegistry, config: Config) -> None:
     """Register core slash commands."""
 
@@ -200,6 +234,10 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         if _REPL_LOOP is not None and hasattr(_REPL_LOOP, "llm"):
             _REPL_LOOP.llm.default_model = name
         print(f"Модел: {name}")
+        if _REPL_LOOP is not None and hasattr(_REPL_LOOP, "report_context"):
+            # The new model has its own window: recompute the status at once.
+            status = _REPL_LOOP.report_context()
+            print(f"Контекст {status['percent']}% от {_fmt_tokens(status['limit'])} ({status['source']})")
         return 0
 
     @registry.register("clear", "Изчисти екрана")
@@ -248,9 +286,9 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             print("Няма активен контекст.")
             return 0
         usage = loop.context_usage()
-        pct = usage["tokens"] * 100 // max(1, usage["window"])
+        pct = usage["used"] * 100 // max(1, usage["window"])
         print(
-            f"messages: {usage['messages']}  tokens: ~{usage['tokens']}  "
+            f"messages: {usage['messages']}  tokens: ~{usage['used']} (overhead ~{usage['overhead']})  "
             f"window: {usage['window']}  auto-compact at: {usage['threshold']} ({pct}% used)  "
             f"turn: {usage['turn']}  model: {config.get('liteLLM.model')}"
         )
@@ -351,6 +389,8 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         loop.on_token = on_token
         loop.on_tool_start = on_tool_start
         loop.on_tool_end = on_tool_end
+        loop.on_context = lambda status: _on_context(status, quiet=as_json)
+        _LAST_CONTEXT.clear()
 
         try:
             response = loop.run(prompt)
@@ -369,6 +409,8 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
 
         if as_json:
             out = {"ok": True, "model": config.get("liteLLM.model"), "response": response or "".join(tokens), "events": events}
+            if _LAST_CONTEXT:
+                out["context"] = dict(_LAST_CONTEXT)
             print(json.dumps(out, ensure_ascii=False))
         else:
             if no_stream:

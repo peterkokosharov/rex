@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Context-window accounting and automatic compaction for the agent loop.
@@ -17,12 +17,15 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import replace
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from ..llm.messages import ChatMessage
 
-DEFAULT_CONTEXT_WINDOW = 200_000
+DEFAULT_CONTEXT_WINDOW = 32_000  # conservative: compact early rather than overflow
 COMPACT_RATIO = 0.9
+MIN_COMPACT_RATIO = 0.5
+MAX_COMPACT_RATIO = 0.95
+DEFAULT_WARN_PERCENT = 80
 COMPACT_TARGET_RATIO = 0.75  # trim below the trigger so we do not compact every step
 CHARS_PER_TOKEN = 4
 TOOL_TRIM_CHARS = 1500
@@ -59,25 +62,68 @@ def context_tokens(messages: Sequence[ChatMessage]) -> int:
     return sum(message_tokens(m) for m in messages)
 
 
-def resolve_context_window(
+def clamp_ratio(value: Any) -> float:
+    """Auto-compaction ratio, clamped to 0.5-0.95; missing or invalid -> 0.9.
+
+    Auto-compaction cannot be switched off: 0, negative or junk values fall
+    back to the default instead of disabling it.
+    """
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return COMPACT_RATIO
+    if ratio != ratio or ratio <= 0:
+        return COMPACT_RATIO
+    return min(MAX_COMPACT_RATIO, max(MIN_COMPACT_RATIO, ratio))
+
+
+def overhead_tokens(system_prompt: str | None, tool_schemas: Optional[Sequence[Any]] = None) -> int:
+    """Estimated tokens sent on every request besides the messages."""
+    total = estimate_tokens(system_prompt)
+    if tool_schemas:
+        try:
+            total += estimate_tokens(json.dumps(list(tool_schemas), ensure_ascii=False))
+        except (TypeError, ValueError):
+            total += 64 * len(tool_schemas)
+    return total
+
+
+def resolve_context_window_info(
     model: str = "",
     config: Optional[Any] = None,
     registry: Optional[Any] = None,
-) -> int:
-    """Context window in tokens for ``model``.
+    endpoint: Optional[Callable[[str], Optional[int]]] = None,
+) -> tuple[int, str]:
+    """Context window and where it came from for ``model``.
 
-    Priority: explicit config override, per-model config map, model registry,
-    a size hint in the model name (``1m``, ``200k``), then 200k.
+    Source is one of ``config``, ``endpoint``, ``table``, ``name``, ``default``.
+    Order: ``models.<name>.context_window`` (then the old ``agent.context_window``
+    and ``agent.context_windows`` overrides), the endpoint probe, the built-in
+    model table, a size hint in the model name (``1m``, ``200k``), then 32k.
     """
     if config is not None:
-        explicit = config.get("agent.context_window")
+        models = config.get("models")
+        if isinstance(models, dict) and model:
+            for key in (model, str(model).lower()):
+                entry = models.get(key)
+                if isinstance(entry, dict) and _positive_int(entry.get("context_window")):
+                    return _positive_int(entry["context_window"]), "config"
+        explicit = _positive_int(config.get("agent.context_window"))
         if explicit:
-            return int(explicit)
+            return explicit, "config"
         windows = config.get("agent.context_windows") or {}
         if isinstance(windows, dict):
             for key in (model, str(model).lower()):
-                if key in windows and windows[key]:
-                    return int(windows[key])
+                if key in windows and _positive_int(windows[key]):
+                    return _positive_int(windows[key]), "config"
+
+    if endpoint is not None and model:
+        try:
+            probed = _positive_int(endpoint(model))
+        except Exception:  # a failing probe must never break the loop
+            probed = 0
+        if probed:
+            return probed, "endpoint"
 
     if registry is None:
         from ..llm.models import get_registry
@@ -86,20 +132,38 @@ def resolve_context_window(
 
     info = registry.get(model) if model else None
     if info is not None and info.max_input_tokens:
-        return int(info.max_input_tokens)
+        return int(info.max_input_tokens), "table"
 
     if model:
         for value, unit in _SIZE_RE.findall(str(model).lower()):
             size = int(float(value) * _UNIT[unit.lower()])
             if size >= 8_000:
-                return size
+                return size, "name"
 
-    return DEFAULT_CONTEXT_WINDOW
+    return DEFAULT_CONTEXT_WINDOW, "default"
+
+
+def resolve_context_window(
+    model: str = "",
+    config: Optional[Any] = None,
+    registry: Optional[Any] = None,
+    endpoint: Optional[Callable[[str], Optional[int]]] = None,
+) -> int:
+    """Context window in tokens for ``model`` (see ``resolve_context_window_info``)."""
+    return resolve_context_window_info(model, config, registry, endpoint)[0]
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
 
 
 def compact_threshold(window: int, ratio: float = COMPACT_RATIO) -> int:
     """Token count at which auto-compaction triggers."""
-    return max(1, int(window * ratio))
+    return max(1, int(window * clamp_ratio(ratio)))
 
 
 def _copy(message: ChatMessage, content: Optional[str] = None) -> ChatMessage:
@@ -174,6 +238,7 @@ def compact_messages(
     threshold: int,
     target: Optional[int] = None,
     keep_recent: int = KEEP_RECENT,
+    overhead: int = 0,
 ) -> tuple[list[ChatMessage], bool]:
     """Return compacted messages and whether anything changed.
 
@@ -184,6 +249,9 @@ def compact_messages(
     is never dropped nor truncated: it is what the model must answer.
     """
     original = list(messages)
+    # The system prompt and tool schemas travel with every request, so the
+    # messages have only what is left of the threshold.
+    threshold = max(1, threshold - max(0, overhead))
     if context_tokens(original) <= threshold:
         return original, False
 
