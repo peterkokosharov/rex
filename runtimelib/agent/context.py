@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Context-window accounting and automatic compaction for the agent loop.
@@ -152,6 +152,23 @@ def _group_start(messages: Sequence[ChatMessage], index: int) -> int:
     return index
 
 
+def _shrink(message: ChatMessage) -> Optional[ChatMessage]:
+    """Smaller copy of ``message``, or None when it cannot shrink further."""
+    if message.content and len(message.content) > 100:
+        kept = max(100, len(message.content) // 2)
+        return _copy(message, message.content[:kept] + "\n...[message truncated]...")
+    if message.tool_calls and any(
+        tc.function.get("arguments") != COMPACTED_ARGS for tc in message.tool_calls
+    ):
+        # Keep the calls (their ids pair with tool results), shrink the arguments.
+        calls = [
+            replace(tc, function={**tc.function, "arguments": COMPACTED_ARGS})
+            for tc in message.tool_calls
+        ]
+        return replace(message, tool_calls=calls)
+    return None
+
+
 def compact_messages(
     messages: Sequence[ChatMessage],
     threshold: int,
@@ -163,7 +180,8 @@ def compact_messages(
     Old tool output is shortened first, then whole old turns are dropped at
     user-message boundaries (so assistant/tool pairs stay intact), and finally
     an oversized single message is truncated. The most recent ``keep_recent``
-    messages are never dropped by the boundary pass.
+    messages are never dropped by the boundary pass. The latest user message
+    is never dropped nor truncated: it is what the model must answer.
     """
     original = list(messages)
     if context_tokens(original) <= threshold:
@@ -181,6 +199,7 @@ def compact_messages(
         return ensure_tool_results(out), True
 
     # 2) Drop old turns at user boundaries; never drop the latest user turn.
+    last_user = max((i for i, m in enumerate(out) if m.role == "user"), default=None)
     keep_from = 0
     for i, m in enumerate(out[:-1]):
         if m.role != "user":
@@ -193,33 +212,34 @@ def compact_messages(
         keep_from = min(len(out) - 1, max(1, recent))
     # Never split an assistant tool call from its results.
     keep_from = _group_start(out, keep_from)
+    if last_user is not None and keep_from > last_user:
+        keep_from = last_user  # a user message is never inside a tool group
 
     dropped = keep_from
-    out = [ChatMessage(role="user", content=COMPACT_NOTE.format(n=dropped))] + out[dropped:]
+    if dropped > 0:
+        out = [ChatMessage(role="user", content=COMPACT_NOTE.format(n=dropped))] + out[dropped:]
+        if last_user is not None:
+            last_user = last_user - dropped + 1
     if context_tokens(out) <= target:
         return ensure_tool_results(out), True
 
     # 3) A single very large message still fits nowhere: truncate the biggest
     #    ones until we are under target. Bounded to avoid a pathological loop.
-    for _ in range(32):
+    #    The latest user message is left whole.
+    for _ in range(64):
         if context_tokens(out) <= target:
             break
-        idx = max(range(len(out)), key=lambda i: message_tokens(out[i]))
-        message = out[idx]
-        if message.content and len(message.content) > 100:
-            kept = max(100, len(message.content) // 2)
-            out[idx] = _copy(message, message.content[:kept] + "\n...[message truncated]...")
-            continue
-        if message.tool_calls and any(
-            tc.function.get("arguments") != COMPACTED_ARGS for tc in message.tool_calls
-        ):
-            # Keep the calls (their ids pair with tool results), shrink the arguments.
-            calls = [
-                replace(tc, function={**tc.function, "arguments": COMPACTED_ARGS})
-                for tc in message.tool_calls
-            ]
-            out[idx] = replace(message, tool_calls=calls)
-            continue
-        break
+        candidates = sorted(
+            (i for i in range(len(out)) if i != last_user),
+            key=lambda i: message_tokens(out[i]),
+            reverse=True,
+        )
+        for idx in candidates:
+            shrunk = _shrink(out[idx])
+            if shrunk is not None:
+                out[idx] = shrunk
+                break
+        else:
+            break
 
     return ensure_tool_results(out), True

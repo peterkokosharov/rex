@@ -509,6 +509,31 @@ def _turn(i: int, big: int = 0) -> list[ChatMessage]:
     ]
 
 
+def _assert_compaction_honest(original, out):
+    """Compaction may drop whole call groups, never invent or lose a result.
+
+    compact_messages() runs ensure_tool_results() itself, so a plain pair
+    check would hide a CANCELLED result it had to insert. Here: no
+    CANCELLED result appears, and every call still in ``out`` has its own
+    real result (possibly shortened) right after it.
+    """
+    _assert_pairs_valid(out)
+    assert not any(m.role == "tool" and m.content == CANCELLED_RESULT for m in out)
+    real = {m.tool_call_id: m.content for m in original if m.role == "tool"}
+    kept_calls = [tc.id for m in out if m.tool_calls for tc in m.tool_calls]
+    results = {m.tool_call_id: m.content for m in out if m.role == "tool"}
+    assert set(results) == set(kept_calls)
+    for call_id, content in results.items():
+        assert call_id in real
+        stem = content.split("\n...[", 1)[0]
+        assert real[call_id].startswith(stem)
+
+
+def _assert_latest_user_kept(original, out):
+    latest = [m for m in original if m.role == "user"][-1]
+    assert any(m.role == "user" and m.content == latest.content for m in out)
+
+
 @pytest.mark.parametrize("keep_recent", [1, 2, 3, 4, 6])
 def test_compaction_keeps_tool_pairs(keep_recent):
     msgs = []
@@ -516,7 +541,8 @@ def test_compaction_keeps_tool_pairs(keep_recent):
         msgs += _turn(i, big=4000)
     out, changed = compact_messages(msgs, threshold=2000, target=1500, keep_recent=keep_recent)
     assert changed
-    _assert_pairs_valid(out)
+    _assert_compaction_honest(msgs, out)
+    _assert_latest_user_kept(msgs, out)
 
 
 def test_compaction_single_turn_tool_heavy():
@@ -527,7 +553,8 @@ def test_compaction_single_turn_tool_heavy():
         msgs += _turn(i, big=3000)[1:4]
     out, changed = compact_messages(msgs, threshold=1000, target=500, keep_recent=3)
     assert changed
-    _assert_pairs_valid(out)
+    _assert_compaction_honest(msgs, out)
+    _assert_latest_user_kept(msgs, out)
     # Calls are kept (shrunk), never stripped, so results still pair up.
     ids = {tc.id for m in out if m.tool_calls for tc in m.tool_calls}
     assert all(m.tool_call_id in ids for m in out if m.role == "tool")
@@ -546,3 +573,29 @@ def test_history_without_readline(tmp_path, monkeypatch):
     h.save()
     assert rl.HistoryManager(hist).get_history() == ["one", "two"]
     rl.ReadlineInterface(h)  # must not touch readline
+
+
+@pytest.mark.parametrize("keep_recent", [1, 2, 4])
+def test_compaction_never_drops_or_truncates_latest_user(keep_recent):
+    big_question = "please look at this: " + "x" * 20000
+    msgs = []
+    for i in range(4):
+        msgs += _turn(i, big=4000)
+    msgs.append(ChatMessage(role="user", content=big_question))
+    out, changed = compact_messages(msgs, threshold=2000, target=500, keep_recent=keep_recent)
+    assert changed
+    assert out[-1].role == "user" and out[-1].content == big_question
+    _assert_compaction_honest(msgs, out)
+
+
+def test_compaction_latest_user_first_in_single_turn():
+    """Only one user message, at the start: it survives, tool rounds shrink."""
+    question = "q" * 3000
+    msgs = [ChatMessage(role="user", content=question)]
+    for i in range(6):
+        msgs += _turn(i, big=3000)[1:4]
+    out, changed = compact_messages(msgs, threshold=1000, target=500, keep_recent=2)
+    assert changed
+    assert [m.content for m in out if m.role == "user"].count(question) == 1
+    _assert_compaction_honest(msgs, out)
+
