@@ -207,6 +207,7 @@ def test_bye_during_request_interrupts_and_closes_asker():
     stream.feed({"type": "chat", "text": "long task"})
     assert running.wait(5)
     stream.feed({"type": "bye"})
+    stream.close()
     thread.join(10)
     assert not thread.is_alive()
     events = out.lines
