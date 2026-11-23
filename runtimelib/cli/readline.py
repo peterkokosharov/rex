@@ -10,9 +10,21 @@ from __future__ import annotations
 
 import atexit
 import os
-import readline
 from pathlib import Path
 from typing import Callable, Optional
+
+# GNU readline is missing on Windows. Use pyreadline3 when installed, else
+# fall back to plain input() without history or completion.
+try:
+    import readline  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - depends on platform
+    try:
+        import pyreadline3  # type: ignore[import-not-found]  # noqa: F401
+        import readline  # type: ignore[import-not-found]
+    except ImportError:
+        readline = None  # type: ignore[assignment]
+
+READLINE_AVAILABLE = readline is not None
 
 
 class HistoryManager:
@@ -24,18 +36,42 @@ class HistoryManager:
         self._load()
 
     def _load(self) -> None:
+        self._lines: list[str] = []
         self.history_file.parent.mkdir(parents=True, exist_ok=True)
+        if readline is None:
+            if self.history_file.exists():
+                text = self.history_file.read_text(encoding="utf-8", errors="replace")
+                self._lines = text.splitlines()[-self.max_size:]
+            return
         if self.history_file.exists():
-            readline.read_history_file(str(self.history_file))
+            try:
+                readline.read_history_file(str(self.history_file))
+            except OSError:
+                pass
         readline.set_history_length(self.max_size)
 
     def save(self) -> None:
-        readline.write_history_file(str(self.history_file))
+        try:
+            if readline is None:
+                lines = self._lines[-self.max_size:]
+                self.history_file.write_text(
+                    "".join(line + "\n" for line in lines),
+                    encoding="utf-8",
+                )
+                return
+            readline.write_history_file(str(self.history_file))
+        except OSError:
+            pass
 
     def add(self, line: str) -> None:
+        if readline is None:
+            self._lines.append(line)
+            return
         readline.add_history(line)
 
     def get_history(self) -> list[str]:
+        if readline is None:
+            return list(self._lines)
         return [readline.get_history_item(i) for i in range(1, readline.get_current_history_length() + 1)]
 
 
@@ -53,6 +89,8 @@ class ReadlineInterface:
         atexit.register(self.history.save)
 
     def _setup_readline(self) -> None:
+        if readline is None:
+            return
         if self.completer:
             readline.set_completer(self.completer)
             readline.parse_and_bind("tab: complete")

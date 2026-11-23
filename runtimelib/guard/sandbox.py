@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import os
 import time
 from dataclasses import dataclass
@@ -37,6 +36,37 @@ class WorktreeHandle:
     branch: str
 
 
+try:  # POSIX
+    import fcntl as _fcntl
+    _msvcrt = None
+except ImportError:  # Windows has no fcntl; msvcrt gives a byte-range lock
+    _fcntl = None
+    import msvcrt as _msvcrt
+
+
+def _lock_nb(lock_file: Any) -> None:
+    """Take an exclusive non-blocking lock; raise BlockingIOError if held."""
+    if _fcntl is not None:
+        _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        return
+    lock_file.seek(0)
+    try:
+        _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        raise BlockingIOError(str(exc)) from exc
+
+
+def _unlock(lock_file: Any) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_UN)
+        return
+    lock_file.seek(0)
+    try:
+        _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
 class FileMergeLock:
     """File-based merge lock using fcntl (single machine)."""
 
@@ -51,7 +81,7 @@ class FileMergeLock:
         start = time.monotonic()
         while True:
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_nb(lock_file)
                 self._lock_file = lock_file
                 return _FileLockContext(lock_file)
             except BlockingIOError:
@@ -65,7 +95,7 @@ class FileMergeLock:
 
     def __exit__(self, *args):
         if self._lock_file:
-            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            _unlock(self._lock_file)
             self._lock_file.close()
             self._lock_file = None
 
@@ -79,8 +109,7 @@ class _FileLockContext:
         return self
 
     def __exit__(self, *args):
-        import fcntl
-        fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_UN)
+        _unlock(self.lock_file)
         self.lock_file.close()
 
 
