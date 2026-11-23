@@ -86,25 +86,48 @@ def test_rex_facade_closes_loop_mcp():
     from runtimelib import rex as rexmod
     from runtimelib.permissions.policy import DefaultPermissionPolicy
 
-    closed = []
+    from runtimelib.agent import loop as loopmod
+    from runtimelib.llm import ChatCompletionChunk
 
-    class FakeLoop:
-        def run(self, task):
-            return "done"
+    class FakeLLM:
+        default_model = "m"
 
-        def close_mcp(self):
-            closed.append(True)
+        def context_window(self, model=None):
+            return None
+
+        def chat_completion(self, messages, **kwargs):
+            yield ChatCompletionChunk(id="1", model="m", created=0, choices=[
+                {"delta": {"content": "done"}, "finish_reason": "stop"}])
 
     class FakeSandbox:
         def create_worktree(self, agent_id):
             return SimpleNamespace(path=Path("."), branch="b", agent_id=agent_id)
 
+    created, closed = [], []
+    real_create, real_close = loopmod.create_agent_loop, AgentLoop.close_mcp
+
+    def spy_create(*a, **k):
+        loop = real_create(*a, **k)
+        created.append(loop)
+        return loop
+
+    def spy_close(self):
+        closed.append(self)
+        real_close(self)
+
     hooks = SimpleNamespace(trigger=lambda *a, **k: None)
     r = rexmod.REX(Config(dict(CFG)), session_manager=_Session(), sandbox_manager=FakeSandbox(),
                    hook_engine=hooks)
-    # _create_tools imports a registry helper that does not exist (separate bug); stub it.
-    with mock.patch.object(rexmod, "create_agent_loop", return_value=FakeLoop()), \
-            mock.patch.object(r, "_create_tools", return_value=[]):
-        result = asyncio.run(r.run_agent("t", rexmod.AgentRole(name="CODER"), [], DefaultPermissionPolicy()))
-    assert result.success
-    assert closed == [True]
+    # The real facade path: real create_agent_loop and tool setup; only the
+    # network (LLM) and the session store on disk are faked.
+    with mock.patch.object(loopmod.LiteLLMClient, "from_config", return_value=FakeLLM()), \
+            mock.patch.object(loopmod, "create_session_manager", return_value=_Session()), \
+            mock.patch.object(rexmod, "create_agent_loop", spy_create), \
+            mock.patch.object(AgentLoop, "close_mcp", spy_close):
+        result = asyncio.run(r.run_agent("t", rexmod.AgentRole(name="CODER"), ["fileops", "bash", "git"],
+                                         DefaultPermissionPolicy()))
+    assert result.success, result.error
+    assert result.output == "done"
+    assert len(created) == 1
+    assert sorted(created[0].tools) == ["bash", "fileops", "git"]
+    assert closed == created

@@ -104,6 +104,7 @@ class AgentLoop:
         agent_id: str = "default",
         role: str = "CODER",
         depth: int = 0,
+        tool_names: Optional[list[str]] = None,
     ) -> None:
         self.config = config
         self.llm = llm_client or LiteLLMClient.from_config(config)
@@ -125,7 +126,7 @@ class AgentLoop:
             for tool in tools:
                 self.tools[tool.name] = tool
         else:
-            self._init_default_tools()
+            self._init_default_tools(tool_names)
 
         # Tool schemas for LLM
         self.tool_schemas = [t.to_openai() for t in self.tools.values()]
@@ -172,24 +173,45 @@ class AgentLoop:
         self.system_prompt = self._build_system_prompt(include_tools=True)
         self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
 
-    def _init_default_tools(self) -> None:
-        """Initialize default tools."""
-        self.tools["fileops"] = FileOpsTool(self.config)
-        self.tools["bash"] = BashTool(self.config)
-        self.tools["task"] = TaskSpawnTool()
-        self.tools["edit"] = EditTool(self.config, READ_TRACKER)
-        # allow_private comes from the host config only; it is not in the model's schema.
-        self.tools["webfetch"] = WebFetchTool(
-            allow_private=bool(self.config.get("webfetch.allow_private", False)))
-        self.tools["git"] = GitTool(self.config)
-        self.tools["render_diagram"] = DiagramTool(self.config)
-        skills = discover_skills(Path.cwd(), self.config)
-        if skills:
-            self.tools["load_skill"] = LoadSkillTool(self.config, skills)
-            self.tools["read_skill_file"] = ReadSkillFileTool(self.config, skills)
+    def _init_default_tools(self, names: Optional[list[str]] = None) -> None:
+        """Initialize default tools.
+
+        ``names`` (tool names or fnmatch globs such as ``mcp__github__*``)
+        keeps only the matching tools; None keeps all. MCP servers are started
+        only when no filter is given or a name starts with ``mcp__``.
+        """
+        import fnmatch
+
+        def wanted(name: str) -> bool:
+            return names is None or any(fnmatch.fnmatchcase(name, p) for p in names)
+
+        factories = (
+            ("fileops", lambda: FileOpsTool(self.config)),
+            ("bash", lambda: BashTool(self.config)),
+            ("task", lambda: TaskSpawnTool()),
+            ("edit", lambda: EditTool(self.config, READ_TRACKER)),
+            # allow_private comes from the host config only; it is not in the model's schema.
+            ("webfetch", lambda: WebFetchTool(
+                allow_private=bool(self.config.get("webfetch.allow_private", False)))),
+            ("git", lambda: GitTool(self.config)),
+            ("render_diagram", lambda: DiagramTool(self.config)),
+        )
+        for name, make in factories:
+            if wanted(name):
+                self.tools[name] = make()
+        if wanted("load_skill") or wanted("read_skill_file"):
+            skills = discover_skills(Path.cwd(), self.config)
+            if skills:
+                if wanted("load_skill"):
+                    self.tools["load_skill"] = LoadSkillTool(self.config, skills)
+                if wanted("read_skill_file"):
+                    self.tools["read_skill_file"] = ReadSkillFileTool(self.config, skills)
+        if names is not None and not any(str(p).startswith("mcp__") for p in names):
+            return
         mcp_tools, self._mcp_manager = load_mcp_tools(self.config, str(Path.cwd()))
         for tool in mcp_tools:
-            self.tools[tool.name] = tool
+            if wanted(tool.name):
+                self.tools[tool.name] = tool
         if self._mcp_manager is not None:
             atexit.register(self.close_mcp)
 

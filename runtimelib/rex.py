@@ -144,7 +144,7 @@ class REX:
         # Create agent loop with permission-checking executor
         loop = create_agent_loop(
             self.config,
-            tools=self._create_tools(tools, agent_context),
+            tool_names=list(tools),  # same tool setup as the CLI, filtered by name
             on_token=lambda t: None,  # Callbacks via hooks
             on_tool_start=lambda n, a: self._emit_tool_start(agent_context, n, a),
             on_tool_end=lambda r: self._emit_tool_end(agent_context, r),
@@ -249,17 +249,6 @@ class REX:
     def _get_allowed_tools(self, role: str) -> list[str]:
         role_config = self.config.get(f"roles.{role}", {})
         return role_config.get("allowed_tools", ["fileops", "bash", "git"])
-
-    def _create_tools(self, tool_names: list[str], context: AgentContext) -> list:
-        # Factory to create tool instances with context
-        from .tools import get_registry
-        registry = get_registry()
-        tools = []
-        for name in tool_names:
-            tool = registry.get(name)
-            if tool:
-                tools.append(tool)
-        return tools
 
     def _emit_tool_start(self, context: AgentContext, name: str, args: dict):
         self.hook_engine.trigger(HookEvent.PRE_TOOL,
