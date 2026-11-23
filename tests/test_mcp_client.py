@@ -123,6 +123,23 @@ def test_bare_command_in_workspace_is_not_used(tmp_path, monkeypatch):
         StdioTransport(["planted-mcp"], cwd=str(tmp_path))
 
 
+def test_writes_lf_only_and_close_ends_server(tmp_path):
+    out = tmp_path / "stdin.bin"
+    script = tmp_path / "sink.py"
+    script.write_text(
+        "import sys\n"
+        f"open({str(out)!r}, 'wb').write(sys.stdin.buffer.read())\n",
+        encoding="utf-8",
+    )
+    tr = StdioTransport([sys.executable, str(script)], cwd=str(tmp_path))
+    tr.notify("hello")
+    started = time.time()
+    tr.close()
+    assert time.time() - started < 4
+    assert tr._proc.poll() is not None
+    assert out.read_bytes() == b'{"jsonrpc": "2.0", "method": "hello"}\n'
+
+
 def test_manager_connect_and_tools():
     mgr = MCPClientManager()
     mgr.add_server(MCPServerConfig(name="fx", command=[sys.executable], args=[FIXTURE]))

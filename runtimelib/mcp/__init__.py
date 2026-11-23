@@ -106,13 +106,10 @@ class StdioTransport(MCPTransport):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
             env=full_env,
             cwd=cwd,
-        )
+            **procutil.popen_group_kwargs(),
+        )  # binary pipes: Windows text mode would write CRLF, we want exactly one LF
         self._lock = threading.Lock()  # guards writes and the pending table
         self._pending: dict[int, _Pending] = {}
         self._request_id = 0
@@ -127,8 +124,8 @@ class StdioTransport(MCPTransport):
 
     def _read_loop(self) -> None:
         try:
-            for line in self._proc.stdout:  # type: ignore[union-attr]
-                line = line.strip()
+            for raw in self._proc.stdout:  # type: ignore[union-attr]
+                line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:
@@ -171,8 +168,8 @@ class StdioTransport(MCPTransport):
 
     def _drain_stderr(self) -> None:
         try:
-            for line in self._proc.stderr:  # type: ignore[union-attr]
-                self._stderr.append(line.rstrip("\r\n"))
+            for raw in self._proc.stderr:  # type: ignore[union-attr]
+                self._stderr.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
         except (OSError, ValueError):
             pass
 
@@ -187,7 +184,7 @@ class StdioTransport(MCPTransport):
         return self._proc.poll() is None and not self._eof
 
     def send(self, message: dict[str, Any]) -> None:
-        data = json.dumps(message) + "\n"
+        data = (json.dumps(message) + "\n").encode("utf-8")
         with self._lock:
             try:
                 self._proc.stdin.write(data)  # type: ignore[union-attr]
@@ -242,13 +239,14 @@ class StdioTransport(MCPTransport):
                 proc.stdin.close()
         except (OSError, ValueError):
             pass
-        if proc.poll() is None:
-            proc.terminate()
+        try:
+            proc.wait(timeout=5)  # a well-behaved server exits when its stdin closes
+        except subprocess.TimeoutExpired:
+            procutil.kill_tree(proc)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                pass
         self._fail_all()
 
 
@@ -370,8 +368,8 @@ class MCPClientManager:
         """Add an MCP server configuration."""
         self._configs[config.name] = config
 
-    def connect(self, name: str) -> MCPClient:
-        """Connect to an MCP server."""
+    def connect(self, name: str, cwd: str | None = None) -> MCPClient:
+        """Connect to an MCP server; ``cwd`` (the workspace) is its working directory."""
         if name in self._clients:
             return self._clients[name]
 
@@ -382,7 +380,7 @@ class MCPClientManager:
         if config.transport != "stdio":
             raise NotImplementedError(f"Transport {config.transport} not supported (stdio only)")
 
-        transport = StdioTransport(config.command + config.args, config.env)
+        transport = StdioTransport(config.command + config.args, config.env, cwd=cwd)
         client = MCPClient(transport, timeout=config.timeout, init_timeout=config.init_timeout)
         try:
             client.initialize()
