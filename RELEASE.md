@@ -11,7 +11,7 @@ Licensed under MIT License
 - Orphan tool-call repair and compaction safety.
 - Streaming tool-call index fix.
 - /config secret masking.
-- Claude Code CLI gateway (chat only).
+- Claude Code CLI gateway (tool calling emulated; the tools run in rex).
 - Stream chunk extra fields fix.
 
 # Runtime AI - Release v0.1.0

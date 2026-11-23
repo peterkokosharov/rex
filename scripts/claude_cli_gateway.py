@@ -173,6 +173,10 @@ _CHECK_DEPTH = 32
 _TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ATTR_BAD_RE = re.compile(r"[^A-Za-z0-9_.-]")
 _TAG_RE = re.compile(r"<(?=\s*/?\s*tool_result)", re.IGNORECASE)
+# Lines in untrusted text that look like the gateway's own section headers or labels.
+_HEADER_LINE_RE = re.compile(
+    r"^(?=[ \t]*(?:\[[A-Za-z][A-Za-z _-]*\]|(?:user|assistant|system|name|description|parameters)[ \t]*:))",
+    re.IGNORECASE | re.MULTILINE)
 _FENCE_RE = re.compile(r"\A```(?:json)?[ \t]*\r?\n(.*?)\r?\n?[ \t]*```\Z", re.DOTALL | re.IGNORECASE)
 
 # Fixed envelope schema for `--json-schema` (never per-tool schemas; those are checked here).
@@ -290,6 +294,12 @@ def _escape_result(text: str) -> str:
     return _TAG_RE.sub("&lt;", text)
 
 
+def _neutralise(text: str) -> str:
+    """Untrusted text (tool results, tool descriptions): escape tool_result tags and prefix "| " to
+    every line that looks like a gateway section header ([Reply], [Tools], ...) or label (User:, ...)."""
+    return _HEADER_LINE_RE.sub("| ", _escape_result(text))
+
+
 def _history_arguments(raw: Any) -> Any:
     """Arguments of a history call as an object when they are a JSON object string, else as they are."""
     if isinstance(raw, str):
@@ -343,7 +353,7 @@ def render_tool_prompt(messages: list[dict[str, Any]], spec: ToolSpec) -> str:
             call_id = str(msg.get("tool_call_id") or "")
             name = names.get(call_id) or "unknown"
             turns.append(f'<tool_result id="{_attr(call_id)}" name="{_attr(name)}" untrusted="true">\n'
-                         f"{_escape_result(text)}\n</tool_result>")
+                         f"{_neutralise(text)}\n</tool_result>")
         elif text.strip():
             turns.append("User: " + _escape_result(text.strip()))
 
@@ -355,9 +365,10 @@ def render_tool_prompt(messages: list[dict[str, Any]], spec: ToolSpec) -> str:
     if not spec.parallel:
         rules.append("- Call at most one tool per reply.")
     tool_lines = ["[Tools]"]
-    for name, tool in spec.tools.items():
-        tool_lines.append(f"name: {name}\ndescription: {tool['description'].strip()}\n"
-                          f"parameters: {json.dumps(tool['parameters'], ensure_ascii=False, separators=(',', ':'))}")
+    for name, tool in spec.tools.items():  # descriptions may come from MCP servers: untrusted
+        params = json.dumps(tool["parameters"], ensure_ascii=False, separators=(",", ":"))
+        tool_lines.append(f"name: {name}\ndescription: {_neutralise(tool['description'].strip())}\n"
+                          f"parameters: {_escape_result(params)}")
 
     out: list[str] = []
     if system_parts:
@@ -449,13 +460,7 @@ def check_args(value: Any, schema: Any, path: str = "arguments", _depth: int = 0
     """
     if not isinstance(schema, dict) or _depth > _CHECK_DEPTH:
         return None
-    kind = schema.get("type")
-    if isinstance(kind, str):
-        types = [kind]
-    elif isinstance(kind, list):
-        types = [t for t in kind if isinstance(t, str)]
-    else:
-        types = []
+    types = _schema_types(schema)
     if types and not any(_type_ok(value, t) for t in types):
         return f"{path} must be of type {'/'.join(types)}"
     enum = schema.get("enum")
@@ -484,6 +489,34 @@ def check_args(value: Any, schema: Any, path: str = "arguments", _depth: int = 0
     return None
 
 
+def _schema_types(schema: dict[str, Any]) -> list[str]:
+    kind = schema.get("type")
+    if isinstance(kind, str):
+        return [kind]
+    return [t for t in kind if isinstance(t, str)] if isinstance(kind, list) else []
+
+
+def coerce_integers(value: Any, schema: Any, _depth: int = 0) -> Any:
+    """Return ``value`` with whole floats (1.0) turned into ints where the schema wants an integer.
+
+    Run after check_args has passed (which accepts 1.0 but rejects 1.5 for "integer").
+    """
+    if not isinstance(schema, dict) or _depth > _CHECK_DEPTH:
+        return value
+    types = _schema_types(schema)
+    if isinstance(value, float) and value.is_integer() and "integer" in types and "number" not in types:
+        return int(value)
+    if isinstance(value, dict):
+        props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        return {k: coerce_integers(v, props[k], _depth + 1) if k in props else v for k, v in value.items()}
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        return [coerce_integers(v, schema["items"], _depth + 1) for v in value]
+    return value
+
+
+_CALL_KEYS = frozenset({"name", "arguments", "id", "type"})
+
+
 def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | None, list[tuple[str, dict]]]:
     """Check an envelope against the request's tools; return (content, [(name, arguments)]).
 
@@ -505,6 +538,10 @@ def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | N
     for i, call in enumerate(raw_calls, 1):
         if not isinstance(call, dict):
             raise ProtocolError(f"tool call {i} must be an object")
+        extra = sorted(set(call) - _CALL_KEYS)
+        if extra:
+            raise ProtocolError(f"tool call {i}: unknown key {json.dumps(extra[0][:64])}; "
+                                "use only name and arguments")
         name = call.get("name")
         if not isinstance(name, str) or not name:
             raise ProtocolError(f"tool call {i} has no 'name'")
@@ -520,7 +557,7 @@ def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | N
         problem = check_args(args, spec.tools[name]["parameters"])
         if problem:
             raise ProtocolError(f"tool call {i} ({name}): {problem}")
-        calls.append((name, args))
+        calls.append((name, coerce_integers(args, spec.tools[name]["parameters"])))
     if not calls and not (content or "").strip():
         raise ProtocolError("empty reply: give tool_calls or content")
     if spec.choice in ("required", "forced") and not calls:
@@ -628,7 +665,7 @@ def run_claude(prompt: str, model: str, claude_bin: str | list[str], timeout: fl
     stdout = out.decode("utf-8", errors="replace").strip()
     try:
         data = json.loads(stdout) if stdout else None
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # bad or absurdly nested JSON -> 502 below
         data = None
     if not isinstance(data, dict):
         raise GatewayError(502, f"claude CLI failed (exit {proc.returncode}, no JSON result)", "cli_error")

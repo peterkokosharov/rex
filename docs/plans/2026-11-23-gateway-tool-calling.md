@@ -229,6 +229,13 @@ a block (test `test_only_gateway_opens_tool_result_blocks`). Still to do: the in
 the diff, and one live run of the optional test by the maintainer:
 `REX_LIVE_CLAUDE=1 python -m pytest -q tests/test_claude_cli_gateway_e2e.py -k live` (4 short haiku calls).
 
+**Opus review (2026-11-23): PASS with findings; findings 6-11 fixed in one commit.** Tool descriptions and
+parameter JSON are escaped like tool results (MCP descriptions are untrusted). In tool results and descriptions,
+lines that look like gateway headers or labels (`[Reply]`, `[Tools]`, `User:`, `name:`, ...) get a `| ` prefix.
+Call keys other than `name`, `arguments`, `id`, `type` are rejected (retry). Unparsable or too deeply nested CLI
+stdout gives 502. For `integer`, 1.0 is accepted and passed on as 1; 1.5 is rejected. The example config and
+`RELEASE.md` no longer say "chat only". Still open: the maintainer's live run.
+
 Sources:
 - `claude -p ... --json-schema` live probe, Claude Code 2.1.328, model haiku (run 2026-11-23, 3 calls)
 - `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453; startup probe and process handling updated later the same day)
