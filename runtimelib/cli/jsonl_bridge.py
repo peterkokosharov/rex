@@ -40,7 +40,8 @@ across ``chat`` messages and is cleared only by ``reset``.
 Permissions: when the gate must ask, :class:`JsonlAsker` emits ``permission``
 and blocks the loop until the UI answers with ``permission_reply`` (same
 ``id``). The reply is read by the reader thread, so it works while ``chat`` is
-running. Anything but ``allow_once`` / ``allow_always`` is a deny. ``stop``,
+running. Anything but ``allow_once`` / ``allow_always`` is a deny; a reply with an
+unknown or already answered id gets ``error`` "unknown permission id: <id>". ``stop``,
 ``bye``, a closed stdin, or no answer within ``permissions.ask_timeout``
 seconds (default 300) deny every open question; ``stop`` (and ``bye`` during a
 request) also interrupts the loop. A question asked after the loop was
@@ -239,7 +240,8 @@ class JsonlBridge:
                 # through the queue (the main thread is inside loop.run()).
                 if item.get("type") == "permission_reply":
                     if not self.asker.reply(item.get("id"), item.get("decision")):
-                        sys.stderr.write(f"rex: unknown permission id: {item.get('id')!r}\n")
+                        # Unknown, late (timed out / denied by stop) or repeated id.
+                        self.emit("error", message=f"unknown permission id: {item.get('id')}")
                     continue
                 if item.get("type") == "bye":
                     # Interrupt first, then deny: a question asked in between

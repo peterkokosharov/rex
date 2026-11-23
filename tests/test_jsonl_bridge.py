@@ -376,12 +376,27 @@ def test_permission_allow_always_and_garbage_decision():
     assert bridge.loop.answer == "deny"
 
 
-def test_permission_unknown_id_is_ignored():
-    _, bridge, _ = _drive([
+def test_permission_unknown_id_gets_error():
+    _, bridge, events = _drive([
         {"type": "permission_reply", "id": "other", "decision": "allow_once"},
         {"type": "permission_reply", "id": "perm-1", "decision": "deny"},
     ])
     assert bridge.loop.answer == "deny"
+    assert {"type": "error", "message": "unknown permission id: other"} in events
+
+
+def test_permission_late_reply_gets_error():
+    """A reply after the question was closed (timeout, stop) is unknown too."""
+    stream, out = PipeStream(), WaitOut()
+    late = JsonlBridge(_config(), loop_factory=lambda b: FakeLoop(b), stream=stream, out=out)
+    thread = threading.Thread(target=late.run)
+    thread.start()
+    stream.feed({"type": "permission_reply", "id": "perm-1", "decision": "allow_once"})
+    assert out.wait_for("error") == {"type": "error", "message": "unknown permission id: perm-1"}
+    stream.feed({"type": "bye"})
+    stream.close()
+    thread.join(10)
+    assert not thread.is_alive()
 
 
 def test_permission_timeout_denies():
