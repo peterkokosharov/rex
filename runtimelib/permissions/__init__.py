@@ -17,6 +17,7 @@ from .base import (
 )
 from .policy import DefaultPermissionPolicy
 from .executor import PermissionCheckingExecutor, create_permission_executor
+from .rules import PermissionRules, Rule, RuleParseError, RuleVerdict, parse_rule
 
 __all__ = [
     "PermissionResult",
@@ -27,4 +28,9 @@ __all__ = [
     "DefaultPermissionPolicy",
     "PermissionCheckingExecutor",
     "create_permission_executor",
+    "PermissionRules",
+    "Rule",
+    "RuleParseError",
+    "RuleVerdict",
+    "parse_rule",
 ]
