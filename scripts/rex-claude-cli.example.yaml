@@ -1,0 +1,8 @@
+# rex config for scripts/claude_cli_gateway.py (Claude via the local Claude Code CLI, no API key).
+# Copy to ~/.config/runtime/config.yaml (or merge the liteLLM block into it).
+# Chat only: the gateway ignores tools and never returns tool_calls.
+liteLLM:
+  base_url: "http://127.0.0.1:4000"
+  api_key: "dummy"
+  model: "haiku"
+  timeout: 300

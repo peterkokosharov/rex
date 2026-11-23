@@ -169,6 +169,29 @@ cli:
   compact_ratio: 0.9             # 0.9 = compact at 90% of the window
 ```
 
+### Run with Claude Code CLI (no API key, chat only, no tools)
+
+`scripts/claude_cli_gateway.py` is a small stdlib-only OpenAI-compatible gateway that answers
+`/v1/models` and `/v1/chat/completions` by running the locally logged-in `claude` CLI
+(`claude -p --model <m> --output-format json --tools ""`, prompt on stdin). No API key is needed.
+
+- Binds to `127.0.0.1` only; default port 4000; any `Authorization` header is accepted.
+- Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6`.
+- Chat only: Claude's own tools are disabled, request `tools` are ignored, `tool_calls` are never returned,
+  so rex's agent tools will not run through this backend.
+- `stream: true` is answered as SSE (one content chunk, a stop chunk, `[DONE]`).
+- Logs only method, path, model, duration and status. Timeout per call: `--timeout` (default 300 s).
+- The CLI still loads your user-level Claude Code settings and `CLAUDE.md`, which can change the reply style.
+
+```bash
+python3 scripts/claude_cli_gateway.py --port 4000 --default-model haiku
+
+# second terminal
+RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:4000 RUNTIME_LITELLM__API_KEY=dummy RUNTIME_LITELLM__MODEL=haiku python3 -m runtime
+```
+
+Or copy `scripts/rex-claude-cli.example.yaml` to `~/.config/runtime/config.yaml`.
+
 ### JSON-lines bridge for external UIs (`--jsonl`)
 
 An external front-end (for example the C++ Turbo Vision UI `Layka`) can spawn rex as a background process and drive it

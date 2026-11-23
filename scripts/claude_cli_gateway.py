@@ -1,0 +1,325 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: claude-opus-5-5
+# Licensed under MIT License
+
+"""Tiny OpenAI-compatible gateway in front of the local Claude Code CLI.
+
+Lets rex (or any OpenAI-compatible client) chat with a Claude model through the
+locally logged-in `claude` CLI, without an API key. Chat only: Claude's own
+tools are disabled, request `tools` are ignored, `tool_calls` are never returned.
+
+Usage:
+    python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku]
+
+Binds to 127.0.0.1 only. Logs method, path, model, duration and status only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+
+HOST = "127.0.0.1"
+DEFAULT_PORT = 4000
+DEFAULT_MODEL = "haiku"
+DEFAULT_TIMEOUT = 300.0
+ALIASES = ("haiku", "sonnet", "opus")
+MAX_BODY = 32 * 1024 * 1024
+
+
+class GatewayError(Exception):
+    """Error that maps to an OpenAI-style error response."""
+
+    def __init__(self, status: int, message: str, err_type: str = "gateway_error") -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.err_type = err_type
+
+
+def valid_model(name: str) -> bool:
+    """Accept CLI aliases and full ids like claude-sonnet-4-6."""
+    if name in ALIASES:
+        return True
+    return name.startswith("claude-") and all(c.isalnum() or c in "-._[]" for c in name)
+
+
+def _content_text(content: Any) -> str:
+    """Return plain text from an OpenAI message content (string or parts list)."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text", "")))
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return str(content)
+
+
+def flatten_messages(messages: list[dict[str, Any]]) -> str:
+    """Flatten chat messages into one prompt for `claude -p`."""
+    system_parts: list[str] = []
+    turns: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "user")
+        text = _content_text(msg.get("content"))
+        if role in ("system", "developer"):
+            if text:
+                system_parts.append(text)
+            continue
+        if role == "assistant":
+            calls = msg.get("tool_calls") or []
+            for call in calls:
+                fn = call.get("function", {}) if isinstance(call, dict) else {}
+                text += f"\n[called tool {fn.get('name', '?')} with {fn.get('arguments', '')}]"
+            label = "Assistant"
+        elif role == "tool":
+            label = "Tool result"
+        else:
+            label = "User"
+        if text.strip():
+            turns.append(f"{label}: {text.strip()}")
+
+    out: list[str] = []
+    if system_parts:
+        out.append("[System instructions]\n" + "\n\n".join(system_parts))
+    if len(turns) == 1 and turns[0].startswith("User: "):
+        out.append(turns[0][len("User: "):])
+    elif turns:
+        out.append("[Conversation so far]\n" + "\n\n".join(turns)
+                   + "\n\n[Reply as the Assistant to the last User message. Plain text only; no tools are available.]")
+    return "\n\n".join(out)
+
+
+def build_command(claude_bin: str, model: str) -> list[str]:
+    """Argument list for one non-interactive, tool-less Claude call."""
+    return [
+        claude_bin, "-p",
+        "--model", model,
+        "--output-format", "json",
+        "--tools", "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+    ]
+
+
+def run_claude(prompt: str, model: str, claude_bin: str, timeout: float) -> dict[str, Any]:
+    """Run the CLI with the prompt on stdin; return {'text', 'usage'}."""
+    cmd = build_command(claude_bin, model)
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt.encode("utf-8"),
+            capture_output=True,
+            timeout=timeout,
+            cwd=tempfile.gettempdir(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise GatewayError(504, f"claude CLI timed out after {timeout:.0f}s", "timeout")
+    except OSError as exc:
+        raise GatewayError(502, f"cannot start claude CLI: {exc.__class__.__name__}", "cli_unavailable")
+
+    stdout = proc.stdout.decode("utf-8", errors="replace").strip()
+    try:
+        data = json.loads(stdout) if stdout else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        raise GatewayError(502, f"claude CLI failed (exit {proc.returncode}, no JSON result)", "cli_error")
+    if data.get("is_error") or proc.returncode != 0:
+        detail = str(data.get("result") or data.get("subtype") or "unknown error")[:300]
+        raise GatewayError(502, f"claude CLI error (exit {proc.returncode}): {detail}", "cli_error")
+    usage = data.get("usage") or {}
+    return {"text": str(data.get("result") or ""), "usage": usage}
+
+
+def _openai_usage(usage: dict[str, Any]) -> dict[str, int]:
+    prompt = int(usage.get("input_tokens", 0) or 0) + int(usage.get("cache_read_input_tokens", 0) or 0) \
+        + int(usage.get("cache_creation_input_tokens", 0) or 0)
+    completion = int(usage.get("output_tokens", 0) or 0)
+    return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+
+
+def completion_body(text: str, model: str, usage: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": "chatcmpl-" + uuid.uuid4().hex,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+        "usage": _openai_usage(usage),
+    }
+
+
+def sse_events(text: str, model: str) -> list[bytes]:
+    """SSE chunks rex can parse: role+content chunk, stop chunk, [DONE].
+
+    rex builds ChatCompletionChunk(**chunk), so chunks carry only
+    id/object/created/model/choices.
+    """
+    cid = "chatcmpl-" + uuid.uuid4().hex
+    created = int(time.time())
+
+    def chunk(delta: dict[str, Any], finish: str | None) -> bytes:
+        body = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        return b"data: " + json.dumps(body).encode("utf-8") + b"\n\n"
+
+    return [
+        chunk({"role": "assistant", "content": text}, None),
+        chunk({}, "stop"),
+        b"data: [DONE]\n\n",
+    ]
+
+
+def error_body(message: str, err_type: str) -> dict[str, Any]:
+    return {"error": {"message": message, "type": err_type, "code": err_type}}
+
+
+class GatewayHandler(BaseHTTPRequestHandler):
+    server_version = "claude-cli-gateway/1"
+    # Set on the server instance: default_model, claude_bin, timeout, runner.
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        pass  # default access log is replaced by _log (no bodies, no headers)
+
+    def _log(self, model: str, started: float, status: int) -> None:
+        ms = (time.monotonic() - started) * 1000
+        sys.stderr.write(f"{self.command} {self.path} model={model or '-'} {ms:.0f}ms status={status}\n")
+
+    def _send_json(self, status: int, body: dict[str, Any]) -> None:
+        data = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self) -> None:  # noqa: N802
+        started = time.monotonic()
+        path = self.path.split("?", 1)[0].rstrip("/")
+        if path in ("/v1/models", "/models"):
+            now = int(time.time())
+            models = list(ALIASES)
+            if self.server.default_model not in models:
+                models.append(self.server.default_model)
+            body = {"object": "list", "data": [
+                {"id": m, "object": "model", "created": now, "owned_by": "claude-cli"} for m in models]}
+            self._send_json(200, body)
+            self._log("", started, 200)
+        elif path == "/health":
+            self._send_json(200, {"status": "ok"})
+            self._log("", started, 200)
+        else:
+            self._send_json(404, error_body("not found", "not_found"))
+            self._log("", started, 404)
+
+    def do_POST(self) -> None:  # noqa: N802
+        started = time.monotonic()
+        path = self.path.split("?", 1)[0].rstrip("/")
+        model = ""
+        if path not in ("/v1/chat/completions", "/chat/completions"):
+            self._send_json(404, error_body("not found", "not_found"))
+            self._log(model, started, 404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_BODY:
+                raise GatewayError(400, "missing or too large request body", "invalid_request_error")
+            try:
+                req = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise GatewayError(400, "request body is not valid JSON", "invalid_request_error")
+            if not isinstance(req, dict) or not isinstance(req.get("messages"), list):
+                raise GatewayError(400, "'messages' must be a list", "invalid_request_error")
+            model = str(req.get("model") or self.server.default_model)
+            if not valid_model(model):
+                raise GatewayError(400, f"unknown model '{model}' (use haiku/sonnet/opus or a claude-* id)",
+                                   "invalid_request_error")
+            prompt = flatten_messages(req["messages"])
+            if not prompt.strip():
+                raise GatewayError(400, "no text in messages", "invalid_request_error")
+            result = self.server.runner(prompt, model, self.server.claude_bin, self.server.timeout)
+        except GatewayError as exc:
+            self._send_json(exc.status, error_body(exc.message, exc.err_type))
+            self._log(model, started, exc.status)
+            return
+
+        if req.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for event in sse_events(result["text"], model):
+                self.wfile.write(event)
+            self.wfile.flush()
+            self.close_connection = True
+        else:
+            self._send_json(200, completion_body(result["text"], model, result["usage"]))
+        self._log(model, started, 200)
+
+
+def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
+                claude_bin: str | None = None, timeout: float = DEFAULT_TIMEOUT,
+                runner: Any = None) -> ThreadingHTTPServer:
+    """Create the server bound to 127.0.0.1 (never another interface)."""
+    server = ThreadingHTTPServer((HOST, port), GatewayHandler)
+    server.daemon_threads = True
+    server.default_model = default_model
+    server.claude_bin = claude_bin or shutil.which("claude") or "claude"
+    server.timeout = timeout
+    server.runner = runner or run_claude
+    return server
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="OpenAI-compatible gateway to the local Claude Code CLI")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--default-model", default=DEFAULT_MODEL,
+                        help="haiku, sonnet, opus or a full id like claude-sonnet-4-6")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds per CLI call")
+    args = parser.parse_args(argv)
+    if not valid_model(args.default_model):
+        parser.error(f"invalid --default-model '{args.default_model}'")
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        print("claude CLI not found on PATH", file=sys.stderr)
+        return 2
+    server = make_server(args.port, args.default_model, claude_bin, args.timeout)
+    print(f"claude-cli-gateway on http://{HOST}:{args.port}/v1 (default model {args.default_model})",
+          file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
