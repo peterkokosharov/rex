@@ -125,14 +125,16 @@ def main() -> int:
 
 
 # Bidi controls and zero-width characters can reorder or hide text on screen.
-_INVISIBLE = set(range(0x200B, 0x2010)) | set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0xFEFF}
+_INVISIBLE = (set(range(0x200B, 0x2010)) | set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+              | {0xFEFF, 0x2028, 0x2029, 0x061C, 0x180E})
 
 
 def _printable(text: Any) -> str:
     """``text`` with control characters (except newline and tab) shown as escapes.
 
     C0/C1 controls become ``\\xNN``; bidi controls and zero-width characters
-    (U+200B-200F, U+202A-202E, U+2066-2069, U+FEFF) become ``\\uXXXX``.
+    (U+200B-200F, U+202A-202E, U+2066-2069, U+FEFF), line/paragraph
+    separators (U+2028, U+2029), U+061C and U+180E become ``\\uXXXX``.
     """
     out = []
     for ch in str(text):

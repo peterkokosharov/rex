@@ -499,6 +499,7 @@ def test_terminal_asker_escapes_bidi_and_zero_width():
     text = "rm\u202e/\u2066x\u2069\u200b\u200f\ufeff\u202a ok \u00e9"
     assert _printable(text) == "rm\\u202e/\\u2066x\\u2069\\u200b\\u200f\\ufeff\\u202a ok \u00e9"
     assert _printable("\u2010-\u2065") == "\u2010-\u2065"  # neighbours stay
+    assert _printable("a\u2028b\u2029c\u061cd\u180ee") == "a\\u2028b\\u2029c\\u061cd\\u180ee"
 
 
 def test_terminal_asker_answers():
