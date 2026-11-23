@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Git tool using guard client."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolSchema
@@ -115,7 +116,9 @@ class GitTool(Tool):
 
     def _exec_local(self, operation: str, **kwargs: Any) -> Any:
         import subprocess
-        cwd = kwargs.pop("cwd", ".")
+        from .fileops import resolve_in_workspace
+        root = Path.cwd().resolve()
+        cwd = resolve_in_workspace(kwargs.pop("cwd", ".") or ".", root)
 
         def run(args: list[str]) -> dict[str, Any]:
             p = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
@@ -153,15 +156,34 @@ class GitTool(Tool):
                 args.append("-a")
             return run(args)
         if operation == "checkout":
-            branch = kwargs.get("branch", "")
-            if not isinstance(branch, str) or not branch or branch.startswith("-"):
-                raise ValueError(f"invalid branch name: {branch!r}")
-            args = ["git", "checkout"]
+            branch = _safe_branch(kwargs.get("branch", ""), cwd)
+            # `git switch` only ever changes branches. `git checkout <x>`
+            # with x = "." or a file path would discard uncommitted work.
+            args = ["git", "switch"]
             if kwargs.get("create"):
-                args.append("-b")
+                args.append("-c")
             args.append(branch)
             return run(args)
         raise ValueError(f"Unknown git operation: {operation}")
+
+
+def _safe_branch(branch: Any, cwd: Path) -> str:
+    """Branch name for `git switch`; option-like and path-like names are rejected."""
+    if not isinstance(branch, str) or not branch.strip():
+        raise ValueError(f"invalid branch name: {branch!r}")
+    if (
+        branch.startswith(("-", "/", "~"))
+        or branch in (".", "..")
+        or ".." in branch
+        or "\\" in branch
+        or ":" in branch
+        or branch.endswith(("/", "."))
+        or any(c.isspace() or ord(c) < 32 for c in branch)
+    ):
+        raise ValueError(f"invalid branch name: {branch!r}")
+    if (cwd / branch).exists():
+        raise ValueError(f"branch name is an existing path, refusing: {branch!r}")
+    return branch
 
 
 def _safe_files(files: Any) -> list[str]:

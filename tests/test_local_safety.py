@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -212,6 +213,58 @@ def test_git_rejects_option_branch():
         with pytest.raises(ValueError):
             GitTool(LOCAL).execute(operation="checkout", branch="--orphan")
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", [".", "..", "src/a.py", "src", "../x", "a..b", "/abs", "C:foo", "x y"])
+def test_git_checkout_rejects_path_like_branch(workspace, bad):
+    with mock.patch("subprocess.run") as run:
+        with pytest.raises(ValueError):
+            GitTool(LOCAL).execute(operation="checkout", branch=bad)
+    run.assert_not_called()
+
+
+def test_git_checkout_uses_switch(workspace):
+    with mock.patch("subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        GitTool(LOCAL).execute(operation="checkout", branch="feature/x")
+        assert run.call_args[0][0] == ["git", "switch", "feature/x"]
+        GitTool(LOCAL).execute(operation="checkout", branch="new", create=True)
+        assert run.call_args[0][0] == ["git", "switch", "-c", "new"]
+    assert Path(run.call_args[1]["cwd"]) == workspace.resolve()
+
+
+def test_git_checkout_dot_keeps_work(tmp_path, monkeypatch):
+    """Real repo: `checkout .` must not discard an uncommitted change."""
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    monkeypatch.chdir(tmp_path)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], check=True)
+    (tmp_path / "f.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "c"], check=True)
+    (tmp_path / "f.txt").write_text("changed\n", encoding="utf-8")
+    for bad in (".", "f.txt"):
+        with pytest.raises(ValueError):
+            GitTool(LOCAL).execute(operation="checkout", branch=bad)
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "changed\n"
+
+
+@pytest.mark.parametrize("bad", ["..", "../", "/etc", "C:/Windows", "C:foo", "\\\\?\\C:\\Windows"])
+def test_git_and_bash_cwd_confined(workspace, bad):
+    with mock.patch("subprocess.run") as run:
+        with pytest.raises(PermissionError):
+            GitTool(LOCAL).execute(operation="status", cwd=bad)
+        out = BashTool(LOCAL).execute(command="echo hi", description="t", cwd=bad)
+    run.assert_not_called()
+    assert out["exit_code"] != 0
+
+
+def test_bash_cwd_inside_workspace(workspace):
+    with mock.patch("subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        BashTool(LOCAL).execute(command="echo hi", description="t", cwd="src")
+    assert Path(run.call_args[1]["cwd"]) == (workspace / "src").resolve()
 
 
 def test_git_files_after_separator():

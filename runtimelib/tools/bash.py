@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Bash execution tool using guard client."""
@@ -78,7 +78,12 @@ class BashTool(Tool):
         import subprocess
         command = kwargs["command"]
         timeout = kwargs.get("timeout", 30)
-        cwd = kwargs.get("cwd", ".")
+        from pathlib import Path
+        from .fileops import resolve_in_workspace
+        try:
+            cwd = resolve_in_workspace(kwargs.get("cwd", ".") or ".", Path.cwd().resolve())
+        except (PermissionError, ValueError) as e:
+            return {"exit_code": 1, "stdout": "", "stderr": f"[bash: {e}]"}
         if blocks_git_push(command):
             return {
                 "exit_code": 1,
