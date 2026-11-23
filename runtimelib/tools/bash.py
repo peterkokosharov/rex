@@ -116,6 +116,9 @@ _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIA
                       "AUTH", "COOKIE", "DATABASE_URL")
 _SECRET_SUFFIXES = ("_PAT",)
 _SECRET_PREFIXES = ("RUNTIME_LITELLM", "LITELLM")
+# Exact names that match a secret pattern but are needed and hold no secret
+# themselves (XAUTHORITY is the path X11 GUI programs need to find their cookie).
+_NOT_SECRET_NAMES = frozenset({"XAUTHORITY"})
 
 # `git push` check. This is a guard rail against an accidental push by the
 # model, NOT a security boundary: aliases, scripts or `sh -c` with quoting
@@ -125,6 +128,8 @@ _GIT_PUSH_RE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
 
 def is_secret_env_name(name: str) -> bool:
     upper = name.upper()
+    if upper in _NOT_SECRET_NAMES:
+        return False
     return (
         upper.startswith(_SECRET_PREFIXES)
         or upper.endswith(_SECRET_SUFFIXES)

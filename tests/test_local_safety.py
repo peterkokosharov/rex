@@ -633,10 +633,12 @@ def test_env_scrub_more_secret_shapes():
         "SESSION_COOKIE": "x", "DATABASE_URL": "postgres://u:p@h/db", "MY_DATABASE_URL": "x",
         "HTTPS_PROXY": "http://user:pw@proxy:8080", "http_proxy": "http://u:p@proxy:3128",
         "NO_PROXY": "localhost", "HTTP_PROXY_PLAIN": "x", "ALL_PROXY": "http://proxy:3128",
-        "PATCH_LEVEL": "1", "COMPATH": "x",
+        "PATCH_LEVEL": "1", "COMPATH": "x", "XAUTHORITY": "/run/user/1000/xauth",
+        "MY_XAUTHORITY_TOKEN": "x",
     }
     env = scrubbed_env(base)
-    assert set(env) == {"PATH", "NO_PROXY", "HTTP_PROXY_PLAIN", "ALL_PROXY", "PATCH_LEVEL", "COMPATH"}
+    assert set(env) == {"PATH", "NO_PROXY", "HTTP_PROXY_PLAIN", "ALL_PROXY", "PATCH_LEVEL", "COMPATH",
+                        "XAUTHORITY"}
 
 
 # ---------------------------------------------------------------- config masking (more shapes)
