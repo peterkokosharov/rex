@@ -493,6 +493,14 @@ def test_one_shot_asker_needs_a_terminal():
     assert one_shot_asker(False, object(), Tty()) is None       # no isatty at all
 
 
+def test_terminal_asker_escapes_bidi_and_zero_width():
+    from runtime.__main__ import _printable
+
+    text = "rm\u202e/\u2066x\u2069\u200b\u200f\ufeff\u202a ok \u00e9"
+    assert _printable(text) == "rm\\u202e/\\u2066x\\u2069\\u200b\\u200f\\ufeff\\u202a ok \u00e9"
+    assert _printable("\u2010-\u2065") == "\u2010-\u2065"  # neighbours stay
+
+
 def test_terminal_asker_answers():
     from runtime.__main__ import TerminalAsker
 

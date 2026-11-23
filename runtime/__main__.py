@@ -124,12 +124,22 @@ def main() -> int:
     return run_interactive(registry, config)
 
 
+# Bidi controls and zero-width characters can reorder or hide text on screen.
+_INVISIBLE = set(range(0x200B, 0x2010)) | set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0xFEFF}
+
+
 def _printable(text: Any) -> str:
-    """``text`` with control characters (except newline and tab) shown as escapes."""
+    """``text`` with control characters (except newline and tab) shown as escapes.
+
+    C0/C1 controls become ``\\xNN``; bidi controls and zero-width characters
+    (U+200B-200F, U+202A-202E, U+2066-2069, U+FEFF) become ``\\uXXXX``.
+    """
     out = []
     for ch in str(text):
         code = ord(ch)
-        if ch in "\n\t" or not (code < 32 or 0x7F <= code <= 0x9F):
+        if code in _INVISIBLE:
+            out.append(f"\\u{code:04x}")
+        elif ch in "\n\t" or not (code < 32 or 0x7F <= code <= 0x9F):
             out.append(ch)
         elif ch == "\r":
             out.append("\\r")
