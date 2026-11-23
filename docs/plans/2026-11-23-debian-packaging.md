@@ -95,8 +95,9 @@ rex's job pulls kikolib, layka's pulls kikolib + rex, and so on. Sisi keeps its 
 | 7 | lassie | add build-system to pyproject; `build-deb.sh` (`/usr/share/lassie`, wrapper with `LASSIE_REX_DIR`, Arch all); first tag | `lassie --help` works after install; page served on 127.0.0.1 in the smoke test |
 | 8 | all | independent Opus review of the packaging diff in each repo before its tag | review findings fixed or recorded |
 
-Open question for the owner (only one): step 1 - a separate public repo `kikolib`, or kikolib as a folder of the
-kiko repo? Recommendation: separate repo (two consumers, smallest release unit).
+Decision (owner, 2026-11-23): kikolib lives in the kiko repo, which is its single source of truth and builds the
+`python3-kikolib` deb; rex takes kikolib from there (deb dependency, and a pinned copy from a kiko release for the
+source checkout / Windows / macOS / Docker). No separate kikolib repo.
 
 ## Sources
 
