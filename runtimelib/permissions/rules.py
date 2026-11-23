@@ -20,7 +20,10 @@ Precedence: deny > ask > allow > mode default. Compound bash commands are split
 on ``&&``, ``||``, ``;``, ``|``, ``&`` and newlines (quote aware): any part that
 hits deny denies, any part that hits ask asks, "allow" needs every part allowed.
 A command whose text contains a newline or CR is never auto-allowed (always
-at least ask). The splitter understands comments, ``$'...'`` and line
+at least ask). A command over 16 KB, with more than 256 parts, more than 32
+substitutions or substitutions nested deeper than 8 is "too complex to check":
+it is decided before any full scan, never allowed, and denied only when a
+deny rule hits its first 4 KB; otherwise it asks. The splitter understands comments, ``$'...'`` and line
 continuations and fails closed: an open quote or a part that cannot be split
 into words is never auto-allowed. The deny pass also splits a quote-blind
 copy of the command.
@@ -445,7 +448,7 @@ def writes_file(part: str) -> bool:
     return False
 
 
-MAX_NEST_DEPTH = 6
+MAX_NEST_DEPTH = 8
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "mksh", "fish", "csh", "tcsh"}
 # Programs that run code they read from stdin or an argument.
 _INTERPRETERS = _SHELLS | {
@@ -566,34 +569,84 @@ def _strip_wrappers(words: list[str]) -> list[str]:
     return out
 
 
-def _substitution_bodies(command: str) -> list[str]:
-    """Bodies of ``$(...)``, ``<(...)``, ``>(...)`` and backticks, ignoring quoting.
+MAX_BODIES = 32
+MAX_SUBST_DEPTH = 8
+MAX_COMMAND_CHARS = 16 * 1024
+MAX_PARTS = 256
+# A too-complex command is checked against deny rules on this prefix only.
+PREFIX_SCAN_CHARS = 4096
 
-    Quotes are deliberately not honoured: a body inside single quotes is
-    harmless but checking it too only makes deny stricter.
+
+def _substitutions(command: str, limit: int = MAX_BODIES) -> tuple[list[str], int, int]:
+    """Substitution bodies, ignoring quoting: (first ``limit`` bodies, count, max depth).
+
+    ``$(...)``, ``<(...)``, ``>(...)`` and backticks, at any nesting level, in
+    order of their start; one linear pass. Quotes are deliberately not
+    honoured: a body inside single quotes is harmless but checking it too
+    only makes deny stricter.
     """
-    bodies: list[str] = []
+    spans: list[tuple[int, int]] = []
+    stack: list[tuple[int, bool]] = []  # (body start, is a substitution)
+    depth = max_depth = 0
+    tick: int | None = None
     i, n = 0, len(command)
     while i < n:
         if command.startswith(("$(", "<(", ">("), i):
-            j, depth = i + 2, 1
-            while j < n and depth:
-                if command[j] == "(":
-                    depth += 1
-                elif command[j] == ")":
-                    depth -= 1
-                j += 1
-            bodies.append(command[i + 2:j - 1 if depth == 0 else j])
-            i += 2  # keep scanning inside: nested bodies are collected in this one pass
+            stack.append((i + 2, True))
+            depth += 1
+            max_depth = max(max_depth, depth)
+            i += 2
             continue
-        if command[i] == "`":
-            j = command.find("`", i + 1)
-            end = n if j < 0 else j
-            bodies.append(command[i + 1:end])
-            i = end + 1
-            continue
+        c = command[i]
+        if c == "(":
+            stack.append((i + 1, False))
+        elif c == ")" and stack:
+            start, sub = stack.pop()
+            if sub:
+                spans.append((start, i))
+                depth -= 1
+        elif c == "`":
+            if tick is None:
+                tick = i + 1
+            else:
+                spans.append((tick, i))
+                tick = None
         i += 1
-    return [b for b in bodies if b.strip()]
+    spans.extend((start, n) for start, sub in stack if sub)  # unclosed: to the end
+    if tick is not None:
+        spans.append((tick, n))
+    spans.sort()
+    bodies: list[str] = []
+    for start, end in spans:
+        if len(bodies) >= limit:
+            break
+        if command[start:end].strip():
+            bodies.append(command[start:end])
+    return bodies, len(spans), max_depth
+
+
+def _substitution_bodies(command: str) -> list[str]:
+    """The first :data:`MAX_BODIES` substitution bodies (see :func:`_substitutions`)."""
+    return _substitutions(command)[0]
+
+
+def too_complex(command: str) -> str:
+    """Why ``command`` is too complex to check (then it is never auto-allowed), or ``""``.
+
+    Cheap, linear checks only; :meth:`PermissionRules.evaluate` runs them
+    before any full scan. Separators are counted quote-blind (over-counting
+    only makes the limit stricter).
+    """
+    if len(command) > MAX_COMMAND_CHARS:
+        return f"longer than {MAX_COMMAND_CHARS // 1024} KB"
+    if len(re.findall(r"&&|\|\||[;|&\n\r]", command)) + 1 > MAX_PARTS:
+        return f"more than {MAX_PARTS} parts"
+    _, count, depth = _substitutions(command, limit=0)
+    if count > MAX_BODIES:
+        return f"more than {MAX_BODIES} substitutions"
+    if depth > MAX_SUBST_DEPTH:
+        return f"substitutions nested deeper than {MAX_SUBST_DEPTH}"
+    return ""
 
 
 def _shell_c_arg(words: list[str]) -> str | None:
@@ -733,13 +786,13 @@ def deny_subjects(command: str) -> tuple[list[str], bool]:
     same way; that nesting is followed up to :data:`MAX_NEST_DEPTH` levels,
     deeper nesting sets ``too_deep`` (the caller then never auto-allows).
     """
-    seen: list[str] = []
+    seen: dict[str, None] = {}  # ordered set: membership must stay O(1)
     too_deep = False
 
     def add(text: str) -> None:
         text = text.strip()
-        if text and text not in seen:
-            seen.append(text)
+        if text:
+            seen.setdefault(text, None)
 
     def walk(command: str, depth: int) -> None:
         nonlocal too_deep
@@ -782,7 +835,7 @@ def deny_subjects(command: str) -> tuple[list[str], bool]:
             walk(text, depth + 1)
 
     walk(command, 0)
-    return seen, too_deep
+    return list(seen), too_deep
 
 
 def allow_blocker(part: str, sep: str = "") -> str:
@@ -1132,6 +1185,18 @@ class PermissionRules:
         """Decide one tool call. Precedence: deny > ask > allow > mode default."""
         args = args or {}
         kind = classify(tool, args)
+        if tool == "bash":
+            # Size first: no full scan of a command that is too big or too
+            # nested to check in bounded time. Never ALLOW; DENY only when a
+            # cheap scan of the beginning already hits a deny rule.
+            command = str(args.get("command", ""))
+            why = too_complex(command)
+            if why:
+                prefix_subjects = deny_subjects(command[:PREFIX_SCAN_CHARS])[0]
+                for rule in self.deny:
+                    if any(rule.matches_subject(tool, s) for s in prefix_subjects):
+                        return RuleVerdict(DENY, kind, "deny", rule.text, f"Permission denied (rule {rule.text})")
+                return RuleVerdict(ASK, kind, "unsafe", None, f"Command too complex to check ({why})")
         subjects = _subjects(tool, args, self.workspace)
         unsafe = ""
         strict_subjects = subjects
@@ -1207,6 +1272,8 @@ class PermissionRules:
     def exact_rules(self, tool: str, args: dict[str, Any] | None) -> list[str]:
         """Exact rule strings that would allow precisely this call (one per bash part)."""
         args = args or {}
+        if tool == "bash" and too_complex(str(args.get("command", ""))):
+            return []  # never store rules for a command too complex to check
         subjects = _subjects(tool, args, self.workspace)
         if tool == "webfetch":
             host = _host(subjects[0])

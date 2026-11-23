@@ -327,6 +327,45 @@ class BashTests(unittest.TestCase):
         self.assertEqual(split_bash('echo "a\\\nb"')[0], ['echo "ab"'])
         self.assertEqual(split_bash("echo 'a\\\nb'; ls")[0], ["echo 'a\\\nb'", "ls"])
 
+    def _timed(self, pr, cmd, mode="guard"):
+        import time
+        start = time.perf_counter()
+        v = pr.evaluate("bash", bash(cmd), mode)
+        self.assertLess(time.perf_counter() - start, 1.0, f"took too long ({len(cmd)} chars)")
+        return v
+
+    def test_complexity_cap_timing_shapes(self):
+        pr = rules({"allow": ["bash(echo *)"], "deny": ["bash(rm *)"]})
+        shapes = {
+            "unclosed quote 200 KB": "echo '" + "a" * 200_000,
+            "3000 nested $(": "echo " + "$(" * 3000 + "x" + ")" * 3000,
+            "20000 parts": ";".join(["echo hi"] * 20_000),
+        }
+        for name, cmd in shapes.items():
+            with self.subTest(shape=name):
+                v = self._timed(pr, cmd)
+                self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+                self.assertIn("too complex", v.reason)
+                self.assertEqual(pr.exact_rules("bash", bash(cmd)), [])
+
+    def test_complexity_cap_prefix_deny(self):
+        pr = rules({"deny": ["bash(rm *)"]})
+        for cmd in ("rm -rf /; " + "echo hi;" * 20_000,
+                    "echo $(rm -rf /) " + "$(" * 3000 + ")" * 3000,
+                    "rm -rf / " + "x" * 20_000):
+            with self.subTest(cmd=cmd[:30]):
+                self.assertEqual(self._timed(pr, cmd).decision, R.DENY)
+
+    def test_complexity_limits(self):
+        from runtimelib.permissions.rules import too_complex
+        self.assertEqual(too_complex("echo hi; ls"), "")
+        self.assertIn("KB", too_complex("x" * (16 * 1024 + 1)))
+        self.assertIn("parts", too_complex(";".join(["a"] * 257)))
+        self.assertEqual(too_complex(";".join(["a"] * 256)), "")
+        self.assertIn("substitutions", too_complex(" ".join(["$(a)"] * 33)))
+        self.assertIn("nested", too_complex("$(" * 9 + ")" * 9))
+        self.assertEqual(too_complex("$(" * 8 + ")" * 8), "")
+
     def test_comments_and_ansi_c_quotes(self):
         self.assertEqual(split_bash("echo hi # it's; rm x\nls")[0], ["echo hi", "ls"])
         self.assertEqual(split_bash("echo a#b; ls")[0], ["echo a#b", "ls"])
