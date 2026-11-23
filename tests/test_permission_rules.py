@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Tests for the configurable permission rule engine."""
@@ -180,6 +180,17 @@ class BashTests(unittest.TestCase):
 
     def test_empty_command_uses_default(self):
         self.assertEqual(rules().evaluate("bash", bash(""), "local").decision, R.ASK)
+
+    def test_env_never_auto_allowed(self):
+        pr = rules()
+        call = {"command": "pytest -q", "env": {"PYTHONPATH": "/evil"}}
+        v = pr.evaluate("bash", call, "local")
+        self.assertEqual((v.decision, v.source), (R.ASK, "unsafe"))
+        self.assertIn("environment", v.reason)
+        self.assertEqual(pr.evaluate("bash", call, "guard").decision, R.ASK)
+        self.assertEqual(pr.evaluate("bash", {"command": "pytest -q", "env": {}}, "local").decision, R.ALLOW)
+        deny = {"command": "rm -rf /", "env": {"A": "1"}}
+        self.assertEqual(pr.evaluate("bash", deny, "guard").decision, R.DENY)
 
 
 class PathTests(unittest.TestCase):

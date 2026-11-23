@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Base tool classes."""
@@ -28,7 +28,18 @@ def default_describe(name: str, args: dict[str, Any]) -> tuple[str, str]:
     args = {k: v for k, v in args.items() if not str(k).startswith("_")}
     if name == "bash":
         command = str(args.get("command", ""))
-        return "bash: " + _clip(command.splitlines()[0] if command else "", 120), command
+        summary = "bash: " + _clip(command.splitlines()[0] if command else "", 120)
+        detail = command
+        cwd = args.get("cwd")
+        if cwd not in (None, "", "."):
+            summary += f" (cwd: {_clip(cwd, 60)})"
+            detail += f"\n\ncwd: {cwd}"
+        env = args.get("env")
+        if env:
+            items = list(env.items()) if isinstance(env, dict) else [("?", env)]
+            summary += " (env: " + _clip(", ".join(str(k) for k, _ in items), 60) + ")"
+            detail += "\n\nenv:" + "".join(f"\n  {k}={v}" for k, v in items)
+        return summary, detail
     if name == "fileops":
         op = str(args.get("operation") or args.get("op") or "read")
         path = str(args.get("path", ""))

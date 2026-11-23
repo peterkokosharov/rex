@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Configurable permission rules (allow / ask / deny) for tool calls.
@@ -481,11 +481,15 @@ class PermissionRules:
         args = args or {}
         kind = classify(tool, args)
         subjects = _subjects(tool, args, self.workspace)
-        unsafe = False
+        unsafe = ""
         deny_subjects = subjects
         if tool == "bash":
             command = str(args.get("command", ""))
-            unsafe = split_bash(command)[1]
+            if split_bash(command)[1]:
+                unsafe = "Command substitution is never auto-allowed"
+            elif args.get("env"):
+                # Extra variables (PATH, LD_PRELOAD, GIT_SSH_COMMAND ...) change what runs.
+                unsafe = "A command with extra environment variables is never auto-allowed"
             deny_subjects = _deny_parts(command)
 
         for rule in self.deny:
@@ -502,13 +506,12 @@ class PermissionRules:
             allowed_by = next((r for r in self.allow if r.tool_matches(tool) and r.spec is None), None)
         if allowed_by is not None:
             if unsafe:
-                return RuleVerdict(ASK, kind, "unsafe", allowed_by.text,
-                                   "Command substitution is never auto-allowed")
+                return RuleVerdict(ASK, kind, "unsafe", allowed_by.text, unsafe)
             return RuleVerdict(ALLOW, kind, "allow", allowed_by.text)
 
         decision = mode_default(mode, kind, self.defaults)
         if unsafe and decision == ALLOW:
-            return RuleVerdict(ASK, kind, "unsafe", None, "Command substitution is never auto-allowed")
+            return RuleVerdict(ASK, kind, "unsafe", None, unsafe)
         return RuleVerdict(decision, kind, "default", None, f"{mode} default for {kind}")
 
     def _allowed(self, tool: str, subject: str) -> Rule | None:

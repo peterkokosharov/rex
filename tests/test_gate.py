@@ -168,6 +168,16 @@ class Asking(GateBase):
         self.assertEqual((r1.kind, r1.summary, r1.detail), ("exec", "bash: echo hi", "echo hi\nls"))
         self.assertEqual((r2.kind, r2.summary, r2.detail), ("write", "fileops write a.txt", "hello"))
 
+    def test_bash_request_shows_env_and_cwd(self):
+        asker = ScriptedAsker("deny")
+        g = self.gate("guard", asker)
+        d = g.check("bash", {"command": "make", "cwd": "sub", "env": {"LD_PRELOAD": "/tmp/x.so"}})
+        self.assertFalse(d.allowed)  # env makes the guard-allowed call ask
+        r = asker.requests[0]
+        self.assertEqual(r.summary, "bash: make (cwd: sub) (env: LD_PRELOAD)")
+        self.assertEqual(r.detail, "make\n\ncwd: sub\n\nenv:\n  LD_PRELOAD=/tmp/x.so")
+        self.assertIn("environment", r.reason)
+
     def test_tool_describe_used_and_failure_falls_back(self):
         class Described(FakeTool):
             def describe(self, args):
