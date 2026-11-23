@@ -89,11 +89,20 @@ _ADDR_DENIED = (errno.EACCES,)
 class GatewayError(Exception):
     """Error that maps to an OpenAI-style error response."""
 
-    def __init__(self, status: int, message: str, err_type: str = "gateway_error") -> None:
+    def __init__(self, status: int, message: str, err_type: str = "gateway_error", log_detail: str = "") -> None:
         super().__init__(message)
         self.status = status
         self.message = message
         self.err_type = err_type
+        self.log_detail = log_detail  # short "why" for the log line (exit code, CLI reason, protocol reason)
+
+
+def _one_line(text: Any, limit: int = 160) -> str:
+    """First non-empty line of a text, clipped, for error messages and the log."""
+    for line in str(text or "").splitlines():
+        if line.strip():
+            return line.strip()[:limit]
+    return ""
 
 
 def valid_model(name: str) -> bool:
@@ -649,7 +658,7 @@ def run_claude(prompt: str, model: str, claude_bin: str | list[str], timeout: fl
             **popen_group_kwargs(),
         )
         try:
-            out, _err = proc.communicate(input=prompt.encode("utf-8"), timeout=timeout)
+            out, err = proc.communicate(input=prompt.encode("utf-8"), timeout=timeout)
         except subprocess.TimeoutExpired:
             kill_tree(proc)
             try:
@@ -667,11 +676,16 @@ def run_claude(prompt: str, model: str, claude_bin: str | list[str], timeout: fl
         data = json.loads(stdout) if stdout else None
     except (ValueError, RecursionError):  # bad or absurdly nested JSON -> 502 below
         data = None
+    stderr_line = _one_line((err or b"").decode("utf-8", errors="replace"))
     if not isinstance(data, dict):
-        raise GatewayError(502, f"claude CLI failed (exit {proc.returncode}, no JSON result)", "cli_error")
+        why = f": {stderr_line}" if stderr_line else ""
+        raise GatewayError(502, f"claude CLI failed (exit {proc.returncode}, no JSON result){why}", "cli_error",
+                           f"exit={proc.returncode} stderr={stderr_line or '-'}")
     if data.get("is_error") or proc.returncode != 0:
-        detail = str(data.get("result") or data.get("subtype") or "unknown error")[:300]
-        raise GatewayError(502, f"claude CLI error (exit {proc.returncode}): {detail}", "cli_error")
+        # The CLI puts its reason (e.g. "Not logged in") in `result`; stderr is the fallback.
+        detail = _one_line(data.get("result"), 300) or stderr_line or str(data.get("subtype") or "unknown error")
+        raise GatewayError(502, f"claude CLI error (exit {proc.returncode}): {detail}", "cli_error",
+                           f"exit={proc.returncode} reason={detail[:160]}")
     usage = data.get("usage") or {}
     out = {"text": str(data.get("result") or ""), "usage": usage}
     if json_schema is not None and isinstance(data.get("structured_output"), dict):
@@ -800,10 +814,11 @@ def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout
         budget = deadline - clock()
         if budget < MIN_RETRY_SECONDS:
             raise GatewayError(504, f"the model broke the tool protocol ({reason}) and too little time is "
-                               "left to retry", "timeout")
+                               "left to retry", "timeout", f"reason={reason}")
         stats["retries"] = 1
         attempt_prompt = retry_prompt(prompt, reason)
-    raise GatewayError(502, f"the model broke the tool protocol twice: {reason}", "tool_protocol_error")
+    raise GatewayError(502, f"the model broke the tool protocol twice: {reason}", "tool_protocol_error",
+                       f"reason={reason}")
 
 
 def error_body(message: str, err_type: str) -> dict[str, Any]:
@@ -946,14 +961,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 slots.release()
         except GatewayError as exc:
             self._send_json(exc.status, error_body(exc.message, exc.err_type))
-            self._log(model, started, exc.status, self._tool_log(spec, turn))
+            why = " ".join(p for p in (self._tool_log(spec, turn), f"error={exc.err_type}", exc.log_detail) if p)
+            self._log(model, started, exc.status, "".join(c if c.isprintable() else " " for c in why))
             return
         except Exception as exc:  # never leave the client without an answer
             try:
                 self._send_json(500, error_body(f"internal error: {exc.__class__.__name__}", "internal_error"))
             except OSError:
                 pass
-            self._log(model, started, 500, self._tool_log(spec, turn))
+            self._log(model, started, 500, " ".join(
+                p for p in (self._tool_log(spec, turn), f"error=internal_error {exc.__class__.__name__}") if p))
             return
 
         if req.get("stream"):

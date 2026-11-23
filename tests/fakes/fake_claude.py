@@ -9,7 +9,8 @@
 Environment:
     FAKE_CLAUDE_SCRIPT   JSON file with a list of replies, one per call (the last one repeats).
                          A reply is a string (the `result` text) or an object with any of
-                         result, structured_output, is_error, exit, sleep.
+                         result, structured_output, is_error, exit, sleep, stderr (text written to
+                         stderr) and raw (written to stdout instead of the JSON result).
     FAKE_CLAUDE_COUNTER  file holding the number of calls so far (created when missing).
     FAKE_CLAUDE_LOG      file; one JSON line per call is appended: {"argv": [...], "stdin": "..."}.
 
@@ -41,6 +42,11 @@ def main() -> int:
         reply = {"result": reply}
     if reply.get("sleep"):
         time.sleep(float(reply["sleep"]))
+    if reply.get("stderr"):
+        sys.stderr.write(reply["stderr"])
+    if "raw" in reply:  # not a JSON result at all
+        sys.stdout.write(reply["raw"])
+        return int(reply.get("exit", 0))
     out = {"type": "result", "subtype": "success", "is_error": bool(reply.get("is_error")),
            "result": reply.get("result", ""), "num_turns": 1,
            "usage": {"input_tokens": 7, "output_tokens": 3}}

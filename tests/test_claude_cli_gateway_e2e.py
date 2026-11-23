@@ -8,7 +8,9 @@
 
 import importlib.util
 import json
+import os
 import sys
+import time
 import threading
 import urllib.error
 import urllib.request
@@ -31,6 +33,9 @@ FAKE = Path(__file__).resolve().parent / "fakes" / "fake_claude.py"
 READ_CALL = '{"tool_calls":[{"name":"fileops","arguments":{"operation":"read","path":"a.txt"}}]}'
 FINAL = '{"content":"The file says hello."}'
 ALL_FLAGS = {"--safe-mode", "--system-prompt", "--json-schema", "--setting-sources"}
+# Read at import, before tests/conftest.py points HOME/USERPROFILE at an empty folder for each test.
+# The live test needs the real ones back: without them the claude CLI has no login.
+_REAL_HOME = {k: os.environ[k] for k in ("HOME", "USERPROFILE") if k in os.environ}
 
 
 class FakeCli:
@@ -162,6 +167,51 @@ def test_timeout_during_retry_kills_and_504(fake, gateway, monkeypatch):
     assert json.loads(ei.value.read())["error"]["type"] == "timeout"
 
 
+def _wait_log(capsys, needle):
+    err = ""
+    for _ in range(100):  # the log line is written right after the response
+        err += capsys.readouterr().err
+        if needle in err:
+            break
+        time.sleep(0.02)
+    return err
+
+
+def test_cli_not_logged_in_says_why(fake, gateway, capsys):
+    """Regression: the live test lost the CLI login (empty HOME) and only showed a bare 502."""
+    fake.script({"result": "Not logged in · Please run /login", "is_error": True, "exit": 1})
+    _srv, base = gateway()
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _post(base, {"messages": [{"role": "user", "content": "x"}], "tools": TOOLS})
+    assert ei.value.code == 502
+    err = json.loads(ei.value.read())["error"]
+    assert err["type"] == "cli_error"
+    assert err["message"] == "claude CLI error (exit 1): Not logged in · Please run /login"
+    log = _wait_log(capsys, "status=502")
+    assert "status=502 tools=1 calls=0 retry=0 error=cli_error exit=1 reason=Not logged in" in log
+    assert len(fake.calls()) == 1  # CLI errors are not retried
+
+
+def test_cli_without_json_reports_stderr(fake, gateway, capsys):
+    fake.script({"raw": "", "stderr": "\nerror: unknown option '--frobnicate'\nmore\n", "exit": 2})
+    _srv, base = gateway()
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _post(base, {"messages": [{"role": "user", "content": "x"}]})
+    msg = json.loads(ei.value.read())["error"]["message"]
+    assert msg == "claude CLI failed (exit 2, no JSON result): error: unknown option '--frobnicate'"
+    assert "error=cli_error exit=2 stderr=error: unknown option '--frobnicate'" in _wait_log(capsys, "status=502")
+
+
+def test_protocol_failure_logs_reason(fake, gateway, capsys):
+    fake.script("{oops")
+    _srv, base = gateway({"--safe-mode"})
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _post(base, {"messages": [{"role": "user", "content": "x"}], "tools": TOOLS})
+    assert ei.value.code == 502
+    log = _wait_log(capsys, "status=502")
+    assert "retry=1 error=tool_protocol_error reason=the reply is not valid JSON" in log
+
+
 # ---------------------------------------------------------------- AgentLoop round trip
 
 @pytest.mark.parametrize("flags", [ALL_FLAGS, {"--safe-mode"}], ids=["json-schema", "plain-parser"])
@@ -189,10 +239,12 @@ def test_agent_loop_round_trip(fake, gateway, flags):
 
 # ---------------------------------------------------------------- optional live test (real CLI, costs a little)
 
-@pytest.mark.skipif(__import__("os").environ.get("REX_LIVE_CLAUDE") != "1",
+@pytest.mark.skipif(os.environ.get("REX_LIVE_CLAUDE") != "1",
                     reason="live test: set REX_LIVE_CLAUDE=1 (uses the logged-in claude CLI, model haiku)")
 @pytest.mark.parametrize("use_schema", [True, False], ids=["json-schema", "plain-parser"])
-def test_live_echo_round_trip(use_schema):
+def test_live_echo_round_trip(use_schema, monkeypatch):
+    for key, value in _REAL_HOME.items():  # undo the conftest home isolation: the CLI needs its login
+        monkeypatch.setenv(key, value)
     binary = gw.safe_which("claude")
     assert binary, "claude not on PATH"
     flags = gw.cli_flags(binary)

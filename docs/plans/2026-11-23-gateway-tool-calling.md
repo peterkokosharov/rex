@@ -236,6 +236,13 @@ Call keys other than `name`, `arguments`, `id`, `type` are rejected (retry). Unp
 stdout gives 502. For `integer`, 1.0 is accepted and passed on as 1; 1.5 is rejected. The example config and
 `RELEASE.md` no longer say "chat only". Still open: the maintainer's live run.
 
+**First live run (2026-11-23): fast 502, cause found.** The live test runs under `tests/conftest.py`, whose
+autouse fixture points `HOME`/`USERPROFILE` at an empty folder, so the `claude` child process had no login
+(`is_error:true`, exit 1, `"Not logged in · Please run /login"`). The gateway was not at fault: the same command
+with the real home folder returned a valid envelope. The live test now restores the real `HOME`/`USERPROFILE`.
+The 502 body and the log line now say why: `error=<type>` plus `exit=N reason=<first line>` for CLI errors,
+`exit=N stderr=<first line>` when the CLI printed no JSON, and `reason=<protocol reason>` for protocol failures.
+
 Sources:
 - `claude -p ... --json-schema` live probe, Claude Code 2.1.328, model haiku (run 2026-11-23, 3 calls)
 - `scripts/claude_cli_gateway.py` (read 2026-11-23, HEAD 333a453; startup probe and process handling updated later the same day)
