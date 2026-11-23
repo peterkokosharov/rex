@@ -117,7 +117,8 @@ def test_bad_model_and_bad_json(server):
     with pytest.raises(urllib.error.HTTPError) as ei:
         _post(server, {"model": "gpt-4o", "messages": [{"role": "user", "content": "x"}]})
     assert ei.value.code == 400
-    req = urllib.request.Request(_url(server, "/v1/chat/completions"), data=b"{nope", method="POST")
+    req = urllib.request.Request(_url(server, "/v1/chat/completions"), data=b"{nope", method="POST",
+                                 headers={"Content-Type": "application/json"})
     with pytest.raises(urllib.error.HTTPError) as ei:
         urllib.request.urlopen(req, timeout=10)
     assert ei.value.code == 400
@@ -187,3 +188,141 @@ def test_rex_client_end_to_end(server):
     assert resp.status == 200 and resp.json()["choices"][0]["message"]["content"] == "ok"
     chunks = list(client.chat_completion([ChatMessage(role="user", content="say ok")], stream=True))
     assert "".join(c.content or "" for c in chunks) == "ok"
+
+
+# ---------------------------------------------------------------- request checks
+
+def _raw(srv, method, path, headers, body=b""):
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+    for k, v in headers.items():
+        conn.putheader(k, v)
+    if body:
+        conn.putheader("Content-Length", str(len(body)))
+    conn.endheaders(body or None)
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    return resp.status, data
+
+
+_BODY = json.dumps({"model": "haiku", "messages": [{"role": "user", "content": "x"}]}).encode()
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:4000", "127.0.0.1.evil.example", "", "127.0.0.2"])
+def test_foreign_host_rejected(server, host):
+    hdrs = {"Content-Type": "application/json"}
+    if host:
+        hdrs["Host"] = host
+    status, _ = _raw(server, "POST", "/v1/chat/completions", hdrs, _BODY)
+    assert status == 403
+    status, _ = _raw(server, "GET", "/v1/models", {"Host": host} if host else {})
+    assert status == 403
+    assert server.calls == []
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST:{port}", "127.0.0.1:{port}"])
+def test_local_host_accepted(server, host):
+    host = host.format(port=server.server_address[1])
+    status, _ = _raw(server, "POST", "/v1/chat/completions",
+                     {"Host": host, "Content-Type": "application/json"}, _BODY)
+    assert status == 200
+
+
+def test_wrong_port_in_host_rejected(server):
+    status, _ = _raw(server, "GET", "/health", {"Host": "localhost:1"})
+    assert status == 403
+
+
+@pytest.mark.parametrize("ctype", [None, "text/plain", "application/x-www-form-urlencoded"])
+def test_post_requires_json_content_type(server, ctype):
+    hdrs = {"Host": "127.0.0.1"}
+    if ctype:
+        hdrs["Content-Type"] = ctype
+    status, data = _raw(server, "POST", "/v1/chat/completions", hdrs, _BODY)
+    assert status == 415 and b"application/json" in data
+    status, _ = _raw(server, "POST", "/v1/chat/completions",
+                     {"Host": "127.0.0.1", "Content-Type": "application/json; charset=utf-8"}, _BODY)
+    assert status == 200
+
+
+def test_token_required_when_set():
+    srv = gw.make_server(port=0, claude_bin="claude", token="s3cret",
+                         runner=lambda *a: {"text": "ok", "usage": {}})
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = {"Host": "127.0.0.1", "Content-Type": "application/json"}
+        assert _raw(srv, "POST", "/v1/chat/completions", base, _BODY)[0] == 401
+        assert _raw(srv, "GET", "/v1/models", {"Host": "127.0.0.1"})[0] == 401
+        for bad in ("Bearer wrong", "s3cret", "Basic s3cret", "Bearer s3cret2"):
+            assert _raw(srv, "POST", "/v1/chat/completions", {**base, "Authorization": bad}, _BODY)[0] == 401
+        ok = {**base, "Authorization": "Bearer s3cret"}
+        assert _raw(srv, "POST", "/v1/chat/completions", ok, _BODY)[0] == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_token_ok_uses_constant_time_compare():
+    with mock.patch.object(gw.hmac, "compare_digest", wraps=gw.hmac.compare_digest) as cmp:
+        assert gw.token_ok("Bearer abc", "abc")
+    cmp.assert_called_once()
+    assert gw.token_ok(None, None) and not gw.token_ok(None, "abc")
+
+
+# ---------------------------------------------------------------- private work dir
+
+def test_run_claude_uses_private_tempdir_and_removes_it():
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        if "--help" in cmd:
+            return _proc("  --setting-sources <sources>  ...")
+        seen["cwd"] = kw["cwd"]
+        seen["exists"] = Path(kw["cwd"]).is_dir()
+        seen["cmd"] = cmd
+        import os
+        seen["mode"] = os.stat(kw["cwd"]).st_mode & 0o777
+        return _proc(json.dumps({"is_error": False, "result": "ok", "usage": {}}))
+
+    gw.supports_setting_sources.cache_clear()
+    try:
+        with mock.patch.object(gw.subprocess, "run", side_effect=fake_run):
+            gw.run_claude("x", "haiku", "claude-test-bin", 5)
+    finally:
+        gw.supports_setting_sources.cache_clear()
+    import os
+    import tempfile
+    assert seen["exists"] and not Path(seen["cwd"]).exists()
+    assert Path(seen["cwd"]).resolve() != Path(tempfile.gettempdir()).resolve()
+    if os.name == "posix":
+        assert seen["mode"] == 0o700
+    i = seen["cmd"].index("--setting-sources")
+    assert seen["cmd"][i + 1] == "user"
+
+
+def test_tempdir_removed_on_timeout():
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        if "--help" in cmd:
+            return _proc("no such flag here")
+        seen["cwd"] = kw["cwd"]
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    gw.supports_setting_sources.cache_clear()
+    try:
+        with mock.patch.object(gw.subprocess, "run", side_effect=fake_run):
+            with pytest.raises(gw.GatewayError):
+                gw.run_claude("x", "haiku", "claude-test-bin2", 1)
+    finally:
+        gw.supports_setting_sources.cache_clear()
+    assert not Path(seen["cwd"]).exists()
+
+
+def test_build_command_setting_sources_flag():
+    assert "--setting-sources" not in gw.build_command("claude", "haiku")
+    cmd = gw.build_command("claude", "haiku", setting_sources=True)
+    assert cmd[cmd.index("--setting-sources") + 1] == "user"

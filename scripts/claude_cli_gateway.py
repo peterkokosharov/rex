@@ -12,14 +12,20 @@ locally logged-in `claude` CLI, without an API key. Chat only: Claude's own
 tools are disabled, request `tools` are ignored, `tool_calls` are never returned.
 
 Usage:
-    python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku]
+    python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku] [--token T]
 
-Binds to 127.0.0.1 only. Logs method, path, model, duration and status only.
+Binds to 127.0.0.1 only. Requests whose Host header is not 127.0.0.1 or
+localhost are refused (DNS rebinding), POST bodies must be application/json,
+and with --token every request needs "Authorization: Bearer <token>".
+Each CLI call runs in its own private temporary directory, removed afterwards.
+Logs method, path, model, duration and status only.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
+import hmac
 import json
 import shutil
 import subprocess
@@ -109,9 +115,13 @@ def flatten_messages(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(out)
 
 
-def build_command(claude_bin: str, model: str) -> list[str]:
-    """Argument list for one non-interactive, tool-less Claude call."""
-    return [
+def build_command(claude_bin: str, model: str, setting_sources: bool = False) -> list[str]:
+    """Argument list for one non-interactive, tool-less Claude call.
+
+    With ``setting_sources`` only the user's own settings are loaded, never
+    project or local settings from the working directory.
+    """
+    cmd = [
         claude_bin, "-p",
         "--model", model,
         "--output-format", "json",
@@ -119,24 +129,47 @@ def build_command(claude_bin: str, model: str) -> list[str]:
         "--strict-mcp-config",
         "--no-session-persistence",
     ]
+    if setting_sources:
+        cmd += ["--setting-sources", "user"]
+    return cmd
+
+
+@functools.lru_cache(maxsize=8)
+def supports_setting_sources(claude_bin: str) -> bool:
+    """True when `claude --help` lists --setting-sources (checked once per binary)."""
+    try:
+        proc = subprocess.run([claude_bin, "--help"], capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    out = proc.stdout or b""
+    if isinstance(out, str):
+        out = out.encode("utf-8", errors="replace")
+    return b"--setting-sources" in out
 
 
 def run_claude(prompt: str, model: str, claude_bin: str, timeout: float) -> dict[str, Any]:
-    """Run the CLI with the prompt on stdin; return {'text', 'usage'}."""
-    cmd = build_command(claude_bin, model)
+    """Run the CLI with the prompt on stdin; return {'text', 'usage'}.
+
+    The CLI runs in a fresh private directory (mode 0700 on POSIX) that is
+    removed after the call, so it never sees another request's files.
+    """
+    cmd = build_command(claude_bin, model, supports_setting_sources(claude_bin))
+    workdir = tempfile.mkdtemp(prefix="claude-gw-")
     try:
         proc = subprocess.run(
             cmd,
             input=prompt.encode("utf-8"),
             capture_output=True,
             timeout=timeout,
-            cwd=tempfile.gettempdir(),
+            cwd=workdir,
             check=False,
         )
     except subprocess.TimeoutExpired:
         raise GatewayError(504, f"claude CLI timed out after {timeout:.0f}s", "timeout")
     except OSError as exc:
         raise GatewayError(502, f"cannot start claude CLI: {exc.__class__.__name__}", "cli_unavailable")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
     stdout = proc.stdout.decode("utf-8", errors="replace").strip()
     try:
@@ -199,6 +232,27 @@ def error_body(message: str, err_type: str) -> dict[str, Any]:
     return {"error": {"message": message, "type": err_type, "code": err_type}}
 
 
+_LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+def host_allowed(host: str | None, port: int) -> bool:
+    """Host header must name this loopback server (DNS-rebinding defence)."""
+    if not host:
+        return False
+    host = host.strip().lower()
+    allowed = set(_LOCAL_HOSTS) | {f"{h}:{port}" for h in _LOCAL_HOSTS}
+    return host in allowed
+
+
+def token_ok(header: str | None, token: str | None) -> bool:
+    """No token configured: always ok. Otherwise a constant-time Bearer check."""
+    if not token:
+        return True
+    if not header or not header.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(header[len("Bearer "):].encode("utf-8"), token.encode("utf-8"))
+
+
 class GatewayHandler(BaseHTTPRequestHandler):
     server_version = "claude-cli-gateway/1"
     # Set on the server instance: default_model, claude_bin, timeout, runner.
@@ -218,8 +272,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _check_request(self, started: float) -> bool:
+        """Host and token checks for every request; sends the error itself."""
+        if not host_allowed(self.headers.get("Host"), self.server.server_address[1]):
+            self._send_json(403, error_body("forbidden host", "forbidden"))
+            self._log("", started, 403)
+            return False
+        if not token_ok(self.headers.get("Authorization"), self.server.token):
+            self._send_json(401, error_body("missing or wrong bearer token", "unauthorized"))
+            self._log("", started, 401)
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         started = time.monotonic()
+        if not self._check_request(started):
+            return
         path = self.path.split("?", 1)[0].rstrip("/")
         if path in ("/v1/models", "/models"):
             now = int(time.time())
@@ -239,6 +307,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         started = time.monotonic()
+        if not self._check_request(started):
+            return
         path = self.path.split("?", 1)[0].rstrip("/")
         model = ""
         if path not in ("/v1/chat/completions", "/chat/completions"):
@@ -246,6 +316,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._log(model, started, 404)
             return
         try:
+            ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if ctype != "application/json":
+                raise GatewayError(415, "Content-Type must be application/json", "invalid_request_error")
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0 or length > MAX_BODY:
                 raise GatewayError(400, "missing or too large request body", "invalid_request_error")
@@ -285,7 +358,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
 def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
                 claude_bin: str | None = None, timeout: float = DEFAULT_TIMEOUT,
-                runner: Any = None) -> ThreadingHTTPServer:
+                runner: Any = None, token: str | None = None) -> ThreadingHTTPServer:
     """Create the server bound to 127.0.0.1 (never another interface)."""
     server = ThreadingHTTPServer((HOST, port), GatewayHandler)
     server.daemon_threads = True
@@ -293,6 +366,7 @@ def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
     server.claude_bin = claude_bin or shutil.which("claude") or "claude"
     server.timeout = timeout
     server.runner = runner or run_claude
+    server.token = token or None
     return server
 
 
@@ -302,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--default-model", default=DEFAULT_MODEL,
                         help="haiku, sonnet, opus or a full id like claude-sonnet-4-6")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds per CLI call")
+    parser.add_argument("--token", default=None,
+                        help="if set, every request needs 'Authorization: Bearer <token>'")
     args = parser.parse_args(argv)
     if not valid_model(args.default_model):
         parser.error(f"invalid --default-model '{args.default_model}'")
@@ -309,7 +385,9 @@ def main(argv: list[str] | None = None) -> int:
     if not claude_bin:
         print("claude CLI not found on PATH", file=sys.stderr)
         return 2
-    server = make_server(args.port, args.default_model, claude_bin, args.timeout)
+    server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=args.token)
+    if not supports_setting_sources(claude_bin):
+        print("note: this claude CLI has no --setting-sources; project settings may load", file=sys.stderr)
     print(f"claude-cli-gateway on http://{HOST}:{args.port}/v1 (default model {args.default_model})",
           file=sys.stderr)
     try:

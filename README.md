@@ -175,13 +175,19 @@ cli:
 `/v1/models` and `/v1/chat/completions` by running the locally logged-in `claude` CLI
 (`claude -p --model <m> --output-format json --tools ""`, prompt on stdin). No API key is needed.
 
-- Binds to `127.0.0.1` only; default port 4000; any `Authorization` header is accepted.
+- Binds to `127.0.0.1` only; default port 4000. Requests whose `Host` header is not `127.0.0.1` or
+  `localhost` (with or without this port) get 403, which stops DNS-rebinding attacks from a browser.
+- POST bodies must be sent as `Content-Type: application/json` (else 415).
+- Without `--token` any `Authorization` header is accepted. With `--token T` every request needs
+  `Authorization: Bearer T` (constant-time compare); set `RUNTIME_LITELLM__API_KEY=T` in rex.
 - Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6`.
 - Chat only: Claude's own tools are disabled, request `tools` are ignored, `tool_calls` are never returned,
   so rex's agent tools will not run through this backend.
 - `stream: true` is answered as SSE (one content chunk, a stop chunk, `[DONE]`).
 - Logs only method, path, model, duration and status. Timeout per call: `--timeout` (default 300 s).
-- The CLI still loads your user-level Claude Code settings and `CLAUDE.md`, which can change the reply style.
+- Each call runs in a fresh private temporary directory (0700 on POSIX) that is removed afterwards, with
+  `--setting-sources user` when the installed CLI supports it, so no project or local settings load.
+  Your user-level Claude Code settings and `CLAUDE.md` still load and can change the reply style.
 
 ```bash
 python3 scripts/claude_cli_gateway.py --port 4000 --default-model haiku
