@@ -224,12 +224,22 @@ def test_git_rejects_option_branch():
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("bad", [".", "..", "src/a.py", "src", "../x", "a..b", "/abs", "C:foo", "x y"])
+@pytest.mark.parametrize("bad", [".", "..", "../x", "a..b", "/abs", "C:foo", "x y", "-b", r"a\b"])
 def test_git_checkout_rejects_path_like_branch(workspace, bad):
     with mock.patch("subprocess.run") as run:
         with pytest.raises(ValueError):
             GitTool(LOCAL).execute(operation="checkout", branch=bad)
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["src", "src/a.py", "README.md"])
+def test_git_checkout_allows_branch_named_like_path(workspace, name):
+    """`git switch` never reads its argument as a path, so such names pass."""
+    (workspace / "README.md").write_text("x", encoding="utf-8")  # src/a.py comes from the fixture
+    with mock.patch("subprocess.run") as run:
+        run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        GitTool(LOCAL).execute(operation="checkout", branch=name)
+    assert run.call_args[0][0] == ["git", "switch", name]
 
 
 def test_git_checkout_uses_switch(workspace):
@@ -253,9 +263,14 @@ def test_git_checkout_dot_keeps_work(tmp_path, monkeypatch):
     subprocess.run(["git", "add", "f.txt"], check=True)
     subprocess.run(["git", "commit", "-q", "-m", "c"], check=True)
     (tmp_path / "f.txt").write_text("changed\n", encoding="utf-8")
-    for bad in (".", "f.txt"):
-        with pytest.raises(ValueError):
-            GitTool(LOCAL).execute(operation="checkout", branch=bad)
+    with pytest.raises(ValueError):
+        GitTool(LOCAL).execute(operation="checkout", branch=".")
+    # A file name is passed to `git switch`, which fails (no such branch)
+    # instead of restoring the file the way `git checkout f.txt` would.
+    try:
+        GitTool(LOCAL).execute(operation="checkout", branch="f.txt")
+    except Exception:
+        pass
     assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "changed\n"
 
 

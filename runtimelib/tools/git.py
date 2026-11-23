@@ -156,7 +156,7 @@ class GitTool(Tool):
                 args.append("-a")
             return run(args)
         if operation == "checkout":
-            branch = _safe_branch(kwargs.get("branch", ""), cwd)
+            branch = _safe_branch(kwargs.get("branch", ""))
             # `git switch` only ever changes branches. `git checkout <x>`
             # with x = "." or a file path would discard uncommitted work.
             args = ["git", "switch"]
@@ -167,8 +167,8 @@ class GitTool(Tool):
         raise ValueError(f"Unknown git operation: {operation}")
 
 
-def _safe_branch(branch: Any, cwd: Path) -> str:
-    """Branch name for `git switch`; option-like and path-like names are rejected."""
+def _safe_branch(branch: Any) -> str:
+    """Branch name for `git switch`; option-like names and '..' are rejected."""
     if not isinstance(branch, str) or not branch.strip():
         raise ValueError(f"invalid branch name: {branch!r}")
     if (
@@ -181,8 +181,8 @@ def _safe_branch(branch: Any, cwd: Path) -> str:
         or any(c.isspace() or ord(c) < 32 for c in branch)
     ):
         raise ValueError(f"invalid branch name: {branch!r}")
-    if (cwd / branch).exists():
-        raise ValueError(f"branch name is an existing path, refusing: {branch!r}")
+    # No "existing path" check: `git switch` never treats its argument as a
+    # path, so a branch named like a file or directory is harmless.
     return branch
 
 
