@@ -410,6 +410,79 @@ def test_interrupt_during_stream_drops_partial_tool_calls():
     assert not any(m.tool_calls for m in loop.state.messages)
 
 
+def _tc(index, *, call_id=None, name=None, args=None):
+    d = {"index": index, "function": {}}
+    if call_id:
+        d["id"] = call_id
+        d["type"] = "function"
+    if name is not None:
+        d["function"]["name"] = name
+    if args is not None:
+        d["function"]["arguments"] = args
+    return d
+
+
+class RecordingTool(EchoTool):
+    def __init__(self, name):
+        super().__init__(name)
+        self.kwargs = []
+
+    def execute(self, **kwargs):
+        self.kwargs.append(kwargs)
+        return super().execute(**kwargs)
+
+
+def test_stream_parallel_tool_calls_interleaved():
+    """OpenAI format: id/name only on the first delta, args interleaved by index."""
+    stream = [
+        {"tool_calls": [_tc(0, call_id="call_a", name="first", args="")]},
+        {"tool_calls": [_tc(1, call_id="call_b", name="second", args="")]},
+        {"tool_calls": [_tc(0, args='{"x": ')]},
+        {"tool_calls": [_tc(1, args='{"y": ')]},
+        {"tool_calls": [_tc(1, args='"two"}'), _tc(0, args="1}")]},
+    ]
+    first, second = RecordingTool("first"), RecordingTool("second")
+    llm = ScriptLLM([stream, [{"content": "both done"}]])
+    loop = _loop(llm, [first, second])
+    assert loop.run("go") == "both done"
+    calls = next(m.tool_calls for m in loop.state.messages if m.tool_calls)
+    assert [(c.id, c.function["name"], c.function["arguments"]) for c in calls] == [
+        ("call_a", "first", '{"x": 1}'),
+        ("call_b", "second", '{"y": "two"}'),
+    ]
+    assert first.kwargs[0]["x"] == 1 and second.kwargs[0]["y"] == "two"
+    results = {m.tool_call_id for m in loop.state.messages if m.role == "tool"}
+    assert results == {"call_a", "call_b"}
+    _assert_pairs_valid(loop.state.messages)
+    # The request sent back to the model never carries the stream index.
+    sent = [m.to_dict() for m in llm.seen[-1]]
+    assert all("index" not in tc for m in sent for tc in m.get("tool_calls", []))
+
+
+def test_stream_tool_call_without_index_or_id():
+    """Gateways that omit index: continuation deltas extend the last call."""
+    stream = [
+        {"tool_calls": [{"id": "c1", "type": "function", "function": {"name": "first", "arguments": "{"}}]},
+        {"tool_calls": [{"function": {"arguments": "}"}}]},
+        {"tool_calls": [{"id": "c2", "type": "function", "function": {"name": "second", "arguments": "{}"}}]},
+    ]
+    llm = ScriptLLM([stream, [{"content": "ok"}]])
+    loop = _loop(llm, [RecordingTool("first"), RecordingTool("second")])
+    loop.run("go")
+    calls = next(m.tool_calls for m in loop.state.messages if m.tool_calls)
+    assert [(c.id, c.function["arguments"]) for c in calls] == [("c1", "{}"), ("c2", "{}")]
+
+
+def test_stream_tool_call_missing_id_gets_one():
+    stream = [{"tool_calls": [_tc(0, name="first", args="{}")]}]
+    llm = ScriptLLM([stream, [{"content": "ok"}]])
+    loop = _loop(llm, [RecordingTool("first")])
+    loop.run("go")
+    calls = next(m.tool_calls for m in loop.state.messages if m.tool_calls)
+    assert calls[0].id
+    _assert_pairs_valid(loop.state.messages)
+
+
 def test_history_repair_for_stale_tool_call():
     msgs = [
         ChatMessage(role="user", content="u"),

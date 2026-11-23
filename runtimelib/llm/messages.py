@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """LLM message types."""
@@ -51,16 +51,21 @@ class ToolCall:
     id: str
     type: str = "function"
     function: dict[str, Any] = field(default_factory=dict)
+    # Position of the call in a streamed response. Only set on stream deltas;
+    # continuation deltas carry the index but no id. Never sent to the API.
+    index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "type": self.type, "function": self.function}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ToolCall":
+        index = data.get("index")
         return cls(
-            id=data["id"],
-            type=data.get("type", "function"),
-            function=data.get("function", {}),
+            id=data.get("id") or "",
+            type=data.get("type") or "function",
+            function=data.get("function") or {},
+            index=index if isinstance(index, int) else None,
         )
 
 

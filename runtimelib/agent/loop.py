@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Agent loop - ReAct pattern with streaming and tool execution."""
@@ -12,6 +12,7 @@ import json
 import signal
 import sys
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -325,6 +326,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         # Stream response
         full_content = ""
         tool_calls: dict[int, ToolCall] = {}
+        last_index: int | None = None
 
         stream = self.llm.chat_completion(
             messages=messages,
@@ -346,21 +348,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             # Handle tool call deltas
             if chunk.tool_calls:
                 for tc_delta in chunk.tool_calls:
-                    index = tc_delta.index if hasattr(tc_delta, 'index') else 0
-
-                    if index not in tool_calls:
-                        tool_calls[index] = ToolCall(
-                            id=tc_delta.id,
-                            type=tc_delta.type,
-                            function={"name": "", "arguments": ""}
-                        )
-
-                    tc = tool_calls[index]
-                    if tc_delta.function:
-                        if tc_delta.function.get("name"):
-                            tc.function["name"] = tc_delta.function["name"]
-                        if tc_delta.function.get("arguments"):
-                            tc.function["arguments"] += tc_delta.function["arguments"]
+                    last_index = accumulate_tool_call(tool_calls, tc_delta, last_index)
 
             # Handle finish reason
             if chunk.finish_reason == "tool_calls":
@@ -369,6 +357,9 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         # Build response message
         if tool_calls and not self.state.interrupted:
             sorted_calls = [tool_calls[i] for i in sorted(tool_calls.keys())]
+            for tc in sorted_calls:
+                if not tc.id:  # provider sent no id at all; results still need one
+                    tc.id = f"call_{uuid.uuid4().hex[:24]}"
             msg = ChatMessage(role="assistant", content=full_content, tool_calls=sorted_calls)
         else:
             msg = ChatMessage(role="assistant", content=full_content)
@@ -481,3 +472,35 @@ def create_agent_loop(config: Optional[Config] = None, **kwargs) -> AgentLoop:
         from ..config import get_config
         config = get_config()
     return AgentLoop(config, **kwargs)
+
+
+def accumulate_tool_call(calls: dict[int, ToolCall], delta: ToolCall, last_index: int | None) -> int:
+    """Merge one streamed tool-call delta into ``calls`` (keyed by index).
+
+    OpenAI-style streams send ``index`` on every delta but ``id``, ``type``
+    and ``name`` only on the first one; arguments arrive in pieces, and the
+    pieces of parallel calls may interleave. A delta without an index (some
+    gateways) continues the last call, or starts a new one when it brings a
+    new id. Returns the index the delta was merged into.
+    """
+    index = delta.index
+    if index is None:
+        if last_index is None or (delta.id and calls[last_index].id and delta.id != calls[last_index].id):
+            index = max(calls, default=-1) + 1
+        else:
+            index = last_index
+    tc = calls.get(index)
+    if tc is None:
+        tc = calls[index] = ToolCall(id="", type="function", function={"name": "", "arguments": ""})
+    if delta.id and not tc.id:
+        tc.id = delta.id
+    if delta.type:
+        tc.type = delta.type
+    fn = delta.function or {}
+    if fn.get("name"):
+        tc.function["name"] = fn["name"]
+    args = fn.get("arguments")
+    if args:
+        tc.function["arguments"] += args if isinstance(args, str) else json.dumps(args)
+    return index
+
