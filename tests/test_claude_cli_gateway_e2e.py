@@ -185,3 +185,40 @@ def test_agent_loop_round_trip(fake, gateway, flags):
     assert f'<tool_result id="{call_id}" name="fileops" untrusted="true">' in stdin
     assert "hello from a.txt" in stdin
     assert '"name": "fileops"' in stdin and stdin.count("name: fileops") == 1
+
+
+# ---------------------------------------------------------------- optional live test (real CLI, costs a little)
+
+@pytest.mark.skipif(__import__("os").environ.get("REX_LIVE_CLAUDE") != "1",
+                    reason="live test: set REX_LIVE_CLAUDE=1 (uses the logged-in claude CLI, model haiku)")
+@pytest.mark.parametrize("use_schema", [True, False], ids=["json-schema", "plain-parser"])
+def test_live_echo_round_trip(use_schema):
+    binary = gw.safe_which("claude")
+    assert binary, "claude not on PATH"
+    flags = gw.cli_flags(binary)
+    assert flags and "--safe-mode" in flags
+    srv = gw.make_server(port=0, claude_bin=binary, flags=flags, json_schema=use_schema, timeout=180)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    tools = [{"type": "function", "function": {
+        "name": "echo", "description": "Echo the given text back.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"],
+                       "additionalProperties": False}}}]
+    messages = [{"role": "user", "content": "call echo with text=hi, then say done"}]
+    try:
+        with _post(base, {"model": "haiku", "messages": messages, "tools": tools}) as r:
+            first = json.load(r)["choices"][0]
+        assert first["finish_reason"] == "tool_calls"
+        (call,) = first["message"]["tool_calls"]
+        assert call["function"]["name"] == "echo"
+        assert json.loads(call["function"]["arguments"]) == {"text": "hi"}
+        messages += [first["message"],
+                     {"role": "tool", "tool_call_id": call["id"],
+                      "content": json.dumps({"success": True, "result": "hi", "error": None})}]
+        with _post(base, {"model": "haiku", "messages": messages, "tools": tools}) as r:
+            second = json.load(r)["choices"][0]
+        assert second["finish_reason"] == "stop"
+        assert "done" in (second["message"]["content"] or "").lower()
+    finally:
+        srv.shutdown()
+        srv.server_close()
