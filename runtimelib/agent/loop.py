@@ -27,8 +27,10 @@ from ..agent.state import CheckpointManager
 from .context import (
     COMPACT_RATIO,
     compact_messages,
+    CANCELLED_RESULT,
     compact_threshold,
     context_tokens,
+    ensure_tool_results,
     resolve_context_window,
 )
 
@@ -206,6 +208,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.interrupted = False
         self._interrupt_event.clear()
         self.state.turn += 1
+        self.state.messages = ensure_tool_results(self.state.messages)
 
         # Add user message to the shared context
         self.state.messages.append(ChatMessage(role="user", content=prompt))
@@ -249,6 +252,9 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             if not response.content and not response.tool_calls:
                 self.state.messages.append(ChatMessage(role="assistant", content=""))
                 return ""
+
+        # Whatever stopped the loop, no tool call may stay without a result.
+        self.state.messages = ensure_tool_results(self.state.messages)
 
         if self.state.interrupted:
             text = "[Изпълнението е прекъснато от потребителя]"
@@ -309,6 +315,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
         # Auto-compact at 90% of the current model's context window.
         self._compact_messages()
+        self.state.messages = ensure_tool_results(self.state.messages)
 
         # Use appropriate system prompt based on whether tools are enabled
         system_prompt = self.system_prompt if enable_tools else self.system_prompt_no_tools
@@ -360,7 +367,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                 pass
 
         # Build response message
-        if tool_calls:
+        if tool_calls and not self.state.interrupted:
             sorted_calls = [tool_calls[i] for i in sorted(tool_calls.keys())]
             msg = ChatMessage(role="assistant", content=full_content, tool_calls=sorted_calls)
         else:
@@ -370,14 +377,24 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         return msg
 
     def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> None:
-        """Execute tool calls and add results to conversation."""
-        for tc in tool_calls:
+        """Execute tool calls and add results to conversation.
+
+        Every call gets a tool message, also when the user interrupts: the
+        remaining calls are answered with a "cancelled" result so the history
+        stays valid for the next request.
+        """
+        for pos, tc in enumerate(tool_calls):
             if self._interrupt_event.is_set():
                 self.state.interrupted = True
+                for rest in tool_calls[pos:]:
+                    self.state.messages.append(ChatMessage(
+                        role="tool", content=CANCELLED_RESULT, tool_call_id=rest.id,
+                    ))
                 break
 
             tool_name = tc.function.get("name", "")
             tool = self.tools.get(tool_name)
+            args: dict[str, Any] = {}
 
             if not tool:
                 result = ToolResult(
@@ -386,7 +403,6 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                     error=f"Unknown tool: {tool_name}"
                 )
             else:
-                args = {}
                 try:
                     # Parse arguments
                     args_str = tc.function.get("arguments", "{}")

@@ -15,6 +15,7 @@ from .context import (
     compact_messages,
     compact_threshold,
     context_tokens,
+    ensure_tool_results,
     estimate_tokens,
     resolve_context_window,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "AgentState",
     "create_agent_loop",
     "compact_messages",
+    "ensure_tool_results",
     "compact_threshold",
     "context_tokens",
     "estimate_tokens",

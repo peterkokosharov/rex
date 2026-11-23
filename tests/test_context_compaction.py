@@ -23,7 +23,7 @@ from runtimelib.agent import (
     resolve_context_window,
 )
 from runtimelib.config import Config
-from runtimelib.llm import ChatMessage, ChatCompletionChunk
+from runtimelib.llm import ChatMessage, ChatCompletionChunk, ToolCall
 from runtimelib.session import SessionManager
 
 
@@ -105,7 +105,8 @@ def test_large_tool_output_is_trimmed_first():
     big = "t" * 12000
     msgs = [
         ChatMessage(role="user", content="old task"),
-        ChatMessage(role="assistant", content="using a tool"),
+        ChatMessage(role="assistant", content="using a tool",
+                    tool_calls=[ToolCall(id="1", function={"name": "bash", "arguments": "{}"})]),
         ChatMessage(role="tool", content=big, tool_call_id="1"),
         ChatMessage(role="assistant", content="done"),
         ChatMessage(role="user", content="new task"),

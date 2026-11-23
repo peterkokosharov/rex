@@ -28,6 +28,8 @@ CHARS_PER_TOKEN = 4
 TOOL_TRIM_CHARS = 1500
 KEEP_RECENT = 6
 COMPACT_NOTE = "[Context compacted: {n} earlier messages were omitted to fit the context window.]"
+CANCELLED_RESULT = '{"success": false, "result": null, "error": "cancelled: the tool call was not run"}'
+COMPACTED_ARGS = '{"_compacted": true}'
 
 _SIZE_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*([km])(?![\w])", re.IGNORECASE)
 _UNIT = {"k": 1_000, "m": 1_000_000}
@@ -104,6 +106,52 @@ def _copy(message: ChatMessage, content: Optional[str] = None) -> ChatMessage:
     return replace(message, content=content) if content is not None else replace(message)
 
 
+def ensure_tool_results(messages: Sequence[ChatMessage]) -> list[ChatMessage]:
+    """Return messages where every tool call has exactly one tool result.
+
+    OpenAI-compatible APIs reject a history where an assistant ``tool_calls``
+    entry has no matching ``tool`` message, or a ``tool`` message has no call.
+    Missing results (after a stop, an interrupt or a crash) get a "cancelled"
+    result inserted right after the call group; orphan results are dropped.
+    """
+    out: list[ChatMessage] = []
+    i = 0
+    items = list(messages)
+    while i < len(items):
+        m = items[i]
+        if m.role == "tool":
+            i += 1  # orphan: its assistant call is not directly before it
+            continue
+        out.append(m)
+        i += 1
+        if m.role != "assistant" or not m.tool_calls:
+            continue
+        wanted = [tc.id if hasattr(tc, "id") else tc.get("id") for tc in m.tool_calls]
+        seen: set[str] = set()
+        while i < len(items) and items[i].role == "tool":
+            r = items[i]
+            if r.tool_call_id in wanted and r.tool_call_id not in seen:
+                out.append(r)
+                seen.add(r.tool_call_id)
+            i += 1
+        for tc_id in wanted:
+            if tc_id not in seen:
+                out.append(ChatMessage(role="tool", content=CANCELLED_RESULT, tool_call_id=tc_id))
+    return out
+
+
+def _group_start(messages: Sequence[ChatMessage], index: int) -> int:
+    """Move ``index`` forward so it does not start inside a tool-result group."""
+    while index < len(messages) and messages[index].role == "tool":
+        index += 1
+    if index >= len(messages):
+        # Only tool results are left: step back to the assistant that owns them.
+        index = len(messages) - 1
+        while index > 0 and messages[index].role == "tool":
+            index -= 1
+    return index
+
+
 def compact_messages(
     messages: Sequence[ChatMessage],
     threshold: int,
@@ -130,7 +178,7 @@ def compact_messages(
         if m.role == "tool" and m.content and len(m.content) > TOOL_TRIM_CHARS:
             out[i] = _copy(m, m.content[:TOOL_TRIM_CHARS] + "\n...[tool output compacted]...")
     if context_tokens(out) <= target:
-        return out, True
+        return ensure_tool_results(out), True
 
     # 2) Drop old turns at user boundaries; never drop the latest user turn.
     keep_from = 0
@@ -143,11 +191,13 @@ def compact_messages(
             break
     if keep_from <= 0:
         keep_from = min(len(out) - 1, max(1, recent))
+    # Never split an assistant tool call from its results.
+    keep_from = _group_start(out, keep_from)
 
     dropped = keep_from
     out = [ChatMessage(role="user", content=COMPACT_NOTE.format(n=dropped))] + out[dropped:]
     if context_tokens(out) <= target:
-        return out, True
+        return ensure_tool_results(out), True
 
     # 3) A single very large message still fits nowhere: truncate the biggest
     #    ones until we are under target. Bounded to avoid a pathological loop.
@@ -160,13 +210,16 @@ def compact_messages(
             kept = max(100, len(message.content) // 2)
             out[idx] = _copy(message, message.content[:kept] + "\n...[message truncated]...")
             continue
-        if message.tool_calls:
-            out[idx] = ChatMessage(
-                role=message.role,
-                content="[tool call compacted]",
-                tool_call_id=message.tool_call_id,
-            )
+        if message.tool_calls and any(
+            tc.function.get("arguments") != COMPACTED_ARGS for tc in message.tool_calls
+        ):
+            # Keep the calls (their ids pair with tool results), shrink the arguments.
+            calls = [
+                replace(tc, function={**tc.function, "arguments": COMPACTED_ARGS})
+                for tc in message.tool_calls
+            ]
+            out[idx] = replace(message, tool_calls=calls)
             continue
         break
 
-    return out, True
+    return ensure_tool_results(out), True
