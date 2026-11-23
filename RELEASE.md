@@ -251,7 +251,6 @@ runtime-ai/
 │   ├── permissions/            # PermissionPolicy, executor
 │   ├── security/               # PromptSanitizer, InputValidator
 │   ├── session/                # SessionManager
-│   ├── skills/                 # Skills system
 │   ├── mcp/                    # MCP client
 │   ├── logging/                # Structured logging, audit
 │   └── rex.py                  # REX API class

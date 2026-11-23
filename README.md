@@ -30,7 +30,6 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 | **SandboxManager** | ✅ Done | Git worktree isolation per agent, explicit RW/RO mount resolution, FileMergeLock/RedisMergeLock |
 | **REX API** | ✅ Done | `run_agent()`, `spawn_subagent()`, `create_worktree()`, `commit_and_merge()`, `subscribe_hooks()` |
 | **Security** | ✅ Done | `InputValidator` (structural validation), `StructuredPromptBuilder` (zone separation), defense-in-depth |
-| **Skills System** | ✅ Done | YAML schema, entrypoints, hooks integration, auto_mode, permissions |
 | **MCP Client** | ✅ Done | Stdio transport, initialize, list_tools/resources/prompts, call_tool |
 | **Logging/Audit** | ✅ Done | Structured JSON logging, `AuditLogger` for security events |
 
@@ -352,7 +351,6 @@ runtime-ai/
 │   ├── hooks/                  # HookEngine, events
 │   ├── permissions/            # PermissionPolicy, executor
 │   ├── security/               # PromptSanitizer, InputValidator
-│   ├── skills/                 # SkillRegistry, schema, auto_mode
 │   ├── mcp/                    # MCP client
 │   ├── logging/                # Structured logging, audit
 │   ├── kikolib/                # Stdlib-only foundation (copied from ~/kiko)

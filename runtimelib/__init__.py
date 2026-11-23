@@ -47,9 +47,6 @@ from .session import SessionManager, SessionEntry, create_session_manager
 # Hooks
 from .hooks import HookEngine, HookRegistry, Hook, HookEvent, HookContext, get_hook_engine
 
-# Skills
-from .skills import SkillRegistry, Skill, SkillSchema, SkillTrigger, SkillAutoMode, SkillEntrypoint, SkillHook
-
 # MCP
 from .mcp import MCPClient, MCPClientManager, MCPServerConfig, MCPTool, MCPResource, MCPPrompt, get_mcp_manager
 
@@ -142,14 +139,6 @@ __all__ = [
     "HookContext",
     "get_hook_engine",
 
-    # Skills
-    "SkillRegistry",
-    "Skill",
-    "SkillSchema",
-    "SkillTrigger",
-    "SkillAutoMode",
-    "SkillEntrypoint",
-    "SkillHook",
 
     # MCP
     "MCPClient",
