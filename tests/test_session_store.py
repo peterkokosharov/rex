@@ -7,6 +7,9 @@
 """Tests for the per-session store."""
 
 import os
+import json
+
+import pytest
 
 from runtimelib.llm import ChatMessage
 from runtimelib.llm.messages import ToolCall
@@ -101,3 +104,53 @@ def test_title_written_once(tmp_path):
     s.append_message(ChatMessage.user("three"))
     assert s.path.read_text(encoding="utf-8").count('"type": "title"') == 1
     assert SessionStore.list_sessions(tmp_path)[0].title == "one"
+
+
+@pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b", "..", ".", "", "x" * 81, "a.b", "a b", "a\x00b"])
+def test_invalid_session_ids_rejected(tmp_path, bad):
+    with pytest.raises(ValueError):
+        SessionStore(tmp_path, session_id=bad)
+    with pytest.raises(ValueError):
+        SessionStore.open(tmp_path, bad)
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_traversal_id_does_not_touch_outside_dir(tmp_path):
+    inner = tmp_path / "sessions"
+    with pytest.raises(ValueError):
+        SessionStore(inner, session_id="../../escaped")
+    assert not (tmp_path / "escaped.jsonl").exists()
+
+
+def test_valid_custom_id_accepted(tmp_path):
+    s = SessionStore(tmp_path, session_id="My_session-1")
+    assert s.path.name == "My_session-1.jsonl"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
+def test_sessions_dir_is_private(tmp_path):
+    SessionStore(tmp_path / "new" / "sessions")
+    assert (tmp_path / "new" / "sessions").stat().st_mode & 0o077 == 0
+
+
+def test_compact_with_one_bad_message_keeps_the_rest(tmp_path):
+    s = SessionStore(tmp_path)
+    s.append_message(ChatMessage.user("old"))
+    good = [ChatMessage.user("keep me").to_dict(), "garbage", ChatMessage.assistant("ok").to_dict()]
+    with open(s.path, "a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps({"type": "compact", "messages": good}) + "\n")
+    assert [m.content for m in s.load_messages()] == ["keep me", "ok"]
+
+
+def test_list_sessions_tolerates_stat_failure(tmp_path, monkeypatch):
+    a = SessionStore(tmp_path, session_id="a")
+    SessionStore(tmp_path, session_id="b")
+    real = type(a.path).stat
+
+    def flaky(self, *args, **kw):
+        if self.name == "a.jsonl":
+            raise PermissionError("denied")
+        return real(self, *args, **kw)
+
+    monkeypatch.setattr(type(a.path), "stat", flaky)
+    assert [i.id for i in SessionStore.list_sessions(tmp_path)] == ["b"]

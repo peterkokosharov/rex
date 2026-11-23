@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -156,6 +157,16 @@ class SessionInfo:
     messages: int
 
 
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
+
+
+def validate_session_id(session_id: str) -> str:
+    """Return the id when it is a safe file stem, else raise ValueError (no path separators, dots, etc.)."""
+    if not isinstance(session_id, str) or _SESSION_ID_RE.fullmatch(session_id) is None:
+        raise ValueError(f"invalid session id: {session_id!r}")
+    return session_id
+
+
 def _read_lines(path: Path) -> list[dict[str, Any]]:
     """Parse a session file; bad lines (e.g. a torn last write) are skipped."""
     out: list[dict[str, Any]] = []
@@ -189,7 +200,13 @@ def _replay(records: list[dict[str, Any]]) -> tuple[list[ChatMessage], str, int]
             if kind == "message":
                 messages.append(ChatMessage.from_dict(rec["m"]))
             elif kind == "compact":
-                messages = [ChatMessage.from_dict(m) for m in rec["messages"]]
+                snapshot: list[ChatMessage] = []
+                for m in rec["messages"]:
+                    try:
+                        snapshot.append(ChatMessage.from_dict(m))
+                    except (KeyError, TypeError, AttributeError, ValueError):
+                        continue  # skip only the bad message, keep the rest of the snapshot
+                messages = snapshot
             elif kind == "title" and not title:
                 title = str(rec.get("title", ""))
         except (KeyError, TypeError, AttributeError):
@@ -208,7 +225,12 @@ class SessionStore:
     def __init__(self, directory: Path | str, session_id: str | None = None,
                  cwd: str | None = None, model: str = "") -> None:
         self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        if session_id is not None:
+            validate_session_id(session_id)
+        if os.name == "posix":
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        else:
+            self.directory.mkdir(parents=True, exist_ok=True)
         self.id = session_id or datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         self.path = self.directory / f"{self.id}.jsonl"
         self._titled = False
@@ -247,6 +269,7 @@ class SessionStore:
     @classmethod
     def open(cls, directory: Path | str, session_id: str) -> "SessionStore":
         """Open an existing session to keep appending; FileNotFoundError if absent."""
+        validate_session_id(session_id)
         path = Path(directory) / f"{session_id}.jsonl"
         if not path.exists():
             raise FileNotFoundError(f"session not found: {session_id}")
@@ -259,20 +282,26 @@ class SessionStore:
         if not d.is_dir():
             return []
         infos: list[SessionInfo] = []
+        mtimes: dict[Path, int] = {}
         for p in d.glob("*.jsonl"):
             recs = _read_lines(p)
             meta = next((r for r in recs if r.get("type") == "meta"), None)
             if meta is None:
                 continue
+            try:
+                mtime_ns = p.stat().st_mtime_ns
+            except OSError:
+                continue  # vanished or unreadable between glob and stat
             _, title, count = _replay(recs)
+            mtimes[p] = mtime_ns
             infos.append(SessionInfo(
                 id=str(meta.get("id") or p.stem), path=p,
                 cwd=str(meta.get("cwd", "")), model=str(meta.get("model", "")),
                 started=str(meta.get("started", "")),
-                updated=datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
+                updated=datetime.fromtimestamp(mtime_ns / 1e9).isoformat(),
                 title=title, messages=count,
             ))
-        infos.sort(key=lambda i: (i.path.stat().st_mtime_ns, i.id), reverse=True)
+        infos.sort(key=lambda i: (mtimes[i.path], i.id), reverse=True)
         return infos
 
     @staticmethod
