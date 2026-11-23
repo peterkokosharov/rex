@@ -6,6 +6,33 @@ Licensed under MIT License
 
 # REX — Runtime Execution Layer
 
+> **Status (2026-11-23):** this is the original v1.0 design. The runtime has moved on; where this text and the
+> code disagree, the code wins. Section 10 lists what exists. Differences that matter most:
+>
+> - **Permissions (section 5)** are not the `ALLOW/DENY/ASK` policy class described there. The gate in
+>   `runtimelib/agent/gate.py` uses configurable `allow` / `ask` / `deny` rules (`runtimelib/permissions/rules.py`,
+>   config key `permissions`), a mode (`permissions.mode`: `guard`, `sandbox`, `local`) and optional
+>   `pre_tool` / `post_tool` hook commands (`runtimelib/hooks/commands.py`). Precedence: deny rule, hook deny,
+>   ask, allow. Front-ends answer asks over the JSONL bridge (`permission` / `permission_reply`).
+> - **Tools:** `fileops`, `edit` (read-before-edit, returns a unified diff), `bash`, `git` (no `push`), `websearch`,
+>   `webfetch` (host-side, SSRF-checked), `render_diagram` (Mermaid via merman-cli), `load_skill` /
+>   `read_skill_file`, `task`, plus MCP tools (`mcp.servers`, stdio client).
+> - **Sessions (section 6):** `SessionStore` in `runtimelib/session/` writes one `<id>.jsonl` per session under
+>   `session.dir` (default `~/.config/runtime/sessions`). It is not yet wired into the REPL or the JSONL bridge
+>   (resume/continue is open).
+> - **Context:** the estimate counts system prompt, tool schemas and messages; one warning at
+>   `context.warn_percent` (default 80), mandatory auto-compaction at 90 % (`cli.compact_ratio`, clamped 0.5-0.95).
+> - **Instructions and skills:** `AGENTS.md` (user and project) goes into the system prompt;
+>   Claude-style skills (`SKILL.md`) come from `~/.config/runtime/skills`, `skills.paths` and
+>   `<workspace>/.rex/skills`. Repository content (project skills, project `AGENTS.md`) is used only when
+>   `workspace.trust` is true.
+> - **Tool choice (section 3.2)** is `auto` whenever tools exist; the first-turn `none` rule was dropped.
+> - **LLM access:** LiteLLM or any OpenAI-compatible endpoint; `scripts/claude_cli_gateway.py` serves the local
+>   `claude` CLI with tool calling over the same API. Python 3.12 or newer.
+> - **Orchestrator API (section 2):** `REX.run_agent` / `spawn_subagent` exist, but `TaskSpawnTool.execute` is
+>   still a placeholder and role tool sets are not applied by the CLI. Subagent orchestration stays out of scope.
+
+
 **Version:** 1.0.0  
 **Status:** Architecture Defined  
 **Date:** 2026-11-01
@@ -79,7 +106,7 @@ Licensed under MIT License
 
 ---
 
-## 2. REX API for Orchestrators (orchestrator)
+## 2a. REX API for Orchestrators
 
 ### 2.1 High-Level Interface
 
@@ -468,43 +495,31 @@ NVIDIA_API_KEY=...
 
 ---
 
-## 10. Implementation Status
+## 10. Implementation Status (2026-11-23)
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| CLI Framework | ✅ Done | `runtimelib/cli/` |
-| Config System | ✅ Done | `runtimelib/config/` |
-| LiteLLM Client | ✅ Done | `runtimelib/llm/` |
-| Model Registry | ✅ Done | `runtimelib/llm/models.py` |
-| Docker Guard Client | ✅ Done | `runtimelib/guard/` |
-| Tool Framework | ✅ Done | `runtimelib/tools/` |
-| Concrete Tools | ✅ Done | `fileops`, `bash`, `git`, `websearch`, `task` |
-| Agent Loop | ⚠️ P0 Blocker | `runtimelib/agent/loop.py` — tool_choice logic |
-| Session Manager | ✅ Done | `runtimelib/session/` |
-| Hook Engine | ✅ Done | `runtimelib/hooks/` |
-| Skills System | ✅ Done | `runtimelib/skills/` |
-| MCP Client | ✅ Done | `runtimelib/mcp/` |
-| Logging/Audit | ✅ Done | `runtimelib/logging/` |
-| **Permission Policy** | 📝 Design | `runtimelib/permissions/` (to create) |
-| **SandboxManager** | 📝 Design | `runtimelib/guard/sandbox.py` (to create) |
-| **REX API Class** | 📝 Design | `runtimelib/rex.py` (to create) |
+| CLI (REPL, one-shot, `--jsonl`, `--acp`) | Done | `runtime/`, `runtimelib/cli/`, `runtimelib/acp/` |
+| Config (YAML, `.env`, keystore) | Done | `runtimelib/config/` |
+| LLM client (streaming, tool calls), model registry | Done | `runtimelib/llm/` |
+| Agent loop (ReAct, context warning, auto-compact) | Done | `runtimelib/agent/` |
+| Tools: fileops, edit, bash, git, websearch, webfetch, render_diagram, skills | Done | `runtimelib/tools/` |
+| MCP stdio client | Done | `runtimelib/mcp/`, `runtimelib/tools/mcp_tool.py` |
+| Permission rules, gate, hook commands | Done | `runtimelib/permissions/`, `runtimelib/agent/gate.py`, `runtimelib/hooks/` |
+| Standing instructions (`AGENTS.md`), trust switch | Done | `runtimelib/agent/instructions.py`, `runtimelib/trust.py` |
+| Skills (`SKILL.md`) | Done | `runtimelib/skills/` |
+| Docker guard client and image | Done | `runtimelib/guard/`, `guard/`, `Dockerfile` |
+| Claude CLI gateway with tool calling | Done | `scripts/claude_cli_gateway.py` |
+| Session store (JSONL) | Library done, not wired to the front-ends | `runtimelib/session/` |
+| SandboxManager (worktrees, merge lock) | Code exists, no acceptance test | `runtimelib/guard/sandbox.py` |
+| REX API class | Skeleton: `task` tool does not spawn | `runtimelib/rex.py`, `runtimelib/tools/taskspawn.py` |
+| Per-role guard profiles | Not done | - |
+
+Open work is tracked in `docs/plans/`.
 
 ---
 
-## 11. Next Steps (Priority Order)
-
-| Priority | Task | Estimate |
-|----------|------|----------|
-| **P0** | Fix AgentLoop tool_choice logic + streaming tool call parsing | 1-3 days |
-| **P1** | Implement `PermissionPolicy` interface + `PermissionCheckingExecutor` | 2-3 days |
-| **P2** | Wire `SessionManager` + `HookEngine` into `AgentLoop.run()` | 2-3 days |
-| **P3** | Implement `SandboxManager` (worktrees, mounts, merge lock) | 3-5 days |
-| **P4** | Implement `REX` API class + `TaskSpawnTool` real implementation | 2-3 days |
-| **P5** | Run acceptance tests (T1-T5) | 3-5 days |
-
----
-
-## 12. Non-Goals (v1)
+## 11. Non-Goals (v1)
 
 - ❌ Multi-agent orchestration (the orchestrator owns this)
 - ❌ PR creation/approval UI (the orchestrator owns this)
