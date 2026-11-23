@@ -18,13 +18,13 @@ Licensed under MIT License
 
 ## Overview
 
-Runtime AI is a dual-mode execution runtime for AI agents, designed as a tool provider for orchestration systems (RONI, Archeo) and as a standalone vibe coding environment (like Codex/Claude Code).
+Runtime AI is a dual-mode execution runtime for AI agents, designed as a tool provider for orchestration systems and as a standalone vibe coding environment (like Codex/Claude Code).
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                       RONI (Orchestrator)                    │
+│                    Orchestrator (external)                   │
 │  • Task decomposition → DAG                                  │
 │  • Multi-agent delegation (Opus→Sonnet→Haiku→Sonnet)        │
 │  • Runs ON: REX (tool provider)                             │
@@ -32,7 +32,7 @@ Runtime AI is a dual-mode execution runtime for AI agents, designed as a tool pr
                            │ uses as tool provider
 ┌──────────────────────────▼──────────────────────────────────┐
 │                        REX (Runtime)                         │
-│  • Dual mode: Vibe Coding (human) + Tool Provider (RONI)    │
+│  • Dual mode: Vibe Coding (human) + Tool Provider (orchestrator)
 │  • AgentLoop, Tools, Sandbox, Sessions, Hooks, Permissions  │
 │  • Docker Guard + Git Worktrees                             │
 │  • LiteLLM proxy (multi-model)                              │
@@ -42,7 +42,7 @@ Runtime AI is a dual-mode execution runtime for AI agents, designed as a tool pr
 ## Quick Start
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.12+
 - Docker (for Guard sandbox)
 - LiteLLM proxy running on port 4000
 
@@ -77,7 +77,7 @@ runtime
 runtime "Fix the login bug in auth.py"
 ```
 
-### Tool Provider Mode (RONI/Archeo)
+### Tool Provider Mode (orchestrator)
 ```python
 from runtimelib import REX, AgentRole
 
@@ -91,7 +91,7 @@ result = await rex.run_agent(
     permissions=MyPermissionPolicy(),
 )
 
-# Subagent delegation (RONI)
+# Subagent delegation (orchestrator)
 handle = await rex.spawn_subagent(
     parent_context=current_context,
     task="Write tests for auth module",
@@ -256,8 +256,7 @@ runtime-ai/
 │   └── rex.py                  # REX API class
 ├── runtime/                    # Thin CLI wrapper
 ├── guard/                      # Docker Guard container
-├── ocs/                        # Architecture docs (HTML + Mermaid)
-├── arch-docs/                  # Markdown architecture docs
+├── docs/                       # Architecture, plans, history (see docs/INDEX.md)
 ├── scripts/                    # Utility scripts
 ├── tests/                      # Unit tests
 └── pyproject.toml
