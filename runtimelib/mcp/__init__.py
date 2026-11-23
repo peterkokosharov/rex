@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """MCP (Model Context Protocol) client integration."""
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -18,6 +17,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
+
+from runtimelib import procutil
 
 MAX_PAGES = 100  # safety bound for cursor paging
 
@@ -92,10 +93,11 @@ class StdioTransport(MCPTransport):
         if not command:
             raise ValueError("MCP stdio command is empty")
         command = list(command)
-        resolved = shutil.which(command[0])
-        if resolved is None:
-            raise FileNotFoundError(f"MCP server command not found: {command[0]}")
-        command[0] = resolved
+        if not os.path.dirname(command[0]) and not (os.altsep and os.altsep in command[0]):
+            resolved = procutil.safe_which(command[0], exclude=(cwd,) if cwd else ())
+            if resolved is None:
+                raise FileNotFoundError(f"MCP server command not found on PATH: {command[0]}")
+            command[0] = resolved
         full_env = dict(os.environ)
         if env:
             full_env.update({str(k): str(v) for k, v in env.items()})

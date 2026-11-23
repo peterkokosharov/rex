@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import shutil
+import os
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
@@ -235,9 +235,13 @@ class CommandHookRunner:
 
     def _execute(self, hook: HookCommand, payload: Mapping[str, Any]) -> _Outcome:
         argv = list(hook.command)
-        # Resolve through PATH ourselves so Windows launchers (npx.cmd) work.
-        resolved = shutil.which(argv[0])
-        if resolved:
+        # A bare command name is resolved through PATH ourselves (Windows launchers such as
+        # npx.cmd work; the workspace and the current directory are never searched). Never
+        # fall back to the bare name: that would let the OS search the current directory.
+        if not os.path.dirname(argv[0]) and not (os.altsep and os.altsep in argv[0]):
+            resolved = procutil.safe_which(argv[0], exclude=(self.cwd,) if self.cwd else ())
+            if resolved is None:
+                return _Outcome(None, "", "", f"not found on PATH: {argv[0]}")
             argv[0] = resolved
         try:
             data = json.dumps(payload, default=str).encode("utf-8")

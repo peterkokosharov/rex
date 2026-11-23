@@ -5,6 +5,7 @@
 """MCP client tests against a tiny fake stdio server (tests/fixtures/mcp_echo_server.py)."""
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -111,6 +112,15 @@ def test_process_death_fails_fast(client):
 def test_command_not_found():
     with pytest.raises(FileNotFoundError):
         StdioTransport(["definitely-not-a-command-xyz"])
+
+
+def test_bare_command_in_workspace_is_not_used(tmp_path, monkeypatch):
+    name = "planted-mcp.cmd" if os.name == "nt" else "planted-mcp"
+    (tmp_path / name).write_text("exit 0\n", encoding="utf-8")
+    (tmp_path / name).chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(tmp_path)]))
+    with pytest.raises(FileNotFoundError):
+        StdioTransport(["planted-mcp"], cwd=str(tmp_path))
 
 
 def test_manager_connect_and_tools():

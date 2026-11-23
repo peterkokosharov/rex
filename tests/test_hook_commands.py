@@ -119,6 +119,15 @@ class PreHookTests(HookTestBase):
         self.assertEqual(r.decision, "deny")
         self.assertTrue(r.error)
 
+    def test_bare_command_only_in_workspace_is_not_found(self):
+        name = "planted-hook.cmd" if sys.platform == "win32" else "planted-hook"
+        (self.dir / name).write_text("exit 0\n", encoding="utf-8")
+        (self.dir / name).chmod(0o755)
+        r = self.runner(pre=[HookCommand("*", ("planted-hook",))]).run_pre("bash")
+        self.assertEqual(r.decision, "deny")
+        self.assertTrue(r.error)
+        self.assertIn("not found on PATH: planted-hook", r.reason)
+
     def test_malformed_json_is_error(self):
         cmd = self.script("bad.py", "print('not json')")
         r = self.runner(pre=[HookCommand("*", tuple(cmd))]).run_pre("bash")
@@ -210,7 +219,7 @@ class PostHookTests(HookTestBase):
         note = self.runner(post=[HookCommand("*", tuple(slow), timeout=0.5)]).run_post("edit")
         self.assertIn("timed out", note)
         missing = HookCommand("*", ("definitely-not-a-real-binary-xyz",))
-        self.assertIn("cannot run", self.runner(post=[missing]).run_post("edit"))
+        self.assertIn("not found on PATH", self.runner(post=[missing]).run_post("edit"))
 
 
 class ConfigTests(unittest.TestCase):
