@@ -67,13 +67,16 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 - StructuredPromptBuilder: zone separation (SYSTEM/CONTEXT/USER/TOOL_OUTPUT)
 - Defense-in-depth: structural only, no content filtering
 
-### Architecture Design (`arch-docs/`)
+### Documentation (`docs/`)
 
-| Document | Version | Status |
-|----------|---------|--------|
-| `role-based-agent-architecture.md` | 0.2.0 | ✅ Revised after Gemini review |
-| `gemini-review.md` | — | ✅ Gemini 3.5 Flash-Lite review output |
-| `GEMINI_REVIEW_PROCEDURE.md` | — | ✅ How to run reviews |
+All documentation is indexed in [`docs/INDEX.md`](docs/INDEX.md) (reading order, current vs historical).
+
+| Document | Status |
+|----------|--------|
+| [`docs/architecture/role-based-agent-architecture.md`](docs/architecture/role-based-agent-architecture.md) | Design, with a status block against the code |
+| [`docs/architecture/gemini-review-procedure.md`](docs/architecture/gemini-review-procedure.md) | How to run an LLM review of the design |
+| [`docs/plans/`](docs/plans/) | Plans and design records |
+| [`docs/history/`](docs/history/) | Superseded notes, kept for background |
 
 ### Key Design Decisions (v0.2.0)
 
@@ -440,8 +443,7 @@ runtime-ai/
 │   ├── __main__.py             # CLI entry point
 │   └── commands.py             # /guard, /agent, /tool, /history
 ├── guard/                      # Docker Guard container (Dockerfile, entrypoint)
-├── arch-docs/                  # Architecture documents
-├── ocs/                        # Architecture docs (HTML + Mermaid)
+├── docs/                       # Architecture, plans, history (see docs/INDEX.md)
 ├── scripts/                    # Utility scripts (review_architecture.py)
 ├── tests/                      # Unit tests
 ├── .venv/                      # Virtual environment
@@ -456,7 +458,7 @@ runtime-ai/
 2. **Add tests** in `tests/` (parallel with code)
 3. **Run tests** → `pytest tests/ -v`
 4. **Git commit** after each completed task (local only)
-5. **Update arch-docs** for architectural changes
+5. **Update docs/architecture/** for architectural changes
 6. **Run Gemini review** for major design changes
 
 ---
@@ -520,7 +522,7 @@ code run by an interpreter (`python -c`, `perl -e`, `node -e`) or obfuscated she
 boundary) or allow-lists for anything that matters.
 
 ### Role Configs
-`~/.config/runtime/roles/{ORCHESTRATOR,CODER,TESTER,...}.yaml` — see `arch-docs/role-based-agent-architecture.md` §10.1
+`~/.config/runtime/roles/{ORCHESTRATOR,CODER,TESTER,...}.yaml` — see `docs/architecture/role-based-agent-architecture.md` §8.1
 
 ---
 
