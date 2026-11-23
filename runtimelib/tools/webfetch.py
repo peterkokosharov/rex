@@ -39,6 +39,8 @@ TIMEOUT = 20.0
 MAX_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 DEFAULT_MAX_CHARS = 20000
+MAX_CHARS_LIMIT = 200_000
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 USER_AGENT = "rex-webfetch/1.0"
 
 
@@ -47,8 +49,11 @@ class WebFetchError(ValueError):
 
 
 def _ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:  # NAT64 well-known prefix: judge the embedded IPv4 address
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return (not ip.is_global or ip.is_loopback or ip.is_link_local or ip.is_multicast
             or ip.is_reserved or ip.is_unspecified or ip.is_private)
 
@@ -71,6 +76,15 @@ def resolve_public(host: str, port: int, allow_private: bool = False) -> str:
             if _ip_blocked(ipaddress.ip_address(ip_text)):
                 raise WebFetchError(f"refused: {host!r} resolves to a private or local address")
     return ips[0]
+
+
+def _arm_timeout(conn: http.client.HTTPConnection, deadline: float) -> None:
+    """Limit the next socket wait to the time left of the overall deadline."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise WebFetchError("timeout")
+    if conn.sock is not None:
+        conn.sock.settimeout(left)
 
 
 class _PinnedHTTP(http.client.HTTPConnection):
@@ -227,15 +241,15 @@ class WebFetchTool(Tool):
             conn.request("GET", target, headers={
                 "Host": u.netloc.rpartition("@")[2], "User-Agent": USER_AGENT,
                 "Accept-Encoding": "identity", "Accept": "text/html,text/*,application/json;q=0.9,*/*;q=0.5"})
+            _arm_timeout(conn, deadline)
             resp = conn.getresponse()
             chunks: list[bytes] = []
             total = 0
             truncated = False
             if not (300 <= resp.status < 400):
                 while True:
-                    if time.monotonic() > deadline:
-                        raise WebFetchError("timeout")
-                    chunk = resp.read(65536)
+                    _arm_timeout(conn, deadline)
+                    chunk = resp.read1(65536)
                     if not chunk:
                         break
                     total += len(chunk)
@@ -258,7 +272,7 @@ class WebFetchTool(Tool):
             max_chars = int(kwargs.get("max_chars") or DEFAULT_MAX_CHARS)
         except (TypeError, ValueError):
             max_chars = DEFAULT_MAX_CHARS
-        max_chars = max(1, max_chars)
+        max_chars = min(max(1, max_chars), MAX_CHARS_LIMIT)
         url = url.strip()
         deadline = time.monotonic() + TIMEOUT
         for _ in range(MAX_REDIRECTS + 1):

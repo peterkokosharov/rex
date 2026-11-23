@@ -46,6 +46,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(302, "text/plain", b"", {"Location": "/loop"})
         elif p == "/redir":
             self._send(302, "text/plain", b"", {"Location": "/text"})
+        elif p == "/to-private":
+            self._send(302, "text/plain", b"", {"Location": "http://127.0.0.1:%d/text" % self.server.server_address[1]})
         elif p == "/hostile":
             self._send(302, "text/plain", b"", {"Location": "file:///etc/passwd"})
         else:
@@ -87,7 +89,7 @@ def test_json_and_text_as_is(server, tool):
 
 def test_size_cap_and_max_chars(server, tool):
     r = tool.execute(url=server + "/big", max_chars=10 ** 9)
-    assert r["truncated"] is True and len(r["text"]) == wf.MAX_BYTES
+    assert r["truncated"] is True and len(r["text"]) == wf.MAX_CHARS_LIMIT
     r = tool.execute(url=server + "/text", max_chars=2)
     assert r["text"] == "ca" and r["truncated"] is True
 
@@ -136,6 +138,43 @@ def test_dns_rebinding_pinned(monkeypatch, server):
                         lambda h, p, *a, **k: [(2, 1, 6, "", ("127.0.0.1", p))])
     r = WebFetchTool(allow_private=True).execute(url=f"http://pinned.test:{port}/text")
     assert r["text"] == "café"
+
+
+def test_public_to_private_redirect_refused(monkeypatch, server):
+    """The first hop looks public; the redirect target is loopback and must be refused."""
+    port = int(server.rsplit(":", 1)[1])
+    real = wf.resolve_public
+
+    def fake(host, p, allow_private=False):
+        if host == "public.test":
+            return "127.0.0.1"  # stands in for a public address that happens to reach our test server
+        return real(host, p, allow_private)
+
+    monkeypatch.setattr(wf, "resolve_public", fake)
+    with pytest.raises(WebFetchError, match="private or local"):
+        WebFetchTool().execute(url=f"http://public.test:{port}/to-private")
+
+
+def test_one_getaddrinfo_per_hop(monkeypatch, server):
+    port = int(server.rsplit(":", 1)[1])
+    calls = []
+
+    def fake_gai(host, p, *a, **k):
+        calls.append(host)
+        return [(2, 1, 6, "", ("127.0.0.1", p))]
+
+    monkeypatch.setattr(wf.socket, "getaddrinfo", fake_gai)
+    r = WebFetchTool(allow_private=True).execute(url=f"http://hop.test:{port}/redir")  # 302 -> /text
+    assert r["text"] == "café"
+    # exactly one name lookup per hop (create_connection also "resolves" the pinned IP literal)
+    assert [c for c in calls if c == "hop.test"] == ["hop.test", "hop.test"]
+    assert set(calls) <= {"hop.test", "127.0.0.1"}
+
+
+def test_nat64_embedded_private_blocked():
+    import ipaddress
+    assert wf._ip_blocked(ipaddress.ip_address("64:ff9b::7f00:1"))
+    assert wf._ip_blocked(ipaddress.ip_address("64:ff9b::a00:1"))
 
 
 def test_binary_refused(server, tool):
