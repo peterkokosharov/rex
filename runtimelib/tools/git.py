@@ -127,13 +127,15 @@ class GitTool(Tool):
             args = ["git", "diff"]
             if kwargs.get("staged"):
                 args.append("--staged")
-            files = kwargs.get("files")
+            files = _safe_files(kwargs.get("files"))
             if files:
-                args += list(files)
+                args += ["--", *files]
             return run(args)
         if operation == "add":
-            files = kwargs.get("files") or []
-            return run(["git", "add", *files])
+            files = _safe_files(kwargs.get("files"))
+            if not files:
+                raise ValueError("git add needs at least one file")
+            return run(["git", "add", "--", *files])
         if operation == "commit":
             args = ["git", "commit", "-m", kwargs.get("message", "")]
             author = kwargs.get("author")
@@ -141,7 +143,7 @@ class GitTool(Tool):
                 args += ["--author", author]
             return run(args)
         if operation == "log":
-            args = ["git", "log", f"-n{kwargs.get('max_count', 10)}"]
+            args = ["git", "log", f"-n{int(kwargs.get('max_count', 10))}"]
             if kwargs.get("oneline", True):
                 args.append("--oneline")
             return run(args)
@@ -152,12 +154,35 @@ class GitTool(Tool):
             return run(args)
         if operation == "checkout":
             branch = kwargs.get("branch", "")
+            if not isinstance(branch, str) or not branch or branch.startswith("-"):
+                raise ValueError(f"invalid branch name: {branch!r}")
             args = ["git", "checkout"]
             if kwargs.get("create"):
                 args.append("-b")
             args.append(branch)
             return run(args)
         raise ValueError(f"Unknown git operation: {operation}")
+
+
+def _safe_files(files: Any) -> list[str]:
+    """File arguments for git; entries that look like options are rejected.
+
+    Without this a model could pass e.g. ``--output=/x`` to ``git diff`` or
+    ``--exec`` style flags. A ``--`` separator is added by the callers too.
+    There is deliberately no push operation in this tool.
+    """
+    if not files:
+        return []
+    if isinstance(files, str):
+        files = [files]
+    out = []
+    for f in files:
+        if not isinstance(f, str) or not f:
+            raise ValueError(f"invalid file entry: {f!r}")
+        if f.startswith("-"):
+            raise ValueError(f"file entries must not start with '-': {f!r}")
+        out.append(f)
+    return out
 
 
 def create_git_tool(config: Config | None = None) -> GitTool:
