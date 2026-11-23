@@ -314,6 +314,19 @@ docker build -t runtime/guard:latest .
 
 If Docker permissions/image are missing, the CLI shows hints; for quick local dev you can use `--local-tools`.
 
+### Diagrams
+
+Ask for a flowchart, sequence, class, state, ER or gantt diagram and rex calls the `render_diagram` tool. It renders
+Mermaid source with [merman](https://github.com/Latias94/merman) (v0.8.0, Apache-2.0 OR MIT) to
+`<workspace>/diagrams/<name>.svg` (or `.png`) and answers with a short Unicode text sketch plus a Markdown image
+line such as `![login](diagrams/login.svg)`. Terminal front-ends show the sketch and can open the image on demand;
+GUI front-ends show the image.
+
+merman is not bundled. Unpack it anywhere and set `MERMAN_HOME` to the folder that contains `merman-cli`
+(`merman-cli.exe` on Windows); otherwise `merman-cli` is looked up on `PATH`. If it is missing the tool returns a
+clear error. The tool runs on the host and only writes inside the workspace, in both `--local-tools` and Docker
+mode; if merman is not installed on the host, Docker mode returns the same error.
+
 ### Run Tests
 
 ```bash
