@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """API keys straight from the OS secret store (no third-party keyring).
 
 Backends (factory kind "keystore", override with env KIKO_KEYSTORE_IMPL):
@@ -12,11 +8,13 @@ Backends (factory kind "keystore", override with env KIKO_KEYSTORE_IMPL):
   keychain    macOS ``security`` CLI (service KIKO, account <NAME>)
   secret-tool GNOME Keyring / KDE via libsecret; attribute ``kiko-identity <NAME>``
   kwallet     KDE ``kwallet-query`` (wallet kdewallet, folder Passwords)
-  dcop        TDE / Q4OS kwalletd over DCOP -- UNVERIFIED on live TDE
+  dcop        TDE / Q4OS kwalletd over DCOP -- verified on live TDE/Q4OS by the owner (2026-11)
 
 Every backend has get(name) -> str | None, set(name, value) -> bool, delete(name) -> bool.
-Names are upper-cased. Subprocess calls use list args (no shell), a 3 s timeout, and
-swallow errors. Secret values are never logged or put in exceptions.
+Names are upper-cased. Subprocess calls use list args (no shell), a timeout (env
+KIKO_KEYSTORE_TIMEOUT seconds, default 15: a locked wallet may show an unlock prompt) and
+swallow errors; a timeout is counted (``timeout_count``) so callers can say "keystore did not
+answer" instead of "not found". Secret values are never logged or put in exceptions.
 
 Known limits: the macOS ``security add-generic-password -w <value>`` and the TDE
 ``dcop ... writePassword`` take the value as a command-line argument (visible in the
@@ -30,17 +28,41 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Any, Mapping
 
 from . import factory
 
 KIND = "keystore"
-_TIMEOUT = 3
+DEFAULT_TIMEOUT = 15.0
+TIMEOUT_ENV = "KIKO_KEYSTORE_TIMEOUT"
+NO_ANSWER = "keystore did not answer (locked? unlock prompt open?)"
+_timeouts = 0
+_timeouts_lock = threading.Lock()
+
+
+def timeout_seconds() -> float:
+    """Seconds a keystore tool may take: env KIKO_KEYSTORE_TIMEOUT, else 15 (bad / non-positive values: 15)."""
+    try:
+        v = float(os.environ.get(TIMEOUT_ENV, ""))
+    except ValueError:
+        return DEFAULT_TIMEOUT
+    return v if v > 0 and v == v and v != float("inf") else DEFAULT_TIMEOUT
+
+
+def timeout_count() -> int:
+    """How many keystore tool calls ran into the timeout since start (compare before / after a lookup)."""
+    return _timeouts
 
 
 def _run(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess[str] | None:
+    global _timeouts
     try:
-        return subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=_TIMEOUT)
+        return subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=timeout_seconds())
+    except subprocess.TimeoutExpired:
+        with _timeouts_lock:
+            _timeouts += 1
+        return None
     except (subprocess.SubprocessError, OSError, ValueError):
         return None
 
@@ -187,7 +209,7 @@ class KWalletStore:
 
 
 class DcopStore:
-    """TDE / Q4OS (KDE3) kwalletd over DCOP. UNVERIFIED on live TDE.
+    """TDE / Q4OS (KDE3) kwalletd over DCOP. Verified on live TDE/Q4OS by the owner (2026-11).
 
     In KDE3/TDE kwalletd lives inside kded, so ``dcop kded kwalletd <method>`` is tried
     first and ``dcop kwalletd <method>`` second. KDE3 signatures: open(wallet, wId) -> handle,

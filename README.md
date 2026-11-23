@@ -442,8 +442,8 @@ runtime-ai/
 │   ├── security/               # PromptSanitizer, InputValidator
 │   ├── mcp/                    # MCP client
 │   ├── logging/                # Structured logging, audit
-│   ├── kikolib/                # Stdlib-only foundation (copied from ~/kiko)
 │   └── rex.py                  # REX API class
+├── vendor/kikolib/             # Stdlib-only foundation: pinned, UNMODIFIED copy of kiko `kikolib-v0.2.0` (SHA256SUMS-checked)
 ├── runtime/                    # App-specific (thin wrapper)
 │   ├── __main__.py             # CLI entry point
 │   └── commands.py             # /guard, /agent, /tool, /history

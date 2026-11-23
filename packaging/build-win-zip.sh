@@ -27,6 +27,8 @@ done
 echo "==> Staging Python sources"
 cp -a "$ROOT/runtime" "$STAGE/rex/"
 cp -a "$ROOT/runtimelib" "$STAGE/rex/"
+mkdir -p "$STAGE/rex/vendor"
+cp -a "$ROOT/vendor/kikolib" "$STAGE/rex/vendor/"
 find "$STAGE/rex" -type d -name __pycache__ -prune -exec rm -rf {} +
 
 cat > "$STAGE/rex/rex.cmd" <<'EOF'

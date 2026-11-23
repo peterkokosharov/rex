@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """OS-process helpers: signals, memory, systemd notify/watchdog, private files.
 
 POSIX first; on Windows every helper is a safe no-op or has a Windows equivalent.

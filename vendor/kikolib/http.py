@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """Blocking, thread-safe HTTP/1.1 client on http.client + ssl (no asyncio, no gzip, no HTTP/2).
 
 Replaces httpx / aiohttp / requests (and certifi: the OS trust store is used).
@@ -376,6 +372,14 @@ class StdlibBackend:
     def request(self, method: str, url: str, headers: Mapping[str, str] | None = None,
                 body: bytes | None = None, timeout: float = DEFAULT_TIMEOUT,
                 stream: bool = False) -> Response:
+        """One request. What ``timeout`` (seconds) covers:
+
+        * connecting (TCP and TLS handshake) uses ``connect_timeout`` (10 s), not ``timeout``;
+        * after that ``timeout`` is a per-operation socket timeout: it limits sending the request, then the wait
+          for the response head (time to first byte), then every single read of the body (idle time between two
+          chunks). It is NOT a total limit: a streaming answer that keeps sending bytes is never cut, however long
+          it takes; a silent upstream is cut ``timeout`` seconds after its last byte.
+        """
         u = urlsplit(url)
         scheme = u.scheme.lower()
         if scheme not in ("http", "https") or not u.hostname:
@@ -484,6 +488,7 @@ def _register() -> None:
 
 
 _register()
+from . import winhttp as _winhttp  # noqa: E402,F401  (registers the "winhttp" backend; import is safe off Windows)
 
 
 def client() -> HttpBackend:

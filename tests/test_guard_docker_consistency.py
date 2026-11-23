@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-STALE_IMPORT = "runtime" + ".kikolib"
+STALE_IMPORTS = ("runtime" + ".kikolib", "runtimelib" + ".kikolib", "runtimelib" + "/kikolib", "http" + "_client", "posix" + "_utils")
 OLD_VERSION = "0." + "2.2"
 SUFFIXES = {".py", ".sh", ".yml", ".yaml", ".example"}
 
@@ -22,7 +22,7 @@ def _files():
 
 
 def test_no_stale_kikolib_path():
-    bad = [str(p.relative_to(ROOT)) for p in _files() if STALE_IMPORT in p.read_text(encoding="utf-8", errors="replace")]
+    bad = [str(p.relative_to(ROOT)) for p in _files() if any(w in p.read_text(encoding="utf-8", errors="replace") for w in STALE_IMPORTS)]
     assert not bad, f"stale kikolib path in: {bad}"
 
 

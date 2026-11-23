@@ -8,6 +8,20 @@
 
 from __future__ import annotations
 
+# kikolib is a pinned, unmodified copy in <repo>/vendor/kikolib (see vendor/kikolib/README.md). Make it
+# importable as the top-level package `kikolib`. Appended, so an installed system kikolib wins.
+import sys as _sys
+from pathlib import Path as _Path
+
+_VENDOR = str(_Path(__file__).resolve().parent.parent / "vendor")
+if _VENDOR not in _sys.path:
+    _sys.path.append(_VENDOR)
+
+from kikolib import factory as _factory, http as _kikolib_http  # noqa: E402,F401
+
+# Pin the stdlib HTTP backend (never silently switch to WinHTTP on Windows).
+_factory.choose("http", override="stdlib")
+
 # Version
 __version__ = "0.3.0"
 

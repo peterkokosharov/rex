@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from ..kikolib import yaml_lite, dotenv
+from kikolib import yaml_lite, dotenv
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "runtime" / "config.yaml"

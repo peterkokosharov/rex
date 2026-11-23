@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from ..kikolib import yaml_lite, dotenv
+from kikolib import yaml_lite, dotenv
 
 
 class ConfigSource:

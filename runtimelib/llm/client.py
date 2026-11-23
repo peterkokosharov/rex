@@ -4,7 +4,7 @@
 # LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
-"""LiteLLM client using kikolib.http_client for OpenAI-compatible API."""
+"""LiteLLM client using kikolib.http for OpenAI-compatible API."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from dataclasses import dataclass, field, fields
 from typing import Any, AsyncIterator, Iterator, Optional
 
 from ..config import Config
-from ..kikolib import http_client, retry
-from ..kikolib.http_client import HttpBackend, Response
+from kikolib import http, retry
+from kikolib.http import HttpBackend, Response
 
 # A LiteLLM ``max_tokens`` below this is taken as an output limit, not a window.
 MIN_MAX_TOKENS_WINDOW = 32768
@@ -149,7 +149,7 @@ class LiteLLMClient:
         self.api_key = api_key
         self.default_model = model
         self.timeout = timeout
-        self._http = http_backend or http_client.client()
+        self._http = http_backend or http.client()
         self._retry_policy = retry.RetryPolicy()
         self._window_cache: dict[str, Optional[int]] = {}
 

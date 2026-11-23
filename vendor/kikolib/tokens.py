@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """Fallback token estimate, used only when an upstream returns no usage.
 
 This is an estimate, not a tokenizer: ceil(utf-8 bytes / 4) plus small fixed overheads.

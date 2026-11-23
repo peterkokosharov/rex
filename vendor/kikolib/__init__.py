@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """kikolib - small library for kiko-lite: threads (no asyncio), standard library only.
 
 Rule: modules here import only the Python standard library and other kikolib
@@ -19,17 +15,21 @@ if sys.version_info < (3, 11):
     raise RuntimeError("kikolib needs Python 3.11 or newer")
 
 __all__ = [
+    "config",
     "dotenv",
     "factory",
-    "http_client",
+    "http",
     "keystore",
-    "native_utils",
-    "posix_utils",
+    "logs",
+    "posix",
     "retry",
     "server",
     "sse",
     "tokens",
+    "tomlwrite",
+    "websocket",
+    "winhttp",
     "yaml_lite",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

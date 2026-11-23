@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """Retry policy for slow, flaky free providers (exponential backoff, full jitter, Retry-After).
 
 ``send_with_retry`` retries only *before* a body byte was consumed: it never reads a
@@ -21,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 
-from .http_client import ConnectError, ConnectionLost, HttpTimeout, Response
+from .http import ConnectError, ConnectionLost, HttpTimeout, Response
 
 PING_INTERVAL = 10.0
 

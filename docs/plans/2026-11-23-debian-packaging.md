@@ -99,10 +99,15 @@ Decision (owner, 2026-11-23): kikolib lives in the kiko repo, which is its singl
 `python3-kikolib` deb; rex takes kikolib from there (deb dependency, and a pinned copy from a kiko release for the
 source checkout / Windows / macOS / Docker). No separate kikolib repo.
 
-Progress on step 2 (2026-11-23): done now - `guard/entrypoint.py` and `Dockerfile` use `runtimelib.kikolib` (the image
-copies only `runtimelib/kikolib` to `/app/runtimelib/kikolib`), image tag unified to `rex-guard:latest`, version read
-from `runtimelib.__version__` everywhere. Remaining - the move to `vendor/kikolib` + `VERSION` + sync test; when it
-happens the Dockerfile COPY path and the guard imports change again.
+Progress on step 2 (2026-11-23): DONE - `runtimelib/kikolib` is deleted; rex vendors the unmodified kiko release
+`kikolib-v0.2.0` (commit add4685) at `vendor/kikolib/` (with its `SHA256SUMS`; `.gitattributes` forces LF).
+`tests/test_vendor_kikolib.py` checks every file against the manifest and `__version__ == "0.2.0"`. Code imports the
+top-level `kikolib`: `runtimelib/__init__.py` appends `<root>/vendor` to `sys.path` (a system copy wins), `guard/entrypoint.py`
+does the same fallback, the image copies `vendor/kikolib` to `/app/vendor/kikolib` (`PYTHONPATH=/app:/app/vendor`), and the
+zip/deb scripts ship `vendor/kikolib` next to `runtimelib`. Renames `http_client`->`http`, `posix_utils`->`posix`. rex pins the
+stdlib HTTP backend at start-up. Image tag unified to `rex-guard:latest`, version read from `runtimelib.__version__`.
+A separate `VERSION` file is not needed (the version lives in kikolib itself); the deb dropping `vendor/` for
+`python3-kikolib` belongs to step 3.
 
 ## Sources
 

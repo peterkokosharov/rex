@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """Read-only YAML subset parser (replaces pyyaml). Used only to import an old kiko.yaml once.
 
 Supported: block mappings and sequences (``- key: value`` items too), nesting by spaces
@@ -360,7 +356,10 @@ def load(text: str) -> Any:
     if not lines:
         return None
     p = _Parser(lines)
-    result = p.block(lines[0].indent)
+    try:
+        result = p.block(lines[0].indent)
+    except RecursionError:
+        raise YamlError("document nested too deeply") from None
     if p._more():
         raise YamlError("unexpected content", p.lines[p.pos].no)
     return result

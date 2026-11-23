@@ -34,7 +34,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urljoin, urlsplit
 
 from .base import Tool, ToolSchema
-from ..kikolib.http_client import ca_context
+from kikolib.http import ca_context
 
 TIMEOUT = 20.0
 MAX_BYTES = 2 * 1024 * 1024

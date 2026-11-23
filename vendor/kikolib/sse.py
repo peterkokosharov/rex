@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """Server-Sent Events: encode events for the client, parse upstream streams.
 
 ``encode`` / ``ping`` build the bytes kiko-lite sends to Claude Code (Anthropic style).

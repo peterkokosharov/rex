@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
-# Licensed under MIT License
-
-# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: Anthropic Opus
 """Threaded HTTP/1.1 server and router for kiko-proxy (http.server + threads, no asyncio).
 
 Replaces (long term): ``fastapi`` (+starlette), ``uvicorn`` (+h11, click) and ``python-multipart``.
@@ -18,15 +14,19 @@ connection reusable and a truncated stream is detectable); HTTP/1.0 clients get 
 
 ``serve`` is the blocking entry point (signals, systemd notify/watchdog, RSS limit, graceful drain);
 ``Server`` is the object form (``start`` / ``stop``) used by tests.
-Chunked *request* bodies are not supported (411); no TLS, HTTP/2 or websockets.
+Chunked *request* bodies are not supported (411); no TLS or HTTP/2. WebSockets: see ``kikolib.websocket``
+(a handler returns a ``Takeover`` that owns the connection; it counts as an active request and is closed
+with 1001 on ``request_stop``).
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -35,18 +35,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from . import factory, posix_utils as posix
+from . import config, factory, posix
 
 logger = logging.getLogger("kikolib.server")
 
 DEFAULT_MAX_BODY = 32 * 1024 * 1024
 RSS_CHECK_SECONDS = 30.0
 RSS_EXIT_CODE = 75  # EX_TEMPFAIL: non-zero so systemd Restart=on-failure restarts the service
+_TAKEOVER_STOP_SECONDS = 3.0  # shared deadline for telling all upgraded connections to close on stop
 _BODY_METHODS = ("POST", "PUT", "PATCH")
 _ERROR_TYPES = {
     400: "invalid_request_error", 401: "authentication_error", 403: "permission_error",
     404: "not_found_error", 405: "invalid_request_error", 411: "invalid_request_error",
-    413: "request_too_large", 429: "rate_limit_error", 529: "overloaded_error",
+    413: "request_too_large", 415: "invalid_request_error", 426: "invalid_request_error", 429: "rate_limit_error", 529: "overloaded_error",
 }
 
 
@@ -100,7 +101,7 @@ class Request:
         """Decode the body as JSON; HTTPError 400 when it is not valid JSON."""
         try:
             return json.loads(self.body)
-        except ValueError:
+        except (ValueError, RecursionError):  # a deeply nested body raises RecursionError
             raise HTTPError(400, "invalid_request_error", "request body is not valid JSON") from None
 
 
@@ -117,24 +118,53 @@ class StreamResponse:
         self.chunks, self.status, self.headers, self.content_type = chunks, status, dict(headers or {}), content_type
 
 
-Handler = Callable[[Request], "JsonResponse | StreamResponse"]
+class Takeover:
+    """Response that takes over the connection (WebSocket). ``run(handler)`` owns the socket until it
+    returns the status for the ``after`` hooks; the connection is closed afterwards. Objects added to
+    ``_HTTPServer.takeovers`` get ``abort_on_stop()`` called by ``Server.request_stop``."""
+
+    def run(self, handler: Any) -> int:
+        raise NotImplementedError
+
+    def abort_on_stop(self) -> None:
+        pass
+
+
+Handler = Callable[[Request], "JsonResponse | StreamResponse | Takeover"]
 
 
 class App:
-    """Route table plus before/after hooks."""
+    """Route table plus before hooks."""
 
     def __init__(self, max_body: int = DEFAULT_MAX_BODY) -> None:
         self.max_body = max_body
         self._routes: list[tuple[str, re.Pattern[str], Handler]] = []
         self._before: list[Callable[[Request], None]] = []
         self._after: list[Callable[[Request, int, float], None]] = []
+        self.browser_guard = False  # True: reject Origin / foreign Host / non-JSON POST (see _Handler._guard)
+        self.allow_same_origin = False  # with browser_guard: accept an Origin equal to http://<Host> (own web UI)
+        self.same_origin_paths: tuple[str, ...] = ()  # with browser_guard: same, but only for GET of these prefixes
 
     def route(self, method: str, path: str) -> Callable[[Handler], Handler]:
-        """Decorator: exact path, or ``{name}`` segments (``/v1/models/{id}:generateContent``)."""
-        pattern = "".join(
-            f"(?P<{p[1:-1]}>[^/]+)" if p.startswith("{") and p.endswith("}") else re.escape(p)
-            for p in re.split(r"(\{[A-Za-z_]\w*\})", path) if p
-        )
+        """Decorator: exact path, or ``{name}`` segments (``/v1/models/{id}:generateContent``).
+
+        ``{name}`` matches one segment ([^/]+); ``{name:path}`` matches the rest of the path (.+).
+        Custom ``{name:regex}`` patterns are rejected (ValueError): user regexes risk ReDoS and surprises.
+        """
+        pattern = ""
+        for p in re.split(r"(\{[A-Za-z_]\w*(?::[^}]*)?\})", path):
+            if not p:
+                continue
+            if p.startswith("{") and p.endswith("}"):
+                name, colon, kind = p[1:-1].partition(":")
+                if not colon:
+                    pattern += f"(?P<{name}>[^/]+)"
+                elif kind == "path":
+                    pattern += f"(?P<{name}>.+)"
+                else:
+                    raise ValueError(f"unsupported route pattern {{{name}:{kind}}} (only :path)")
+            else:
+                pattern += re.escape(p)
         rx = re.compile(pattern + r"\Z")
 
         def deco(fn: Handler) -> Handler:
@@ -198,6 +228,33 @@ def _next_chunk(it: Iterator[Any]) -> bytes | None:
     return None
 
 
+def _host_only(value: str) -> str:
+    """Host header -> bare lowercase host (port stripped, IPv6 brackets removed)."""
+    v = value.strip().lower()
+    if v.startswith("["):
+        return v[1:].split("]", 1)[0]
+    if v.count(":") == 1:
+        v = v.split(":", 1)[0]
+    return v.rstrip(".")
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 def _close(obj: Any) -> None:
     close = getattr(obj, "close", None)
     if callable(close):
@@ -207,17 +264,49 @@ def _close(obj: Any) -> None:
             logger.debug("closing stream source failed", exc_info=True)
 
 
+LINGER_SECONDS = 1.0  # a rejection that left the request body unread: how long we read it off before closing
+LINGER_BYTES = 64 * 1024
+
+
+def _lingering_close(sock: Any, seconds: float = LINGER_SECONDS, limit: int = LINGER_BYTES) -> None:
+    """Close without a TCP reset: the answer is sent; send our FIN, then read (and drop) what the client is still
+    sending, for at most ``seconds`` and ``limit`` bytes. Closing a socket that holds unread data makes the OS send
+    an RST, which can destroy the response before the client has read it. Never raises."""
+    try:
+        sock.shutdown(socket.SHUT_WR)
+        end, got = time.monotonic() + seconds, 0
+        while got < limit:
+            left = end - time.monotonic()
+            if left <= 0:
+                break
+            sock.settimeout(left)
+            chunk = sock.recv(min(8192, limit - got))
+            if not chunk:
+                break
+            got += len(chunk)
+    except (OSError, ValueError):
+        pass
+
+
+_LINGERERS = 16  # cap on concurrent lingering closes of 503 connections
+
+
 class _HTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = os.name == "posix"  # on Windows SO_REUSEADDR lets another process share the port
     request_queue_size = 64
 
-    def __init__(self, addr: tuple[str, int], app: App, idle_timeout: float) -> None:
+    def __init__(self, addr: tuple[str, int], app: App, idle_timeout: float, max_connections: int = 64,
+                 allowed_hosts: Iterable[str] = ()) -> None:
         self.app = app
+        self.allowed_hosts = frozenset(h.strip().lower().strip("[]") for h in allowed_hosts if h.strip())
+        self._slots = threading.BoundedSemaphore(max(1, max_connections))
+        self._lingerers = threading.BoundedSemaphore(_LINGERERS)  # concurrent 503 lingering closes
         self.idle_timeout = idle_timeout
         self.draining = False
         self.hook: Callable[[], None] | None = None
         self.active = 0
+        self.takeovers: set[Takeover] = set()  # live upgraded connections (guarded by cond)
         self.cond = threading.Condition()
         super().__init__(addr, _Handler)
 
@@ -227,6 +316,64 @@ class _HTTPServer(ThreadingHTTPServer):
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         logger.debug("connection error", exc_info=True)
+
+    # Connection cap: one thread per connection is unbounded, so a semaphore limits live connections (idle
+    # keep-alive ones included); an excess connection gets a quick 503 and is closed.
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._slots.acquire(blocking=False):
+            body = json.dumps({"type": "error", "error": {"type": "overloaded_error",
+                                                          "message": "too many connections"}}).encode()
+            try:
+                request.settimeout(1.0)
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                                b"Retry-After: 1\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%b"
+                                % (len(body), body))
+            except OSError:
+                self.shutdown_request(request)
+                return
+            # The accept thread never waits for the client: the lingering close (needed so unread request bytes do
+            # not turn the close into an RST that destroys the 503) runs on a short-lived daemon thread. At most
+            # _LINGERERS run at once; beyond that the socket is just closed (a flood gets no courtesy).
+            if self._lingerers.acquire(blocking=False):
+                try:
+                    threading.Thread(target=self._linger_and_close, args=(request,), name="kiko-503-linger",
+                                     daemon=True).start()
+                    return
+                except BaseException:  # could not start a thread
+                    self._lingerers.release()
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def _linger_and_close(self, request: Any) -> None:
+        try:
+            _lingering_close(request, 0.2)
+        finally:
+            self._lingerers.release()
+            self.shutdown_request(request)
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def host_allowed(self, header: str) -> bool:
+        """DNS-rebinding check. Loopback bind: only loopback names. Other bind: loopback, the bound address, a
+        name in ``allowed_hosts``; a wildcard bind (0.0.0.0 / ::) also takes any IP literal."""
+        host = _host_only(header)
+        if _is_loopback(host):
+            return True
+        bound = str(self.server_address[0]).lower().strip("[]")
+        if _is_loopback(bound):
+            return False
+        if host == bound or host in self.allowed_hosts:
+            return True
+        return _is_ip(host) and bound in ("", "0.0.0.0", "::")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -263,6 +410,7 @@ class _Handler(BaseHTTPRequestHandler):
         req = Request(self.command, unquote(split.path), dict(parse_qsl(split.query, keep_blank_values=True)),
                       Headers(self.headers.items()), b"", self.client_address)
         status = 500
+        self._body_unread = False
         with srv.cond:
             srv.active += 1
         try:
@@ -284,16 +432,23 @@ class _Handler(BaseHTTPRequestHandler):
                 srv.cond.notify_all()
         if srv.draining:
             self.close_connection = True
+        if self._body_unread and self.close_connection:
+            _lingering_close(self.connection)  # the answer is out; let the client finish sending before we close
 
     def _run(self, req: Request) -> int:
         app = self.server.app
         try:
+            self._body_unread = ("transfer-encoding" in req.headers
+                                 or req.headers.get("content-length", "0").strip() not in ("", "0"))
+            if app.browser_guard:
+                self._guard(req)
             req.body = self._read_body(req, app.max_body)
+            self._body_unread = False
             fn, req.params = app.match(req.method, req.path)
             for hook in app._before:
                 hook(req)
             resp = fn(req)
-            if not isinstance(resp, (JsonResponse, StreamResponse)):
+            if not isinstance(resp, (JsonResponse, StreamResponse, Takeover)):
                 raise TypeError(f"handler returned {type(resp).__name__}")
         except HTTPError as e:
             resp = _error_response(e)
@@ -302,9 +457,42 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:  # includes handler-side OSError (e.g. upstream failure): a 500, not a client disconnect
             logger.error("unhandled error in %s %s", req.method, req.path, exc_info=True)
             resp = _error_response(HTTPError(500, "api_error", "internal server error"))
+        if isinstance(resp, Takeover):
+            self.close_connection = True
+            self._body_unread = False  # the Takeover owns the socket
+            return resp.run(self)
         if isinstance(resp, StreamResponse):
             return self._send_stream(resp)
         return self._send_json(resp)
+
+    # Browser/DNS-rebinding guard. It lives here (not in a before hook) because the Host check needs the bound
+    # address, and it runs once for every route, before the body is read. Apps opt in via ``App.browser_guard``.
+    def _guard(self, req: Request) -> None:
+        h = req.headers
+        try:
+            host = h.get("host")
+            if "origin" in h:  # Claude Code, curl and the SDKs send none; any browser page does
+                # Only an app that serves its own browser UI (App.allow_same_origin) accepts the Origin of
+                # its own page: scheme http and exactly the Host the request was sent to (Host is checked
+                # below, so a rebinding name is still refused). Any other origin, and "null", stays 403.
+                app = self.server.app
+                own = ((app.allow_same_origin or (req.method == "GET" and any(
+                           req.path == p or req.path.startswith(p.rstrip("/") + "/") for p in app.same_origin_paths)))
+                       and host is not None and h["origin"].strip().lower() == f"http://{host.strip().lower()}")
+                if not own:
+                    raise HTTPError(403, "permission_error", "browser requests (Origin header) are not allowed")
+            if host is None:
+                if self.request_version == "HTTP/1.1":
+                    raise HTTPError(400, "invalid_request_error", "Host header required")
+            elif not self.server.host_allowed(host):
+                raise HTTPError(403, "permission_error", "Host header not allowed")
+            if req.method == "POST":
+                ctype = h.get("content-type", "").split(";", 1)[0].strip().lower()
+                if ctype != "application/json":
+                    raise HTTPError(415, "invalid_request_error", "Content-Type must be application/json")
+        except HTTPError:
+            self.close_connection = True  # the body is not read: do not reuse the connection
+            raise
 
     def _read_body(self, req: Request, max_body: int) -> bytes:
         h = req.headers
@@ -411,11 +599,14 @@ class Server:
     ``request_stop`` / ``stop`` must not be called from the thread running ``serve_forever``.
     """
 
-    def __init__(self, app: App, host: str = "127.0.0.1", port: int = 4000, *,
-                 drain_seconds: float = 30.0, idle_timeout: float = 300.0) -> None:
+    def __init__(self, app: App, host: str | None = None, port: int | None = None, *,
+                 drain_seconds: float = 30.0, idle_timeout: float = 300.0, max_connections: int = 64,
+                 allowed_hosts: Iterable[str] = ()) -> None:
         self.app = app
         self.drain_seconds = drain_seconds
-        self._httpd = _HTTPServer((host, port), app, idle_timeout)
+        host = config.proxy_host() if host is None else host  # no value: the proxy address of kiko.toml
+        port = config.proxy_port() if port is None else port
+        self._httpd = _HTTPServer((host, port), app, idle_timeout, max_connections, allowed_hosts)
         self._lock = threading.Lock()
         self._stopping = False
         self._running = threading.Event()
@@ -456,6 +647,23 @@ class Server:
             self._stopping = True
             running = self._running.is_set()
         self._httpd.draining = True
+        with self._httpd.cond:
+            live = list(self._httpd.takeovers)
+        # Upgraded connections (WebSocket) are told to close (1001) in parallel with one shared deadline, so the
+        # time does not grow with their number (a stuck one is abandoned: it is dropped by its own timeouts).
+        def _abort_one(t: Takeover) -> None:
+            try:
+                t.abort_on_stop()
+            except Exception:
+                logger.debug("takeover stop failed", exc_info=True)
+
+        workers = [threading.Thread(target=_abort_one, args=(t,), daemon=True, name="kikolib-takeover-stop")
+                   for t in live]
+        for w in workers:
+            w.start()
+        end = time.monotonic() + _TAKEOVER_STOP_SECONDS
+        for w in workers:
+            w.join(max(0.0, end - time.monotonic()))
         if running:
             self._httpd.shutdown()
 
@@ -490,8 +698,9 @@ class Server:
         self.stop()
 
 
-def serve(app: App, host: str = "127.0.0.1", port: int = 4000, *, ready: Callable[[Server], None] | None = None,
-          drain_seconds: float = 30.0, rss_limit_mb: float | None = None) -> None:
+def serve(app: App, host: str | None = None, port: int | None = None, *, ready: Callable[[Server], None] | None = None,
+          drain_seconds: float = 30.0, rss_limit_mb: float | None = None, max_connections: int = 64,
+          allowed_hosts: Iterable[str] | None = None) -> None:
     """Run ``app`` until SIGTERM/SIGINT (blocking), then drain in-flight requests for ``drain_seconds``.
 
     Sends READY=1 after bind, STOPPING=1 on shutdown, WATCHDOG=1 when systemd enables it. With
@@ -499,7 +708,10 @@ def serve(app: App, host: str = "127.0.0.1", port: int = 4000, *, ready: Callabl
     so ``Restart=on-failure`` restarts it. ``ready(server)`` is called once listening.
     Signal handlers are installed only when called from the main thread.
     """
-    srv = Server(app, host, port, drain_seconds=drain_seconds)
+    if allowed_hosts is None:  # extra Host names for a non-loopback bind: KIKO_ALLOWED_HOSTS=a.example,b.example
+        allowed_hosts = os.environ.get("KIKO_ALLOWED_HOSTS", "").split(",")
+    srv = Server(app, host, port, drain_seconds=drain_seconds, max_connections=max_connections,
+                 allowed_hosts=allowed_hosts)
     done = threading.Event()
     reasons: list[str] = []
     stopper: list[threading.Thread] = []

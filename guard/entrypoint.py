@@ -17,7 +17,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from runtimelib.kikolib import posix_utils
+try:  # kikolib: pinned copy in <repo>/vendor/kikolib (/app/vendor in the image); a system copy wins
+    import kikolib  # noqa: F401
+except ImportError:
+    sys.path.append(str(Path(__file__).resolve().parent.parent / "vendor"))
+
+from kikolib import factory, posix  # noqa: E402
 
 
 class GuardError(Exception):
@@ -90,7 +95,7 @@ class JSONRPCServer:
     def serve_stdio(self) -> None:
         """Serve requests from stdin, write responses to stdout."""
         self._running = True
-        posix_utils.sd_notify("READY=1")
+        posix.sd_notify("READY=1")
 
         for line in sys.stdin:
             line = line.strip()
@@ -247,8 +252,9 @@ def create_server(workspace: Path) -> JSONRPCServer:
         if not _check_network_policy(url):
             raise GuardError(-32012, f"Network access denied for: {url}")
 
-        from runtimelib.kikolib import http_client
-        client = http_client.client()
+        from kikolib import http
+        factory.choose("http", override="stdlib")
+        client = http.client()
         try:
             resp = client.request(method, url, headers=headers, body=body.encode() if body else None, timeout=timeout)
             return {

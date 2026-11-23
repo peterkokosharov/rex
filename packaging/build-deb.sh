@@ -26,6 +26,9 @@ g++ -std=c++17 -O2 -fPIC -shared -pthread \
 echo "==> Staging Python modules"
 cp -a "$ROOT/runtime" "$PYDIR/"
 cp -a "$ROOT/runtimelib" "$PYDIR/"
+# pinned kikolib copy: sibling "vendor" dir of runtimelib (runtimelib/__init__.py appends it to sys.path)
+mkdir -p "$PYDIR/vendor"
+cp -a "$ROOT/vendor/kikolib" "$PYDIR/vendor/"
 find "$PYDIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 
 cat > "$STAGE/usr/bin/rex" <<'EOF'
