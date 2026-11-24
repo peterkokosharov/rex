@@ -554,6 +554,15 @@ whose prefix covers wrappers (`time`, `exec`, `env`, `eval`, `command`, `builtin
 
 ---
 
+## AI authorship
+
+Code here is largely written by AI models under the author's direction.
+
+- Each source file's `AI models:` header line lists the models that wrote or edited it.
+- Each AI-written commit carries a trailer `AI-Models: <ids>`.
+- Unknown history is marked as such (`AI models: unknown (before 2026-11-24)`).
+- `python -I tools/check_ai_header.py` fails if a file with an `Author:` header has no `AI models:` line.
+
 ## License
 
 MIT
