@@ -6,16 +6,18 @@ Licensed under MIT License
 
 # Orchestration: sub-agent tasks, a tasks panel and approval modes (design)
 
-Date: 2026-11-24. Status: design only, nothing implemented. Scope: ai-rex runtime plus the shared protocol that
-Layka, Sisi and Lassie render. Front-end work is described only as far as the protocol needs it; each front-end
-repository gets its own small plan later.
+Date: 2026-11-24. Revision 2 (after the independent review
+`docs/reviews/DESIGN-orchestration-review-fable.md`; the response to every finding is in Appendix A).
+Status: design only, nothing implemented. Scope: ai-rex runtime plus the shared protocol that Layka, Sisi and
+Lassie render. Front-end work is described only as far as the protocol needs it; each front-end repository gets
+its own small plan later.
 
 Builds on: `docs/plans/2026-11-23-rex-gaps.md` (permission gate, rules, hooks), Layka
 `docs/REVIEW-2026-11-24.md` sections F2 (approval mode) and F3 (background tasks panel). Where this document
 differs from F2/F3 it says so and why.
 
-Conventions: **V** = verified in the code at the place given (ai-rex commit `5592aa3`, Layka `bd8924a`).
-**A** = assumed, not checked. Paths without a repo prefix are ai-rex paths.
+Conventions: **V** = verified in the code at the place given (ai-rex commit `5592aa3`; line numbers re-checked
+for revision 2). **A** = assumed, not checked. Paths without a repo prefix are ai-rex paths.
 
 ---
 
@@ -29,12 +31,24 @@ Goal, in four parts:
    line), like the Claude Code background tasks table.
 3. Approval modes (`ask`, `edits`, `auto`, `full`) with a clear permission model for writes and shell commands,
    safe defaults, and one way for a front-end to show a pending approval, also when it comes from a sub-agent.
-4. One event protocol (the existing JSONL bridge, extended) so Layka, Sisi and Lassie render tasks and approvals
-   identically.
+4. One event protocol (the existing JSONL bridge, extended, opt-in) so Layka, Sisi and Lassie render tasks and
+   approvals identically.
 
 Non-goals for this feature: sub-agents that spawn sub-agents (depth > 1), background tasks that write files, git
-worktree isolation per task, persistence of running tasks across an ai-rex restart, cost in money, agent profile
-files (`agents/<name>.md`), ACP `session/request_permission` (listed as a later step).
+worktree isolation per task, MCP tools in sub-agents, persistence of running tasks across an ai-rex restart,
+waking an idle parent when a task ends, cost in money, agent profile files (`agents/<name>.md`), ACP
+`session/request_permission` (a later step), a task queue (at the cap the tool returns an error), UI reconnect
+snapshots, full task transcripts over the protocol.
+
+### 1.1 Technical decisions (taken, not owner questions)
+
+- **D1. Background tasks are read-only in v1.** Writes run only in foreground tasks, while the parent waits. Two
+  writers in one workspace without worktrees produce conflicts neither agent sees.
+- **D2. Every session starts in approval mode `ask`.** A mode change is never saved by itself.
+- **D3. At most 2 background tasks at once** (`tasks.max_parallel`, default 2). The Claude CLI gateway runs at
+  most 4 CLI calls (`scripts/claude_cli_gateway.py:84`, V); the parent needs one, and abandoned calls after a
+  cancel or an LLM client timeout can hold slots for up to 300 s, so 2 leaves headroom.
+- **D4. Depth 1.** Sub-agents never get task tools and `TaskManager.start` refuses a caller with `depth > 0`.
 
 ---
 
@@ -42,22 +56,24 @@ files (`agents/<name>.md`), ACP `session/request_permission` (listed as a later 
 
 | Piece | Where | State |
 |---|---|---|
-| Agent loop | `runtimelib/agent/loop.py` | V. Synchronous `AgentLoop.run(prompt)`; own `state.messages`; per-turn and session token counters (`_record_usage`, `:572`); `interrupt()` is thread-safe (`threading.Event`, `:288`) and is checked per stream chunk (`:536`) and before each tool call (`:602`, `:632`). |
-| Loop constructor | `loop.py:164` | V. Calls `signal.signal(SIGINT, ...)` unconditionally. Python raises `ValueError` when this runs outside the main thread, so **an AgentLoop cannot be built on a worker thread today**. |
-| Tool filter | `loop.py:181-222` | V. `tool_names` (names or fnmatch globs) already selects tools; MCP servers start only when a name starts with `mcp__`. Reused as the task tool whitelist. |
-| `task` tool | `runtimelib/tools/taskspawn.py` | V. Placeholder returning `{"status":"delegated"}`; already **not** registered (`loop.py:196-197`). Schema has `prompt`, `tools`, `model_class`, `max_steps`. |
-| `REX.spawn_subagent` | `runtimelib/rex.py:182-229` | V. asyncio-based, creates a worktree per agent, calls the blocking `loop.run` inside `async def run_agent` (so it does not run in parallel). Not used by `runtime/` (Layka review, V). Hook names `SUBAGENT_SPAWN`/`SUBAGENT_COMPLETE` exist (`hooks/__init__.py:38-39`), only SPAWN is triggered. |
-| Permission gate | `runtimelib/agent/gate.py` | V. Order: deny rule > hook deny > ask (rule, mode default, hook) to the asker > allow. `allow_always` stores a per-workspace rule. Request ids are `perm-<counter>` **per gate** (`:186-188`): two gates would produce the same ids. |
-| Rules and tool kinds | `runtimelib/permissions/rules.py` | V. Kinds read/write/exec/network/mcp (`classify`, `:882`); `mode_default` (`:999`): read allow, network/MCP ask, write/exec: guard allow, sandbox ask, local ask. `allow_blocker` (`:804`) decides if a bash command is "one simple command of safe characters". `normalize_path` (`:862`). Verdict has `source` (`deny/ask/allow/unsafe/default`). |
-| Where tools run | `gate.py:90-96` | V. guard (Docker container), sandbox, local (`--local-tools`). Layka always starts ai-rex with `--local-tools` (Layka review F2, V there). |
-| JSONL bridge | `runtimelib/cli/jsonl_bridge.py` | V. Main thread runs `loop.run`; a reader thread handles `stop`, `bye` and `permission_reply` while a request runs. `JsonlAsker` keeps a dict of pending questions, so several blocked askers at once already work. Events: `ready token tool_start tool_end final usage context error permission reset_ok model_ok bye`. |
-| Front-ends | Sisi `src/rexbridge.cpp`, Lassie `lassie/server.py`, Layka `src/main.cpp` | V (by grep). All three speak the JSONL bridge; Lassie relays it to the browser over SSE and tracks pending permission ids. |
-| ACP server | `runtimelib/acp/server.py` | V. One `--jsonl` child per ACP session; permission questions are denied at once; `task` mapped to kind `other`. |
-| Read-before-edit tracker | `tools/edit.py:65` | V. One global `READ_TRACKER` for the process (it has a lock). |
-| Guard client | `guard/__init__.py:23-45`, `:326` | V. One process-wide client with a lock: tool calls from several threads are serialised, not broken. |
-| Session history | `session/__init__.py:35-80`, `:317` | V. `SessionManager` reads the whole history file in its constructor and appends without a lock. Entries already carry `agent_id`. |
-| Claude CLI gateway | `scripts/claude_cli_gateway.py:84` | V. At most 4 `claude` processes at once, then requests wait, then 503. Streaming is "SSE after the CLI has finished", so an LLM call cannot be interrupted midway from rex. |
-| kiko-lite endpoint | README `:119` | A. Treated as any OpenAI-compatible endpoint; nothing in this design depends on it. |
+| Agent loop | `runtimelib/agent/loop.py` | V. Synchronous `AgentLoop.run(prompt)`; own `state.messages`; per-turn and session token counters (`_record_usage`, `:572`); `interrupt()` is thread-safe (`threading.Event`, `:288`) and is checked per stream chunk (`:536`) and before each tool call (`:602`, `:632`). `_run_request` **clears** the interrupt event on entry (`:340`). "Interrupted" and "max steps" end with a normal returned string (`:397-408`), not an exception. |
+| Loop constructor | `loop.py:164`, `:167` | V. Calls `signal.signal(SIGINT, ...)` unconditionally (raises `ValueError` off the main thread; on the main thread the last constructed loop takes Ctrl+C from the earlier one) and always fires `SESSION_START`. |
+| Tool filter | `loop.py:181-222` | V. `tool_names` are names or fnmatch globs; `["*"]` matches everything, and any pattern starting with `mcp__` starts a new set of MCP server processes for that loop (`:215-222`). |
+| `task` tool | `runtimelib/tools/taskspawn.py` | V. Placeholder returning `{"status":"delegated"}`; already **not** registered (`loop.py:196-197`). |
+| `REX.spawn_subagent` | `runtimelib/rex.py:182-229` | V. asyncio wrapper around the blocking `loop.run`; not used by `runtime/`. Hook names `SUBAGENT_SPAWN`/`SUBAGENT_COMPLETE` exist (`hooks/__init__.py:38-39`). |
+| Permission gate | `runtimelib/agent/gate.py` | V. Order: deny rule > hook deny > ask (rule, mode default, hook) to the asker > allow. A hook `ask` sets the decision to ASK while `verdict.source` stays as it was (`:169-170`). Request ids are `perm-<counter>` per gate (`:181-183`). |
+| Rules and kinds | `runtimelib/permissions/rules.py` | V. `classify` (`:882`): unknown tools (so also `task*`) are WRITE (`:896`). `mode_default` (`:999`): read allow; network/MCP ask; write/exec: guard allow, sandbox ask (configurable), local ask. The `unsafe` source is produced **only** when the verdict would otherwise be ALLOW (`:1200-1208`); in local/sandbox a pipe, too-deep nesting or extra `env` leaves `source == "default"`. `normalize_path` (`:862`) is lexical (no symlink resolution). |
+| Workspace confinement | `tools/fileops.py:147-170`, `edit.py:270`, `bash.py:112-114`, `diagram.py:119` | V. `resolve_in_workspace` refuses paths outside the workspace for files and for the bash `cwd`. Bash command *arguments* are not confined (`cat /etc/x` is a valid command). |
+| Where tools run | `gate.py:90-96` | V. `guard` (Docker container, writes/exec allowed by default), `sandbox` (same container, writes/exec ask by default), `local` (`--local-tools`, on the host). Layka always starts ai-rex with `--local-tools` (Layka review F2). |
+| JSONL bridge | `runtimelib/cli/jsonl_bridge.py` | V. Main thread runs `loop.run`; a reader thread handles `stop`, `bye`, `permission_reply`. `JsonlAsker` keeps a dict of pending questions, so several blocked askers already work, but its interrupt check looks only at the parent loop (`:76`) and `stop` denies every open question (`:259-261`). `emit` holds a lock while writing to stdout. |
+| Front-ends | Sisi `src/rexbridge.cpp`, Lassie `lassie/server.py`, Layka `src/main.cpp` | V (by grep). All three speak the JSONL bridge; Lassie relays it over SSE and tracks pending permission ids. Their rendering code was not read in detail. |
+| ACP server | `runtimelib/acp/server.py` | V. One `--jsonl` child per ACP session; permission questions are denied at once. |
+| Read tracker | `tools/edit.py:65`, `fileops.py:23`, `:80` | V. One global `READ_TRACKER` (locked); `EditTool` and `FileOpsTool` both accept a tracker, `loop.py:194` passes none to fileops. |
+| Guard client | `guard/__init__.py:171-195`, `guard/entrypoint.py:106` | V. The lock covers only the request id; `stdin.write` + `flush` run **unlocked**, so two threads can interleave bytes. The guard server handles one request at a time: a long `bash` in one agent makes another agent's call hit its 30 s timeout. |
+| Session history | `session/__init__.py:35-80`, `:317` | V. `SessionManager` reads the whole history file in its constructor and appends without a lock. Entries carry `agent_id`. |
+| LLM client | `llm/client.py:146`, `:322` | V. Default timeout 60 s, with retries (`send_with_retry`). |
+| Claude CLI gateway | `scripts/claude_cli_gateway.py:84` | V. At most 4 CLI processes, then waits, then 503. Streaming is "SSE after the CLI has finished": an LLM call cannot be interrupted midway from rex. |
+| Windows waits | Python `threading` docs | A (documented stdlib behaviour, not tested here): on Windows a lock or `Event.wait()` without a timeout is not interrupted by Ctrl+C, so a main thread blocked on a worker would not react. |
 
 ---
 
@@ -65,25 +81,24 @@ files (`agents/<name>.md`), ACP `session/request_permission` (listed as a later 
 
 ```
             UI (Layka / Sisi / Lassie)
-                 |  JSONL (one protocol)
-          +------+--------------------------------+
-          | JsonlBridge                            |
-          |  reader thread: stop/bye/replies/task_*|
-          |  SharedAsker  (questions of all agents)|
-          +------+------------------+--------------+
+                 |  JSONL; protocol 2 only after the UI's "hello"
+          +------+----------------------------------+
+          | JsonlBridge                              |
+          |  reader thread: stop/bye/replies/task_*  |
+          |  writer thread: one queue -> stdout      |
+          |  SharedAsker (questions, owner per id)   |
+          +------+------------------+----------------+
                  |                  |
-        main thread            TaskManager (registry, worker threads, cap)
-        parent AgentLoop  ---- task tool ----> TaskRunner (thread) -> child AgentLoop
-           gate(mode, approval)                   gate(mode, approval, access cap)
+        main thread            TaskManager (registry, cap, worker threads for background)
+        parent AgentLoop  -- task (foreground: inline on the caller's thread) --> child AgentLoop
+           gate --+-- one shared PermissionRules (locked) --+-- child gate (access cap)
 ```
 
-- **One process, one thread per task.** A task is a child `AgentLoop` on a worker thread, owned by a
-  `TaskManager`. No new processes, no asyncio. This reuses the loop, the gate, the guard client and the bridge
-  unchanged in spirit and stays stdlib-only.
-- **Approval mode is a second axis** next to guard/sandbox/local. It only changes verdicts that came from the
-  mode default; deny rules, explicit ask rules and hooks always win.
-- **One protocol.** The JSONL bridge gets new events; every event that can come from a sub-agent may carry a
-  `task` field. Front-ends keep one pure state model ("reducer") fed by these events.
+- **Foreground child = inline.** A foreground task runs the child loop on the caller's own thread: no thread, no
+  signal problem, no Windows wait problem. The parent's `interrupt()` forwards to its running child.
+- **Background child = worker thread** (step 4a). Read-only, so it never asks a question in practice.
+- **Approval mode is a second axis** next to guard/sandbox/local, applied to the rule verdict before hooks.
+- **One protocol**, opt-in by the UI. Front-ends keep one pure state model fed by the events.
 
 ---
 
@@ -91,13 +106,13 @@ files (`agents/<name>.md`), ACP `session/request_permission` (listed as a later 
 
 ### 4.1 Tool schema (what the model sees)
 
-One tool `task` to start work, plus two small tools for background work. Children never get any of these three.
+Registered only in a loop with `depth == 0`. Children never get any of these.
 
 ```json
 task {
   "title":      "short label for the tasks table (required, max 80 chars)",
   "prompt":     "full instructions; the child sees nothing else from the parent (required)",
-  "agent":      "free label shown in the table, e.g. scout, reviewer (default: task)",
+  "agent":      "label shown in the table, e.g. scout, reviewer (default: task)",
   "model":      "model name from tasks.models; default: the parent's current model",
   "tools":      ["tool names or globs; default: the read-only set"],
   "access":     "read | write   (default read)",
@@ -111,234 +126,281 @@ task_cancel { "id": "t-3" }                      -> {"state":"cancelled"}
 Results returned to the parent:
 
 - foreground: `{"task":"t-3","state":"done","result":"<child's final answer>","tokens_in":..,"tokens_out":..,"steps":..}`;
-- background: at once `{"task":"t-3","state":"running","note":"runs in the background; you will be told when it ends"}`;
+- background: at once `{"task":"t-3","state":"running","note":"runs in the background; call task_wait for the result"}`;
+- at the cap: `{"error":"2 background tasks already run; wait for one (task_wait) and try again"}`;
 - failure: `state` `failed` with `error`, or `cancelled`. The parent's call itself succeeds; the model decides.
 
-The result text is capped at 16 KB for the parent's context (the full text stays in session history and is
-available via `task_get`, section 7.2). It is wrapped like a tool result and the system prompt says task results
-are data, not instructions (same rule the gateway uses for tool results).
+The result text is capped at 16 KB for the parent's context (the full text is in session history). It travels as
+a tool result; the system prompt says task results are data, not instructions.
 
 ### 4.2 Child set-up (own context, model, tools)
 
-`TaskManager.start(spec, parent)` builds the child with `create_agent_loop(config, ...)`:
+`TaskManager.start(spec, parent)` refuses a parent with `depth > 0`, then builds the child with
+`create_agent_loop(config, depth=1, ...)`:
 
 - **Context:** fresh `AgentState`; the only user message is `prompt`. Same AGENTS.md instructions and system
-  prompt builder as the parent, plus one line: "You are a sub-agent. Do the task, then answer with the result.
-  You cannot ask the user questions." `max_steps` from the spec (default 30, hard cap `tasks.max_steps`, 100).
-- **Model:** its own `LiteLLMClient` with `default_model = spec.model`. It never reads `liteLLM.model` from the
-  config again, so a model change in the parent (`_handle_model`, `jsonl_bridge.py:301`) does not move running
-  children. Allowed models: `tasks.models` (default: the parent's model plus `haiku`, `sonnet`, `opus` when the
-  endpoint lists them); anything else is an error result, not a silent fallback.
-- **Tools:** `tool_names` = the spec's list intersected with the parent's tools, minus `task*`. Default
-  read-only set: `fileops`, `git`, `load_skill`, `read_skill_file`. `access: read` additionally makes the child's
-  gate **deny** (not ask) every call of kind write/exec/network/mcp, so a read task never blocks on a question and
-  `fileops write` is impossible even though `fileops` is in the list. `access: write` is allowed only for
-  foreground tasks (section 4.4).
-- **Shared objects:** the parent's `SessionManager` (with a new lock on `append`), hook engine and guard client;
-  its own `ReadTracker` (a read by a child must not unlock an edit in the parent); its own `PermissionGate` built
-  from the same config and workspace, with the bridge's shared asker and the task id.
-- **Ids:** `t-<n>` (process-wide counter, short for the UI). `agent_id` of the child = the task id, so session
-  history entries and hooks name it. `SUBAGENT_SPAWN` and `SUBAGENT_COMPLETE` hooks fire.
+  prompt builder, plus: "You are a sub-agent. Do the task, then answer with the result. You cannot ask the user
+  questions." `max_steps` from the spec (default 30, hard cap `tasks.max_steps`, 100).
+- **Model:** its own `LiteLLMClient` with `default_model = spec.model`; never re-reads `liteLLM.model`, so a model
+  change in the parent does not move a running child. Allowed models: `tasks.models` (default: the parent's
+  model plus `haiku`, `sonnet`, `opus` when the endpoint lists them); anything else is an error result.
+- **Tools:** the spec's names/globs are expanded against the **parent's actual tool dict**, then `task`,
+  `task_wait`, `task_cancel` and every `mcp__*` name are removed from the resolved list, and the child is built
+  with that explicit name list (no globs reach the child, so no MCP servers start). Default read-only set:
+  `fileops`, `git`, `load_skill`, `read_skill_file`.
+- **Access cap:** `access: read` makes the child's gate **deny** (not ask) every call whose kind is not read, so a
+  read task never blocks on a question and `fileops write` is impossible even though `fileops` is listed.
+  `access: write` is accepted only with `background: false` (D1).
+- **Loop flags for `depth > 0`:** no SIGINT handler, no `SESSION_START` hook (`AGENT_START`/`AGENT_END` stay).
+- **Shared objects:** the parent's `SessionManager` (with a lock on `append`), hook engine, guard client and the
+  **same `PermissionRules` object** (so an `allow_always` given to one agent holds for all; `add_allow_always`
+  gets a lock). Own `PermissionGate` (access cap, `id_prefix`), own `ReadTracker` passed to both `EditTool` and
+  `FileOpsTool` (a child's read must not unlock an edit in the parent).
+- **Ids:** `t-<n>` (process-wide counter). `agent_id` of the child = the task id. `SUBAGENT_SPAWN` and
+  `SUBAGENT_COMPLETE` fire.
 
 ### 4.3 Lifecycle and states
 
 ```
-queued -> running <-> waiting -> done | failed | cancelled
-                                  (lost: only in a snapshot after a crash; not produced in v1)
+running <-> waiting -> done | failed | cancelled
 ```
 
-- `queued`: the concurrency cap (`tasks.max_parallel`, default 3) is reached. Reason for 3: the Claude CLI
-  gateway runs at most 4 CLI calls at once and the parent needs one.
-- `waiting`: the child is blocked on an approval question (`waiting: "approval"`), or in `task_wait` (parent only).
-- `failed`: an exception in the child loop, an unknown model, or the step limit reached without an answer.
+- `waiting`: the child is blocked on an approval question (`waiting: "approval"`). Only foreground write tasks
+  can reach it in v1.
+- `failed`: an exception in the child loop, an unknown model, an LLM 503 or timeout (never retried silently by
+  the task layer), or the step limit reached.
 - `cancelled`: `task_cancel`, the UI's `task_stop`, `bye`, or the parent's `stop` for a **foreground** task.
-  Background tasks survive a parent `stop` (the user stopped the answer, not the survey); `task_stop` with
-  `"id":"*"` stops all.
+  Background tasks survive a parent `stop` (the user stopped the answer, not the survey).
+- The state is decided by the `TaskRunner` from its own `cancelled` flag, the loop's `state.interrupted` and
+  `state.step >= max_steps`, **never** from the returned text.
 
-### 4.4 Foreground vs background, and who may write
+### 4.4 Foreground and background
 
-- **Foreground** (`background: false`): the parent's `task` call blocks until the child ends; the parent's
-  interrupt cancels the child. This is the simple, common case and it is the first step shipped.
-- **Background** (`background: true`): the call returns at once. The child must be `access: read`.
-- **Decision: background tasks are read-only in v1.** Two writers in one workspace without worktrees produce
-  conflicts that neither agent can see. A foreground writer is safe because the parent is blocked meanwhile.
-  `SandboxManager` worktrees (`guard/sandbox.py`) are the later route to background writers (owner question 1).
+- **Foreground** (`background: false`, step 3): the `task` tool runs the child loop inline on the caller's thread
+  and returns its result. The parent's `interrupt()` forwards to the registered running child.
+- **Background** (`background: true`, step 4a): the child runs on a daemon worker thread; the call returns at once.
+  Only `access: read` (D1). At most `tasks.max_parallel` at once (D3); beyond that the call returns an error.
 
 ### 4.5 Result hand-back for background tasks
 
-- When a background task ends, the manager puts a notice in the parent's inbox:
-  `[task t-3 "Archive survey" done: <first 2 KB of result>; use task_wait(["t-3"]) for the full result]`.
-- The parent loop drains its inbox at the start of every step (`_get_llm_response`, before compaction) and
-  adds the notices as one user-role message marked as a system notice. So a running parent sees results at its
-  next step; an idle parent sees them with the next user prompt.
-- v1 does **not** wake an idle parent by itself (Claude Code does). The UI shows `task_end`, the user decides.
-- `task_wait` gives the full (capped) result and removes the notice for that id.
+- When a background task ends, the manager puts **one line without result text** in the parent's inbox:
+  `[task t-3 "Archive survey" ended: done; call task_wait(["t-3"]) for the result]`.
+- The parent loop drains its inbox at the start of every step and adds the lines as one user-role notice. A
+  running parent sees them at its next step; an idle parent with the next user prompt. No wake-up in v1.
+- The result itself reaches the parent only as a tool result of `task_wait` (lower authority than a user message).
 
 ### 4.6 Cancel
 
-`TaskRunner.cancel()` calls `loop.interrupt()` of the child and denies its open questions. Effects (V from the
-loop code): a streamed LLM answer stops at the next chunk; the current tool call finishes, the next ones are
-answered `cancelled`. Known limit: with the Claude CLI gateway the HTTP answer arrives only after the CLI is done,
-and a running `bash` call runs until its own timeout, so a cancel can take up to the gateway timeout (300 s). The
-task shows `state:"running"`, `activity:"stopping"` until then, and its result is thrown away.
+`TaskRunner.cancel()` sets its `cancelled` flag, calls `loop.interrupt()` and denies the child's open questions
+(each with `permission_closed`). The runner checks the flag **before** calling `run` and, because `_run_request`
+clears the interrupt event on entry (`loop.py:340`), calls `interrupt()` again once the loop has started when the
+flag is set. Effects: a streamed LLM answer stops at the next chunk; the current tool call finishes, the next ones
+are answered `cancelled`. Known limit: with the Claude CLI gateway the answer arrives only after the CLI is done,
+and a running `bash` call runs until its own timeout, so a cancel can take up to 300 s. The task shows
+`last: "stopping"` until then and its result is thrown away.
 
 ---
 
 ## 5. Approval modes and the permission model
 
-### 5.1 Two axes
+### 5.1 Two axes and where the mode is applied
 
-- **Where tools run** (exists): `guard` | `sandbox` | `local`. Says how dangerous a call is.
-- **Approval mode** (new, `permissions.approval`): `ask` | `edits` | `auto` | `full`. Says how much the user
-  wants to be asked. It is applied in `PermissionGate.check` **only** when `verdict.source == "default"` and the
-  decision is ASK. Deny rules, explicit ask rules, the `unsafe` source (complex bash) and hook decisions are
-  never relaxed by a mode.
+- **Where tools run** (exists): `guard` | `sandbox` | `local`.
+- **Approval mode** (new, `permissions.approval`): `ask` | `edits` | `auto` | `full`.
+
+Rules for `apply_approval(verdict, tool, args, tool_mode)`:
+
+1. It runs on the **rule verdict, before hooks**. A hook `ask` or `deny` afterwards always wins.
+2. It relaxes only a verdict with `source == "default"` and decision ASK. Deny rules and explicit ask rules are
+   never relaxed.
+3. `evaluate` returns the unsafe reason as its own field (`verdict.unsafe`) on **every** verdict, not only when it
+   would otherwise allow. A verdict with `unsafe` set is never relaxed on the host (local) or in sandbox; in guard
+   it is relaxed only by `full`.
+4. Protected paths ask in every mode and every tool mode (a behaviour change for guard, where they are allowed
+   today).
 
 Names differ from Layka F2 (`default | accept-edits | auto`): `ask` says what it does, and F2 had no `full`.
 Claude Code equivalents: `ask` = default, `edits` = acceptEdits, `full` = bypassPermissions.
 
-### 5.2 The table (rules.py kinds)
+### 5.2 Call classes
 
-| Call | ask | edits | auto | full |
-|---|---|---|---|---|
-| read: fileops read/list/glob/grep, git status/diff/log/show, skills | allow | allow | allow | allow |
-| write inside the workspace (edit, fileops write, git add/commit, render_diagram) | ask | **allow** | **allow** | **allow** |
-| write outside the workspace or to a protected path | ask | ask | ask | ask (deny in local mode) |
-| exec: one simple command (passes `allow_blocker`) whose first word(s) are in `permissions.auto_exec` | ask | ask | **allow** | **allow** |
-| exec: anything else (pipes, `;`, `$()`, redirects, sudo, rm, package managers, git push) | ask | ask | ask | **allow** in guard/sandbox; ask in local |
-| network: webfetch, websearch | ask | ask | **allow** | **allow** |
-| MCP tools | ask | ask | ask | **allow** in guard/sandbox; ask in local |
-| `task` with `access: write` | ask | ask | ask | **allow** |
-| `task` with `access: read` | allow | allow | allow | allow |
+| Class | Calls |
+|---|---|
+| read | fileops read/list/glob/grep, git status/diff/log/show, `load_skill`, `read_skill_file`, `task` with `access: read`, `task_wait`, `task_cancel` (added to `classify`) |
+| edit | `edit`, fileops write/edit (and delete), `render_diagram`, inside the workspace, not protected |
+| protected | an edit-class call on a protected path (5.4) |
+| git-write | git add/commit/checkout/branch/... (can run repository hooks) |
+| simple-exec | bash: passes `allow_blocker`, no `unsafe`, no `env`, first word(s) in `permissions.auto_exec`, no argument that is absolute, contains `..`, or is an option from the deny list (`--output*`, `--pre*`, `--ext-diff`, `-delete`, `-exec*`, `-ok*`, `-fprint*`, `-fls`) |
+| other-exec | every other bash command, and anything with `unsafe` set |
+| network | webfetch, websearch |
+| mcp | `mcp__*` |
+| task-write | `task` with `access: write` |
 
-Definitions:
+Default `permissions.auto_exec` = `ls cat head tail wc grep git status git diff git log`. Test runners and build
+tools (`pytest`, `make`, ...) run code from files the agent can write, so they are **not** in the default; a
+user adds them through `allow_always` or an allow rule.
 
-- **Inside the workspace:** `normalize_path(path, workspace)` (`rules.py:862`) is relative and does not start with
-  `..`; symlinks resolved before the check (A: verify `normalize_path` does not already resolve them).
-- **Protected paths** (`permissions.protected`, default): `.git/**`, `**/.env`, `**/.env.*`, `**/.ssh/**`,
-  `**/*.pem`, `**/*.key`, `.ai-rex/**`, `AGENTS.md`, `.claude/**`. A write there always asks.
-- **`permissions.auto_exec`** default (from Layka F2): `ls cat head tail wc grep rg find git status git diff
-  git log pytest make ctest mvn -q test`. Matched with the same prefix logic as allow rules, so a command that fails
-  `allow_blocker` is never auto-allowed.
-- **`full` on the host:** in `local` mode `full` behaves like `auto` plus inside-workspace writes; everything
-  else still asks, and protected or outside writes are denied. Running everything without a question on the
-  host without a container is the one setting that can lose a machine; owner question 2.
+### 5.3 Tables per tool mode
 
-### 5.3 Safe defaults
+Cells: today's verdict -> verdict per mode. "today" is the mode default without rules; `n/a` = the tool is not
+registered today. Explicit allow/ask/deny rules and hooks apply on top of every cell as today.
 
-- Every session starts in `ask` unless the start config says otherwise (`permissions.approval` in the config or
-  a front-end start option). A mode change is never saved by itself.
-- One-shot runs without a terminal keep `DenyAsker`: every remaining ask is a deny (unchanged).
-- Sub-agents use the parent's **current** mode, read live (like the guard mode is read live today,
-  `gate.py:117-120`), capped by their `access`: a read task can never write, whatever the mode.
-- `allow_always` answers keep working and are stored per workspace as today; an answer given to a sub-agent's
-  question stores the same rule (it is the same user and workspace).
-- Every allowed call records **why**: `approved` = `rule | mode | user | hook | default`. It goes into
-  `tool_start` and the session history, so auto-approved calls are visible afterwards.
+**local (on the host; Layka's mode)**
 
-### 5.4 Pending approvals with several agents
+| Class | today | ask | edits | auto | full |
+|---|---|---|---|---|---|
+| read | allow | allow | allow | allow | allow |
+| edit | ask | ask | **allow** | **allow** | **allow** |
+| protected | ask | ask | ask | ask | ask |
+| git-write | ask | ask | ask | ask | ask (*) |
+| simple-exec | ask | ask | ask | **allow** | **allow** |
+| other-exec | ask | ask | ask | ask | ask (*) |
+| network | ask | ask | ask | ask | ask (*) |
+| mcp | ask | ask | ask | ask | ask (*) |
+| task-write | n/a | ask | ask | ask | ask (*) |
 
-- **Unique ids:** request ids become `<agent>:perm-<n>` (`main:perm-4`, `t-3:perm-1`); the gate gets an
-  `id_prefix`. Today two gates would both send `perm-1` (V, `gate.py:186`).
-- **One shared asker:** the existing `JsonlAsker` already supports several waiting questions; it gets the task
-  id and title into the `permission` event and a new `permission_closed` event when a question ends without a
-  reply (timeout, stop, task cancelled), so a front-end can close a dialog it is still showing.
-- **Front-end rule:** questions are shown one at a time in arrival order, with "1 of 3" when more wait and the
-  task title when it is not the main agent. Every `permission` must be answered or closed, as today.
-- **Question storms:** at most one open question per task (the child is blocked anyway); the asker timeout
-  (`permissions.ask_timeout`, 300 s) applies per question.
+(*) Pending owner question 1: until he decides otherwise, `full` on the host equals `auto` (no project code runs
+without a question on the host).
+
+**sandbox (container; defaults ask)**
+
+| Class | today | ask | edits | auto | full |
+|---|---|---|---|---|---|
+| read | allow | allow | allow | allow | allow |
+| edit | ask | ask | **allow** | **allow** | **allow** |
+| protected | ask | ask | ask | ask | ask |
+| git-write | ask | ask | ask | ask | **allow** |
+| simple-exec | ask | ask | ask | **allow** | **allow** |
+| other-exec | ask | ask | ask | ask | **allow** (not when `unsafe`) |
+| network | ask | ask | ask | ask | **allow** |
+| mcp | ask | ask | ask | ask | **allow** |
+| task-write | n/a | ask | ask | ask | **allow** |
+
+**guard (container; writes and exec already allowed by default)**
+
+| Class | today | ask | edits | auto | full |
+|---|---|---|---|---|---|
+| read | allow | allow | allow | allow | allow |
+| edit, git-write, simple-exec, other-exec | allow | allow | allow | allow | allow |
+| protected | allow | **ask** | **ask** | **ask** | **ask** (behaviour change) |
+| network | ask | ask | ask | ask | **allow** |
+| mcp | ask | ask | ask | ask | **allow** |
+| task-write | n/a | ask | ask | ask | **allow** |
+
+In guard the approval mode changes only protected paths, network, MCP and write tasks: the container is the
+boundary and the user chose it. Network stays `ask` in `auto` everywhere (a read followed by a fetch would
+otherwise move data out without a question); `webfetch(domain:...)` allow rules cover the convenient case.
+
+### 5.4 Protected paths
+
+`permissions.protected`, default: `.git/**`, `.gitattributes`, `**/.env`, `**/.env.*`, `**/.ssh/**`, `**/*.pem`,
+`**/*.key`, `.ai-rex/**`, `AGENTS.md`, `.claude/**`, and `~/.config/ai-rex/**` (config and allow-always store;
+matched on the absolute resolved path). Matching runs on the lexical path **and** the symlink-resolved path,
+case-folded on Windows and macOS (`.GIT/`, `Agents.md`).
+
+### 5.5 Safe defaults
+
+- Start mode `ask` (D2). One-shot runs without a terminal keep `DenyAsker`.
+- Sub-agents use the parent's **current** mode, read live, capped by their `access`.
+- Every allowed call records **why**: `approved` = `rule | mode | user | hook | default`, in `tool_start` and in
+  session history.
+
+### 5.6 Pending approvals with several agents
+
+- **Unique ids:** `<agent>:perm-<n>` (`main:perm-4`, `t-3:perm-1`); the gate gets an `id_prefix`.
+- **Owner per question:** the shared asker stores the asking loop with each pending question. Its interrupt check
+  uses that loop, not the bridge's parent loop. `stop` denies the parent's questions and those of foreground
+  children; questions of background tasks stay open. `bye` denies all.
+- **`permission_closed`** is sent for every question that ends without a reply (timeout, stop, cancel). A
+  `permission_reply` that crosses it is dropped silently (today it returns `unknown permission id`).
+- **What the dialog shows:** the main line is the gate's own summary; the model-chosen task title is only a
+  secondary label ("from task t-3: Run the tests"). One question at a time, in arrival order.
+- The asker timeout (`permissions.ask_timeout`, 300 s) applies per question.
 
 ---
 
 ## 6. Tasks panel model (what every front-end shows)
 
-One record per task, kept by the front-end from the events in section 7. No polling, no ticks from ai-rex.
-
 | Field | Type | Meaning / display |
 |---|---|---|
 | `id` | string | `t-3`; stable for the process lifetime |
 | `title` | string | from the tool call, max 80 chars |
-| `agent` | string | label (`scout`, `task`) |
+| `agent` | string | label (`scout`, `task`); the owner's reference panel shows it |
 | `model` | string | model name |
-| `state` | enum | `queued running waiting done failed cancelled` |
+| `state` | enum | `running waiting done failed cancelled` |
 | `background` | bool | foreground tasks are shown too, marked |
-| `access` | enum | `read` / `write` (write shown with a mark) |
-| `parent` | string | `main` in v1 |
+| `access` | enum | `read` / `write` |
 | `started` | int | epoch ms; the UI computes elapsed time itself |
 | `ended` | int or null | epoch ms |
-| `tokens_in`, `tokens_out` | int | the child's own usage (`state.total_tokens_*`); `estimated` bool |
+| `tokens_in`, `tokens_out`, `estimated` | int, int, bool | the child's own usage |
 | `steps` | int | loop steps so far |
-| `last` | string | last activity line, max 120 chars: `bash: pytest -q`, `read src/x.py`, last non-empty answer line, `waiting for approval: run rm build`, `stopping` |
-| `waiting` | string or null | `approval` or null |
+| `last` | string | max 120 chars: `bash: git status`, `read src/x.py`, last non-empty answer line, `waiting for approval`, `stopping` |
 | `summary` | string or null | first 300 chars of the result when ended |
 | `error` | string or null | on `failed` |
 
-Display rules (same for all three front-ends): running and waiting tasks first, then finished ones greyed until
-the next user prompt; elapsed `7m 44s` while active, `since HH:MM` while waiting; tokens as `↓ 45.5k` (`~` when
-estimated); a status-line counter `2 background tasks`, hidden at zero. Layka's F4 panel from the review fits this
-model unchanged.
-
-Each front-end implements the model as a pure function `apply(state, event) -> state` with unit tests, separate
-from drawing (Layka `core.h`, Sisi a plain C++ class, Lassie a JS module).
+Display rules: active tasks first, finished ones greyed until the next user prompt; elapsed `7m 44s` while
+running, `since HH:MM` while waiting; tokens as `↓ 45.5k` (`~` when estimated); a status-line counter
+`2 background tasks`, hidden at zero. Each front-end implements `apply(state, event) -> state` as a pure function
+with unit tests, separate from drawing.
 
 ---
 
-## 7. Protocol (JSONL bridge, extended)
+## 7. Protocol (JSONL bridge, opt-in protocol 2)
 
-All additions are new event types or new optional fields; old front-ends that ignore unknown types and fields
-keep working. `ready` gains `"protocol": 2` so a front-end can tell.
+### 7.1 Opt-in
 
-### 7.1 ai-rex -> UI
+`ready` gains `"protocol": 2` (what ai-rex offers). A UI that understands it answers
+`{"type":"hello","protocol":2}` (or starts ai-rex with `--protocol 2`). Without it the session behaves exactly as
+today: no background tasks (the `task` tool rejects `background: true`), no events outside a request, no new
+event types. Foreground tasks still work for an old UI; their child events are not sent, and child questions
+arrive as ordinary `permission` events (the extra fields are ignored). A test checks that a v1 session's event
+stream is unchanged.
+
+### 7.2 ai-rex -> UI (protocol 2)
 
 ```json
 {"type":"ready","model":"sonnet","protocol":2,"approval":"ask","approvals":["ask","edits","auto","full"],"tool_mode":"local"}
 {"type":"approval_ok","approval":"edits"}
 
 {"type":"tool_start","name":"edit","args":{...},"approved":"mode"}
-{"type":"tool_start","task":"t-3","name":"bash","args":{"command":"pytest -q"},"approved":"rule"}
-{"type":"tool_end","task":"t-3","ok":true,"error":null}
 
 {"type":"permission","id":"t-3:perm-1","task":"t-3","task_title":"Run the tests","tool":"bash","kind":"exec",
- "summary":"run rm -rf build","detail":"...","args":{...},"rule":null,"reason":"","pending":2}
+ "summary":"run rm -rf build","detail":"...","args":{...},"rule":null,"reason":""}
 {"type":"permission_closed","id":"t-3:perm-1","reason":"timeout|stopped|cancelled"}
 
-{"type":"task_start","id":"t-3","title":"Run the tests","agent":"tester","model":"haiku","background":true,
- "access":"read","parent":"main","state":"running","started":1764000000000}
-{"type":"task_update","id":"t-3","state":"waiting","waiting":"approval","last":"waiting for approval: run rm build",
- "steps":4,"tokens_in":45500,"tokens_out":1200,"estimated":false}
-{"type":"task_end","id":"t-3","state":"done","ended":1764000460000,"summary":"All 712 tests pass.",
- "error":null,"steps":9,"tokens_in":46100,"tokens_out":1350,"estimated":false}
-{"type":"tasks","items":[{...task record as in section 6...}]}
-{"type":"task_result","id":"t-3","state":"done","result":"<full text, max 256 KB>","log":["last 50 activity lines"]}
+{"type":"task_start","id":"t-3","title":"Archive survey","agent":"scout","model":"haiku","background":true,
+ "access":"read","state":"running","started":1764000000000}
+{"type":"task_update","id":"t-3","state":"waiting","last":"waiting for approval","steps":4,
+ "tokens_in":45500,"tokens_out":1200,"estimated":false}
+{"type":"task_end","id":"t-3","state":"done","ended":1764000460000,"summary":"...","error":null,
+ "steps":9,"tokens_in":46100,"tokens_out":1350,"estimated":false}
 ```
 
 Rules:
 
-- `task_update` only on a change, at most once per second per task (state changes are sent at once).
-- A child's `token` events are **not** sent (they would mix into the main transcript); `last` carries the gist.
-- A child's `tool_start`/`tool_end` are sent with `task`; a front-end may show them only inside the panel.
-- `permission_closed` is sent for every question that ends without a `permission_reply`.
+- A child's `token`, `tool_start` and `tool_end` are **never** sent; `task_update.last` carries the gist. Only the
+  parent's `tool_start`/`tool_end` reach the transcript, so start/end pairing stays as today.
+- `task_update` only on a change, at most once per second per task (state changes at once).
+- All output goes through one writer thread with a queue; the reader thread never writes, so a slow pipe cannot
+  stop `stop` from being read.
 
-### 7.2 UI -> ai-rex
+### 7.3 UI -> ai-rex
 
 ```json
-{"type":"approval","approval":"auto"}         -> approval_ok, or error "unknown approval mode"
-{"type":"task_list"}                         -> tasks (snapshot; for a UI restart or reconnect)
-{"type":"task_stop","id":"t-3"}              -> task_end with state cancelled ("*" = all)
-{"type":"task_get","id":"t-3"}               -> task_result
+{"type":"hello","protocol":2}
+{"type":"approval","approval":"auto"}     -> approval_ok, or error "unknown approval mode"
+{"type":"task_stop","id":"t-3"}           -> task_end with state cancelled ("*" = all background tasks)
 ```
 
-`approval`, `task_list`, `task_stop` and `task_get` are handled on the reader thread (like `stop`), so they work
-while the parent is busy. `permission_reply` is unchanged except for the longer ids.
+`approval` and `task_stop` are handled on the reader thread, like `stop`. `permission_reply` is unchanged except
+for the longer ids. Later, when Lassie needs reconnects: `task_list` -> a snapshot event.
 
-### 7.3 Other surfaces
+### 7.4 Other surfaces
 
-- **REPL:** `/approval [ask|edits|auto|full]`, `/tasks`, `/task stop <id>`, `/task show <id>`; permission prompts
-  print the task title.
-- **ACP** (later step): tasks become `tool_call` updates of the `task` tool; `permission` maps to
-  `session/request_permission`; approval mode maps to ACP session modes (A: check the ACP spec version then).
-- **`REX` Python API:** `spawn_subagent` is reimplemented on `TaskManager` (same signature, worktree kept as an
-  option) or marked deprecated; decided in step 7.
+- **REPL:** `/approval [ask|edits|auto|full]`, `/tasks`, `/task stop <id>`; permission prompts name the task.
+- **ACP** (step 6): tasks become `tool_call` updates of the `task` tool; `permission` maps to
+  `session/request_permission`; approval mode to ACP session modes (A: check the ACP spec then).
+- **`REX.spawn_subagent`:** marked deprecated in step 7, not rebuilt.
 
 ---
 
@@ -346,59 +408,69 @@ while the parent is busy. `permission_reply` is unchanged except for the longer 
 
 | File | Change |
 |---|---|
-| `runtimelib/agent/loop.py` | install the SIGINT handler only on the main thread; accept `read_tracker`, `inbox`, `id_prefix`; drain the inbox each step; record `approved` |
-| `runtimelib/agent/gate.py` | `approval` (live from config), `access` cap, `id_prefix`; mode logic in one function `apply_approval(verdict, tool, args)` |
-| `runtimelib/permissions/rules.py` | helpers `inside_workspace`, `is_protected`, `auto_exec_match` (reuse `normalize_path`, `allow_blocker`) |
-| `runtimelib/tasks/__init__.py` (new, ~300 lines) | `TaskSpec`, `TaskRecord`, `TaskManager` (registry, cap, queue, throttle, events), `TaskRunner` (thread) |
+| `runtimelib/agent/loop.py` | SIGINT handler and `SESSION_START` only when `depth == 0` and on the main thread; `read_tracker` passed to `EditTool` and `FileOpsTool` (`:194`); `inbox` drained each step; running child registered for interrupt forwarding; `approved` recorded |
+| `runtimelib/agent/gate.py` | `apply_approval` before hooks; `access` cap; `id_prefix`; shared `PermissionRules` |
+| `runtimelib/permissions/rules.py` | `verdict.unsafe` on every verdict; `classify` for `task*`; helpers `is_protected` (lexical + resolved, case-folded), `simple_exec` (auto_exec list, argument checks); lock in `add_allow_always` |
+| `runtimelib/tasks/__init__.py` (new, ~250 lines) | `TaskSpec`, `TaskRecord`, `TaskManager` (registry, cap, throttle, events, inbox), `TaskRunner` (inline or thread; cancel flag) |
 | `runtimelib/tools/taskspawn.py` | replaced by `task`, `task_wait`, `task_cancel` bound to a `TaskManager` |
-| `runtimelib/cli/jsonl_bridge.py` | new commands and events; `permission_closed`; asker with task fields |
+| `runtimelib/cli/jsonl_bridge.py` | `hello` opt-in; writer thread; asker with owner per question and `permission_closed`; new commands and events |
+| `runtimelib/guard/__init__.py` | write lock around `stdin.write` + `flush` |
 | `runtimelib/session/__init__.py` | lock around `append` |
-| `runtimelib/tools/edit.py` | `ReadTracker` passed in, global stays as the default |
-| `README.md`, protocol docstring, `docs/INDEX.md` | protocol 2, approval modes, tasks |
+| `README.md`, bridge docstring, `docs/INDEX.md` | protocol 2, approval modes, tasks |
 
 ---
 
 ## 9. Test strategy
 
-All with the existing pytest suite and fakes; no network, no keys.
+All with pytest and the existing fakes; no network, no keys.
 
-1. **Gate table tests:** one parametrized test per row and column of section 5.2 (4 modes x 3 tool modes x ~10
-   calls), plus "deny rule beats full", "ask rule beats full", "hook deny beats full", "unsafe bash never
-   auto-allowed", protected path and `..` path cases, `access: read` cap.
-2. **TaskManager unit tests** with a fake loop factory (no LLM): start/finish, failure, cancel while running,
-   cancel while queued, cap and queue order, foreground blocks, background returns at once, background + write
-   refused, children get no `task*` tools, result cap, inbox notices.
-3. **Threads:** an `AgentLoop` built on a worker thread does not raise; two children asking at once get distinct
-   ids and replies reach the right thread; stop denies only the right questions; `bye` ends all tasks and the
-   process exits within a bounded time (no leaked non-daemon threads).
-4. **Bridge protocol tests** in the style of `tests/test_jsonl_bridge.py`: golden event sequences for a
-   foreground task, a background task, a cancelled task, a task question answered, a question timed out
-   (`permission_closed`), `approval` change mid-request, `task_list` snapshot; `task_update` throttle with an
-   injected clock.
-5. **End-to-end with a scripted fake LLM** (as in `tests/test_context_compaction.py`): the parent calls `task`,
-   the child reads a file and answers, the parent gets the result and finishes.
-6. **Shared protocol fixtures:** the golden sequences are saved as `tests/fixtures/protocol/*.jsonl`; each
-   front-end copies them and tests its `apply(state, event)` against the same files, so all three render the same
-   table from the same stream.
-7. **Live check (manual, documented in TESTING.md):** Claude CLI gateway with `haiku`, one foreground and two
-   background tasks, one cancel, one approval from a child, in Layka.
+1. **Approval tables:** one parametrized test per cell of the three tables in 5.3, plus: deny rule beats `full`;
+   ask rule beats `full`; hook `ask` and hook `deny` are not relaxed; crafted calls in `auto` ask
+   (`{"command":"ls","env":{"PATH":"."}}`, `cat /etc/passwd`, `cat ../x`, `find . -delete`, `git diff --output=f`,
+   `rg --pre x`, a pipe); protected paths by symlink and by case variant (`.GIT/config`, `Agents.md`); `access:
+   read` cap; mode switched while a question is open (the open question is not re-decided).
+2. **TaskManager** with a fake loop factory: finish, failure, cancel while running, **cancel before the child's
+   `run` starts**, cap returns an error, foreground runs inline, background returns at once, background + write
+   refused, `depth > 0` refused, `tools:["*"]` gives no task tool and no `mcp__*`, result cap, state from the
+   flag not from the text, inbox line without result text.
+3. **Threads and process:** a child built at depth 1 does not touch the SIGINT handler; two children asking at
+   once get distinct ids and replies reach the right thread; `stop` leaves a background question open and closes
+   foreground ones; cancel with an open question gives exactly one `permission_closed`; `bye` with a child stuck
+   in a fake 300 s LLM call exits in bounded time; two threads through the guard client (fake guard process) get
+   whole lines; 200 concurrent session appends give 200 valid lines; one `allow_always` holds for parent and child.
+4. **Bridge protocol:** golden event sequences (foreground task, background task, cancelled task, child question
+   answered, question timed out, approval change mid-request) and **a v1 session without `hello` produces an
+   unchanged stream**; `task_update` throttle with an injected clock.
+5. **End-to-end with a scripted fake LLM:** the parent calls `task`, the child reads a file and answers, the
+   parent gets the result and finishes.
+6. **Shared protocol fixtures:** the golden sequences are **generated by the bridge tests** into
+   `tests/fixtures/protocol/*.jsonl` (a regenerate flag; never edited by hand). Each front-end copies them and
+   tests its `apply(state, event)` on the same files.
+7. **Live check (manual, in TESTING.md):** Claude CLI gateway with `haiku`, one foreground write task with one
+   approval, two background read tasks, one cancel, in the first front-end chosen (owner question 3).
 
 ---
 
 ## 10. Steps (each one shippable and tested on its own)
 
-0. **Groundwork** (S): SIGINT handler only on the main thread; per-loop `ReadTracker`; session `append` lock;
-   gate `id_prefix`. No visible change.
-1. **Approval modes in the runtime** (M): gate + rules helpers + config + REPL `/approval`; table tests.
-2. **Approval in the protocol** (S): `approval`/`approval_ok`, `ready` fields, `tool_start.approved`,
-   `permission_closed`. Then each front-end adds its mode switch and mark (separate repos).
-3. **Foreground task** (M): `TaskManager`, `task` tool with `background:false`, `task_start`/`task_end`, child
-   questions tagged with `task`. The biggest value for the smallest risk.
-4. **Background tasks** (M): `background:true` (read-only), cap and queue, `task_update` throttle, inbox notices,
-   `task_wait`, `task_cancel`, UI `task_list`/`task_stop`/`task_get`.
-5. **Front-end panels** (per repo, S-M each): reducer + fixtures first, then the panel.
-6. **ACP mapping** (S-M): tasks as tool calls, permission questions, modes.
-7. **Clean-up** (S): `REX.spawn_subagent` on `TaskManager` or deprecated; old placeholder removed; docs index.
+0. **Groundwork** (S): SIGINT/`SESSION_START` only at depth 0 on the main thread; per-loop `ReadTracker` for edit
+   and fileops; session `append` lock; guard client write lock; gate `id_prefix`. Ends with a written list of
+   process globals and the decision for each: hook engine, `READ_TRACKER`, guard client, config (`set` from the
+   model command), MCP manager, model registry. No visible change.
+1. **Approval modes in the runtime** (S-M): `verdict.unsafe`, `classify` for `task*`, `apply_approval` before
+   hooks, protected paths, `simple_exec`, config, REPL `/approval`; the table tests.
+2. **Approval in the protocol** (S): `hello` opt-in, writer thread, `approval`/`approval_ok`, `ready` fields,
+   `tool_start.approved`, `permission_closed`. Then each front-end adds its mode switch and mark.
+3. **Foreground task** (S-M): `TaskManager`, `task` tool with `background:false`, inline child, interrupt
+   forwarding, `task_start`/`task_end`, child questions tagged with `task`, shared rules. (Owner question 2:
+   pause here?)
+4a. **Background start** (M): worker thread, `background:true` read-only, cap with error, `task_end`, inbox line.
+4b. **Background control** (S): `task_wait`, `task_cancel`, UI `task_stop`, asker owner per question for `stop`.
+4c. **Live panel data** (S): `task_update` with throttle, `last`, tokens, steps.
+5. **Front-end panels** (per repo, S-M each): reducer on the fixtures first, then the panel; first front-end per
+   owner question 3.
+6. **ACP mapping** (S-M).
+7. **Clean-up** (S): `REX.spawn_subagent` deprecated; placeholder removed; docs index.
 
 Each step: tests green, docs in the same commit, review by a second model before the next step.
 
@@ -408,38 +480,78 @@ Each step: tests green, docs in the same commit, review by a second model before
 
 | Risk | Effect | Answer |
 |---|---|---|
-| Cancel latency with the CLI gateway (no mid-call abort) | a stopped task keeps a CLI slot up to 300 s | show `stopping`; result discarded; cap counts it until it really ends |
-| Gateway capacity (4 CLI calls) | parent waits or gets 503 | `tasks.max_parallel` 3; tasks queue in rex, not in the gateway |
-| Token and cost blow-up from loops of sub-agents | budget gone | depth 1, step cap, per-task tokens visible in the table; optional `tasks.max_tokens` per task |
-| Hidden shared state between threads (config `set` on model change, globals, hook engine) | wrong model or races | children own their client; audit globals in step 0; thread tests |
-| Writes by two agents at once | silent conflicts | background read-only; foreground writer blocks the parent |
-| Prompt injection through a task result | parent follows text from a file the child read | results marked as data in the prompt; children cannot ask the user; deny rules still apply |
-| Question storms from parallel tasks | user approves blindly | read tasks never ask; at most one open question per task; "1 of N" in the UI |
-| `full` mode on the host | destructive command without a question | `full` in local mode stays limited (section 5.2) |
-| Model claims delegation without the tool working | wrong answers | the tool is registered only from step 3, when it really runs |
+| Cancel latency with the CLI gateway | a stopped task holds a CLI slot up to 300 s | `stopping` shown; result discarded; cap 2 leaves headroom |
+| Gateway capacity (4 CLI calls) and client retries | 503 or long waits | cap 2; a 503/timeout in a child is `failed`, not retried by the task layer |
+| One long guard call blocks every agent | another agent's guard call times out after 30 s | documented; background tasks are read-only and short; tested with a fake guard; revisit before background writers |
+| Crafted shell calls in `auto` | code runs without a question | `unsafe` never relaxed on the host; short `auto_exec`; argument checks; tests per trick |
+| Hidden shared state between threads | wrong model or races | children own their client; the globals list of step 0; thread tests |
+| Writes by two agents at once | silent conflicts | D1 |
+| Prompt injection through a task result | parent follows text from a file the child read | result only as a tool result; inbox line has no child text; deny rules still apply |
+| Old front-ends confused by new events | garbage in the transcript | protocol 2 only after `hello` |
+| Token blow-up | budget gone | depth 1, step cap, tokens per task visible |
 
 ---
 
 ## 12. Checked vs assumed
 
-Checked in code (V): everything in section 2; the gate decision order and `source` values; the asker's
-multi-question support; bridge threading (main thread runs the loop, reader thread handles stop/replies); the
-gateway's concurrency limit and non-interruptible streaming; that `task` is not registered; that Sisi, Lassie and
-Layka all use the JSONL bridge (by grep of their sources; their rendering code was not read in detail).
+Checked in code (V): everything in section 2, re-checked for revision 2 (gate order and line numbers, unsafe only
+on ALLOW, `classify` default, guard client lock scope and single-threaded guard server, `_run_request` clearing
+the interrupt, returned strings for interrupted/max steps, asker interrupt check and `stop` behaviour,
+`resolve_in_workspace` in fileops/edit/bash/diagram, fileops tracker parameter, LLM client timeout and retry,
+lexical `normalize_path`).
 
-Assumed (A): `normalize_path` behaviour with symlinks; that LiteLLM/kiko-lite endpoints accept parallel requests
-like the gateway; that the hook engine and `Config.get` are safe to read from several threads (to be checked in
-step 0); ACP session-mode support; that front-ends ignore unknown event types (true for the bridge contract, not
-verified per front-end).
+Assumed (A): Windows waits without timeout ignore Ctrl+C (stdlib documentation); LiteLLM/kiko-lite endpoints
+accept parallel requests; hook engine and `Config.get` are safe from several threads (step 0 checks and writes it
+down); front-ends ignore unknown fields (true for the bridge contract, not verified per front-end); ACP session
+modes.
 
 ---
 
 ## 13. Owner questions
 
-1. Background tasks may only read in the first version; writes run only as foreground tasks (the main agent
-   waits). Agree? (yes/no; recommended: yes)
-2. `full` approval mode when tools run on the host without Docker: 1) never full there (behaves as described in
-   5.2), 2) full only with an explicit config switch, 3) full like in Docker. (recommended: 1)
-3. Start mode of every new session: 1) `ask`, 2) `edits`. (recommended: 1)
-4. Background tasks running at the same time: 1) two, 2) three, 3) four. (recommended: 2, three)
-5. Sub-agents may start their own sub-agents (depth 2) in the first version? (yes/no; recommended: no)
+1. May `full` (and `auto`) run project code on the host without a question, that is tests, builds, any shell
+   command, network and MCP, when tools run without Docker? 1) no: on the host `full` equals `auto` (only edits
+   and a short list of read-only commands run unasked), 2) only after an explicit config switch, 3) yes, like in
+   Docker. (recommended: 1)
+2. Stop after step 3 (foreground tasks and approval modes) and use it for a while before building background
+   tasks? (yes/no; recommended: yes)
+3. Which front-end gets the tasks panel and the approval switch first? 1) Layka, 2) Sisi, 3) Lassie.
+   (recommended: 1, the review already designed its F4 panel)
+
+---
+
+## Appendix A. Review response
+
+Review: `docs/reviews/DESIGN-orchestration-review-fable.md`. Every finding was checked against the code
+(read-only) before the decision.
+
+| Id | Decision |
+|---|---|
+| B1 | Applied: `verdict.unsafe` on every verdict, never relaxed on the host or in sandbox (5.1); short `auto_exec` without test runners plus argument checks (5.2); network stays `ask` in `auto` (5.3). Confirmed at `rules.py:1200-1208`. |
+| B2 | Applied: three tables per tool mode with today's verdict (5.3); guard stated plainly; `task*` added to `classify`; outside-workspace row deleted (confinement confirmed in fileops/edit/bash/diagram); protected paths ask in every mode, guard change listed. |
+| M1 | Applied: SIGINT and `SESSION_START` only at depth 0 on the main thread (4.2, 8, step 0). |
+| M2 | Applied: runner-owned `cancelled` flag, checked before `run`, interrupt re-applied after start; state never from the text (4.3, 4.6). Confirmed at `loop.py:340`, `:397-408`. |
+| M3 | Applied: foreground child runs inline on the caller's thread; threads only from step 4a (3, 4.4). Windows wait behaviour marked A. |
+| M4 | Applied: globs expanded against the parent's tools, `task*` and `mcp__*` removed from resolved names, task tools only at depth 0, `start` refuses depth > 0, no MCP in children (4.2, D4). |
+| M5 | Applied: section 2 corrected; write lock in step 0; "one long guard call blocks all agents" documented in risks and tested. Confirmed at `guard/__init__.py:176-195`, `entrypoint.py:106`. |
+| M6 | Applied: `apply_approval` runs on the rule verdict before hooks; test added. Confirmed at `gate.py:169-170`. |
+| M7 | Applied: `hello` opt-in; without it the stream is unchanged; child `tool_start`/`tool_end` dropped entirely; test for an unchanged v1 stream (7.1, 7.2). |
+| M8 | Applied: owner per question, interrupt check on the asking loop, `stop` scoped; one shared `PermissionRules` with a lock (4.2, 5.6). Confirmed at `jsonl_bridge.py:76`, `:259-261`. |
+| Minor 1 | Applied: symlink-resolved and case-folded matching, `.gitattributes` added, `normalize_path` marked V lexical (5.4). |
+| Minor 2 | Applied: `git-write` is its own class, not in `edits` (5.2, 5.3). |
+| Minor 3 | Applied: inbox line without result text (4.5). |
+| Minor 4 | Applied: fileops tracker listed; gate line numbers corrected to `:181-183` (2, 8). |
+| Minor 5 | Applied: a reply crossing `permission_closed` is dropped silently (5.6). |
+| Minor 6 | Applied: one writer thread, the reader never writes (7.2). |
+| Minor 7 | Applied: default cap 2; 503/timeout in a child is `failed`, not retried by the task layer (D3, 4.3). |
+| Minor 8 | Applied: dialog main line = gate summary, task title secondary (5.6). |
+| Minor 9 | Applied: `~/.config/ai-rex/**` protected (5.4). |
+| Cut: `queued` and queue | Applied: at the cap the tool returns an error. |
+| Cut: `lost`, `waiting` for `task_wait` | Applied. |
+| Cut: free `agent` label | Rejected: the owner's reference panel (Layka review F3) has an agent column; it is one string with no logic. |
+| Cut: `task_get`/`task_result`, `tasks` snapshot | Applied: both removed; snapshot noted as "later, when Lassie needs reconnects". |
+| Cut: `tasks.max_tokens`, `pending` counter | Applied: both removed. |
+| Cut: `REX.spawn_subagent` rebuild | Applied: deprecated in step 7. |
+| Steps: split step 4 | Applied: 4a, 4b, 4c; step 0 ends with a written globals list. |
+| Missing tests | Applied: all listed tests added to section 9 (fixtures generated by the bridge tests). |
+| Owner questions | Applied: old Q1, Q3, Q4, Q5 are decisions D1-D4; old Q2 widened to "project code on the host"; two scope questions added. |
