@@ -22,6 +22,7 @@ All documentation except `README.md`, `RELEASE.md` and `AGENTS.md` (repository r
 | `RELEASE.md` | Release and packaging procedure | current |
 | `AGENTS.md` | Rules for agents working on rex | current |
 | `docs/architecture/role-based-agent-architecture.md` | Original v1.0 design with a current status block and implementation table | current (design text partly superseded, see its status block) |
+| `docs/architecture/process-globals.md` | Process-wide shared state and the decision for each (orchestration step 0) | current |
 | `docs/architecture/gemini-review-procedure.md` | How to run `scripts/review_architecture.py` (LLM review of the architecture doc) | current |
 | `docs/plans/2026-11-23-rex-gaps.md` | Plan and design record: permissions, hooks, edit, MCP, sessions, webfetch, context warning | current (mostly implemented, sessions wiring open) |
 | `docs/plans/2026-11-23-gateway-tool-calling.md` | Plan and status notes: tool calling through `scripts/claude_cli_gateway.py` | current (implemented, live run pending) |

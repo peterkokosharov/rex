@@ -20,7 +20,6 @@ from runtimelib.agent.loop import AgentLoop
 from runtimelib.config import Config
 from runtimelib.llm import ToolCall
 from runtimelib.permissions.rules import classify
-from runtimelib.tools.edit import READ_TRACKER
 from runtimelib.tools.mcp_tool import mcp_tool_name
 
 FIXTURE = str(Path(__file__).parent / "fixtures" / "mcp_echo_server.py")
@@ -66,8 +65,8 @@ class DefaultTools(unittest.TestCase):
             self.assertIn("edit", names)
             self.assertIn("webfetch", names)
             self.assertNotIn("websearch", names)
-            self.assertIs(loop.tools["edit"]._tracker, READ_TRACKER)
-            self.assertIs(loop.tools["fileops"]._tracker, READ_TRACKER)
+            self.assertIs(loop.tools["edit"]._tracker, loop.read_tracker)
+            self.assertIs(loop.tools["fileops"]._tracker, loop.read_tracker)
             self.assertIn("Read a file before editing it", loop.system_prompt)
         finally:
             loop.close_mcp()

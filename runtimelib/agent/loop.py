@@ -22,7 +22,7 @@ from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
 from ..llm.models import get_registry
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, GitTool, DiagramTool
-from ..tools.edit import READ_TRACKER, EditTool
+from ..tools.edit import EditTool, ReadTracker
 from ..tools.mcp_tool import load_mcp_tools
 from ..tools.webfetch import WebFetchTool
 from ..tools.skills import LoadSkillTool, ReadSkillFileTool
@@ -110,8 +110,12 @@ class AgentLoop:
         role: str = "CODER",
         depth: int = 0,
         tool_names: Optional[list[str]] = None,
+        read_tracker: Optional[ReadTracker] = None,
     ) -> None:
         self.config = config
+        # Own read tracker per loop, shared by edit and fileops: a read in one agent
+        # must not unlock an edit in another.
+        self.read_tracker = read_tracker or ReadTracker()
         self.llm = llm_client or LiteLLMClient.from_config(config)
         self.state = AgentState()
         # LLM: nvidia nemotron ultra - respect configured step budget; the
@@ -159,12 +163,16 @@ class AgentLoop:
         self.role = role
         self.depth = depth
 
-        # Interrupt handling
+        # Interrupt handling. Ctrl+C and SESSION_START belong to the top-level agent only:
+        # a sub-agent (depth > 0) must not take Ctrl+C from its parent, and signal.signal()
+        # raises ValueError off the main thread.
         self._interrupt_event = threading.Event()
-        signal.signal(signal.SIGINT, self._handle_interrupt)
+        top_level = depth == 0
+        if top_level and threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, self._handle_interrupt)
 
-        # Emit session start
-        self.hook_engine.trigger(HookEvent.SESSION_START, session_id=self.session_manager.session_id)
+        if top_level:
+            self.hook_engine.trigger(HookEvent.SESSION_START, session_id=self.session_manager.session_id)
         self.hook_engine.trigger(HookEvent.AGENT_START,
             session_id=self.session_manager.session_id, agent_id=agent_id, role=role, depth=depth)
 
@@ -191,11 +199,11 @@ class AgentLoop:
             return names is None or any(fnmatch.fnmatchcase(name, p) for p in names)
 
         factories = (
-            ("fileops", lambda: FileOpsTool(self.config)),
+            ("fileops", lambda: FileOpsTool(self.config, self.read_tracker)),
             ("bash", lambda: BashTool(self.config)),
             # "task" (TaskSpawnTool) stays hidden until it really runs a sub-agent: today it
             # only claims delegation, which misleads the model.
-            ("edit", lambda: EditTool(self.config, READ_TRACKER)),
+            ("edit", lambda: EditTool(self.config, self.read_tracker)),
             # allow_private comes from the host config only; it is not in the model's schema.
             ("webfetch", lambda: WebFetchTool(
                 allow_private=bool(self.config.get("webfetch.allow_private", False)))),

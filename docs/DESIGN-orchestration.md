@@ -8,7 +8,8 @@ Licensed under MIT License
 
 Date: 2026-11-24. Revision 2 (after the independent review
 `docs/reviews/DESIGN-orchestration-review-fable.md`; the response to every finding is in Appendix A).
-Status: design only, nothing implemented. Scope: ai-rex runtime plus the shared protocol that Layka, Sisi and
+Status: step 0 (groundwork) implemented; its globals list is `docs/architecture/process-globals.md`. Steps 1-7 not started.
+Scope: ai-rex runtime plus the shared protocol that Layka, Sisi and
 Lassie render. Front-end work is described only as far as the protocol needs it; each front-end repository gets
 its own small plan later.
 

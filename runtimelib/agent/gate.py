@@ -105,6 +105,7 @@ class PermissionGate:
         asker: Optional[Asker] = None,
         mode: str = MODE_GUARD,
         config: Any = None,
+        id_prefix: str = "",
     ) -> None:
         self.rules = rules
         self.hooks = hooks
@@ -114,6 +115,9 @@ class PermissionGate:
         # ``cli.unsafe_local_tools`` and the very next check sees local mode.
         self._config = config
         self._counter = 0
+        # Request ids are "<prefix>:perm-<n>" when a prefix is set (one gate per agent,
+        # e.g. "t-3"), so questions from several agents never share an id.
+        self.id_prefix = id_prefix
 
     @property
     def mode(self) -> str:
@@ -136,6 +140,7 @@ class PermissionGate:
         workspace: Optional[str] = None,
         session: Optional[str] = None,
         persist: bool = True,
+        id_prefix: str = "",
     ) -> "PermissionGate":
         workspace = workspace or str(Path.cwd())
         mode = resolve_mode(config)
@@ -145,7 +150,7 @@ class PermissionGate:
         hooks = CommandHookRunner.from_config(
             hooks_cfg if isinstance(hooks_cfg, dict) else {}, cwd=workspace, session=session, mode=mode
         )
-        return cls(rules, hooks if hooks.has_hooks else None, asker, mode, config=config)
+        return cls(rules, hooks if hooks.has_hooks else None, asker, mode, config=config, id_prefix=id_prefix)
 
     def set_asker(self, asker: Optional[Asker]) -> None:
         self.asker = asker or DenyAsker()
@@ -180,7 +185,7 @@ class PermissionGate:
         summary, detail = self._describe(name, clean, tool)
         self._counter += 1
         request = PermissionRequest(
-            id=f"perm-{self._counter}",
+            id=f"{self.id_prefix}:perm-{self._counter}" if self.id_prefix else f"perm-{self._counter}",
             tool=name,
             kind=verdict.kind,
             summary=summary,

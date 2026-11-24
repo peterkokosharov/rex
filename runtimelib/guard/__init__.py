@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Guard client - communicates with Docker guard container via JSON-RPC over stdio."""
@@ -43,6 +43,9 @@ class GuardClient:
 
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        # Serialises whole request lines on stdin: two agents writing at once must not
+        # interleave the bytes of two JSON lines.
+        self._write_lock = threading.Lock()
         self._request_id = 0
         self._responses: dict[int, threading.Event] = {}
         self._results: dict[int, Any] = {}
@@ -190,8 +193,9 @@ class GuardClient:
             if not self._proc or not self._proc.stdin:
                 raise RuntimeError("Guard process not running")
 
-            self._proc.stdin.write(json.dumps(request) + "\n")
-            self._proc.stdin.flush()
+            with self._write_lock:
+                self._proc.stdin.write(json.dumps(request) + "\n")
+                self._proc.stdin.flush()
 
             if not event.wait(timeout):
                 raise TimeoutError(f"Guard request {method} timed out after {timeout}s")
@@ -324,17 +328,19 @@ class GuardClient:
 
 
 def get_guard_client(config: Optional[Config] = None) -> GuardClient:
-    """Get or create global guard client."""
+    """Get or create the one process-wide guard client (shared by every agent)."""
     global _guard_client
-    if _guard_client is None:
-        if config is None:
-            from ..config import get_config
-            config = get_config()
-        _guard_client = GuardClient.from_config(config)
-    return _guard_client
+    with _guard_client_lock:  # tools create it lazily, possibly from several agent threads
+        if _guard_client is None:
+            if config is None:
+                from ..config import get_config
+                config = get_config()
+            _guard_client = GuardClient.from_config(config)
+        return _guard_client
 
 
 _guard_client: Optional[GuardClient] = None
+_guard_client_lock = threading.Lock()
 
 
 # Import sandbox module

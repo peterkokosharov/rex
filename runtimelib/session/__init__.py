@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-sonnet-5-5
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Session management - JSONL persistence with checkpoints."""
@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -56,6 +57,8 @@ class SessionManager:
         self.history_file.parent.mkdir(parents=True, exist_ok=True)
         self.session_id = str(uuid.uuid4())[:8]
         self._entries: list[SessionEntry] = []
+        # Several agents (parent and sub-agents) may append from different threads.
+        self._append_lock = threading.Lock()
         self._load()
 
         self.checkpoint_manager = None
@@ -80,8 +83,9 @@ class SessionManager:
             data=data,
             session_id=self.session_id,
         )
-        self._entries.append(entry)
-        self._write_entry(entry)
+        with self._append_lock:
+            self._entries.append(entry)
+            self._write_entry(entry)
 
     def _write_entry(self, entry: SessionEntry) -> None:
         """Write single entry to JSONL file."""

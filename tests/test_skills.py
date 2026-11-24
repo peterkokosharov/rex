@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Tests for SKILL.md skills: discovery, frontmatter, index, tools, CLI."""
@@ -193,6 +193,7 @@ def test_agent_prompt_has_index_only_when_skills_exist(env, monkeypatch):
     loop = AgentLoop.__new__(AgentLoop)
     loop.config = cfg
     loop.tools = {}
+    loop.read_tracker = None  # built without __init__; tools fall back to the default tracker
     loop.state = type("S", (), {"max_steps": 5})()
     loop._init_default_tools()
     assert "load_skill" in loop.tools and "read_skill_file" in loop.tools
