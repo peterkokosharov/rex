@@ -26,8 +26,9 @@ def test_task_tool_is_hidden_but_code_kept():
 
 
 def test_launchers_use_isolated_path_flag():
-    for rel in ("packaging/build-deb.sh", "packaging/build-win-zip.sh", "run-ai.sh"):
+    # python3 / python.exe / %PY% (the Windows launcher template) must all run the runtime with -P
+    for rel in ("packaging/build-deb.sh", "packaging/ai-rex.cmd.in", "run-ai.sh"):
         text = (ROOT / rel).read_text(encoding="utf-8")
-        runs = re.findall(r"python3?(?:\.exe)? (?!-c)(.*?-m runtime)", text)
+        runs = re.findall(r"(?:python3?(?:\.exe)?|%PY%) (?!-c)(.*?-m runtime)", text)
         assert runs, rel
         assert all(r.startswith("-P ") for r in runs), (rel, runs)
