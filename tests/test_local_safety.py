@@ -199,7 +199,7 @@ def test_bash_local_without_bash_is_a_clear_error(monkeypatch):
         out = BashTool(LOCAL).execute(command="echo hi", description="t")
     run.assert_not_called()
     assert out["exit_code"] != 0
-    assert "rex needs Git Bash on Windows: install Git for Windows from https://git-scm.com/download/win" in out["stderr"]
+    assert "ai-rex needs Git Bash on Windows: install Git for Windows from https://git-scm.com/download/win" in out["stderr"]
 
 
 def test_find_bash_on_windows_skips_wsl_launcher(monkeypatch):

@@ -105,12 +105,12 @@ def load_mcp_tools(config: Any, workspace: str | None = None) -> tuple[list[Tool
                 if tool.name in seen:
                     # Sanitising and the 64-char cut can map two tools to one name;
                     # a silent overwrite would let rules approve the wrong tool.
-                    print(f"rex: MCP tool '{t.name}' of server '{name}' skipped: "
+                    print(f"ai-rex: MCP tool '{t.name}' of server '{name}' skipped: "
                           f"duplicate name {tool.name}", file=sys.stderr)
                     continue
                 seen.add(tool.name)
                 tools.append(tool)
         except Exception as exc:
             first = (str(exc).splitlines() or [type(exc).__name__])[0]
-            print(f"rex: MCP server '{name}' skipped: {first}", file=sys.stderr)
+            print(f"ai-rex: MCP server '{name}' skipped: {first}", file=sys.stderr)
     return tools, manager

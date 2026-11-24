@@ -141,7 +141,7 @@ class SessionManager:
 def default_sessions_dir() -> Path:
     """Directory for per-session files (config ``session.dir``)."""
     from ..config import get_config
-    return Path(get_config().get("session.dir", "~/.config/runtime/sessions")).expanduser()
+    return Path(get_config().get("session.dir", "~/.config/ai-rex/sessions")).expanduser()
 
 
 @dataclass
@@ -322,7 +322,7 @@ def create_session_manager(
     from ..config import get_config
     config = get_config()
 
-    history_file = Path(history_path or config.get("session.history_file", "~/.config/runtime/history.jsonl")).expanduser()
-    checkpoint_path = Path(checkpoint_dir or "~/.config/runtime/checkpoints").expanduser() if checkpoint_dir else None
+    history_file = Path(history_path or config.get("session.history_file", "~/.config/ai-rex/history.jsonl")).expanduser()
+    checkpoint_path = Path(checkpoint_dir or "~/.config/ai-rex/checkpoints").expanduser() if checkpoint_dir else None
 
     return SessionManager(history_file, checkpoint_path)

@@ -112,7 +112,7 @@ def create_runtime_schema() -> ConfigSchema:
 
     # docker_guard section
     docker_guard = ConfigSchema()
-    docker_guard.add_field("image", Field(type=str, default="rex-guard:latest", description="Guard container image"))
+    docker_guard.add_field("image", Field(type=str, default="ai-rex-guard:latest", description="Guard container image"))
     docker_guard.add_field("memory_limit", Field(type=str, default="512m", description="Memory limit"))
     docker_guard.add_field("cpu_limit", Field(type=float, default=1.0, description="CPU limit"))
     docker_guard.add_field("network_mode", Field(type=str, default="none", choices=["none", "bridge", "host"], description="Network mode"))
@@ -144,7 +144,7 @@ def create_runtime_schema() -> ConfigSchema:
 
     # session section
     session = ConfigSchema()
-    session.add_field("history_file", Field(type=str, default="~/.config/runtime/history.jsonl", description="History file"))
+    session.add_field("history_file", Field(type=str, default="~/.config/ai-rex/history.jsonl", description="History file"))
     session.add_field("checkpoint_interval", Field(type=int, default=10, description="Checkpoint every N steps"))
     session.add_field("max_history", Field(type=int, default=1000, description="Max history entries"))
     schema.add_nested("session", session)

@@ -31,12 +31,12 @@ def test_config_env_override():
 
         import os
         # Use double underscore for nested keys
-        os.environ["RUNTIME_LITELLM__BASE_URL"] = "http://env:4000"
+        os.environ["AI_REX_LITELLM__BASE_URL"] = "http://env:4000"
         try:
             config = Config.load(config_path=config_path)
             assert config.get("liteLLM.base_url") == "http://env:4000"
         finally:
-            del os.environ["RUNTIME_LITELLM__BASE_URL"]
+            del os.environ["AI_REX_LITELLM__BASE_URL"]
 
 
 def test_config_dotenv():
@@ -57,7 +57,7 @@ def test_config_dotenv():
 def test_config_nested_env():
     import os
     # Use double underscore for nested keys
-    os.environ["RUNTIME_LITELLM__API_KEY"] = "test-key"
+    os.environ["AI_REX_LITELLM__API_KEY"] = "test-key"
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.yaml"
@@ -66,7 +66,7 @@ def test_config_nested_env():
             config = Config.load(config_path=config_path)
             assert config.get("liteLLM.api_key") == "test-key"
     finally:
-        del os.environ["RUNTIME_LITELLM__API_KEY"]
+        del os.environ["AI_REX_LITELLM__API_KEY"]
 
 
 def test_config_get_default():

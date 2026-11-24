@@ -1,15 +1,15 @@
 # Run the guard in Docker on Linux
 
 rex itself runs on the host; only the tool-execution guard runs in a container (`guard/entrypoint.py`, image
-`rex-guard:latest`). Tested layout: stock Linux (Linux Mint, Docker CE).
+`ai-rex-guard:latest`). Tested layout: stock Linux (Linux Mint, Docker CE).
 
 1. Build the image from the repository root:
 
    ```bash
-   docker build -t rex-guard:latest .
+   docker build -t ai-rex-guard:latest .
    ```
 
-   The tag must match `docker_guard.image` in the rex config (default `rex-guard:latest`).
+   The tag must match `docker_guard.image` in the rex config (default `ai-rex-guard:latest`).
    `docker compose build guard` builds the same image.
 
 2. Your user must be allowed to talk to Docker: `sudo usermod -aG docker "$USER"`, then log out and in (or `newgrp docker`).

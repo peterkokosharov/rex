@@ -33,7 +33,7 @@ jobs:
         run: python -m pytest -q
 
   packages:
-    name: rex deb + Windows zip
+    name: ai-rex deb + Windows zip
     needs: tests
     runs-on: ubuntu-24.04
     steps:
@@ -57,15 +57,15 @@ jobs:
       - name: Upload deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rex-deb-amd64
+          name: ai-rex-deb-amd64
           path: dist/*.deb
           if-no-files-found: error
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rex-win64
-          path: dist/rex-win.zip
+          name: ai-rex-win64
+          path: dist/ai-rex-win.zip
           if-no-files-found: error
 
       - name: Publish Release on tag
@@ -74,8 +74,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/rex_*.deb dist/rex-win.zip --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/ai-rex_*.deb dist/ai-rex-win.zip --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/rex_*.deb dist/rex-win.zip \
-              --generate-notes --title "rex $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" dist/ai-rex_*.deb dist/ai-rex-win.zip \
+              --generate-notes --title "ai-rex $GITHUB_REF_NAME"
           fi

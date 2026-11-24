@@ -15,9 +15,11 @@ from typing import Any, Mapping, Optional
 
 from kikolib import yaml_lite, dotenv
 
+from . import paths
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "runtime" / "config.yaml"
-DEFAULT_ENV_PATH = Path.home() / ".config" / "runtime" / ".env"
+
+DEFAULT_CONFIG_PATH = paths.config_dir() / "config.yaml"
+DEFAULT_ENV_PATH = paths.config_dir() / ".env"
 
 
 class Config:
@@ -57,15 +59,12 @@ class Config:
 
     @staticmethod
     def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
-        """Apply RUNTIME_* environment variable overrides."""
-        prefix = "RUNTIME_"
+        """Apply AI_REX_* (legacy RUNTIME_*) environment variable overrides."""
         result = dict(data)
 
-        for key, value in os.environ.items():
-            if key.startswith(prefix):
-                config_key = key[len(prefix):]
-                parts = Config._parse_env_key(config_key)
-                Config._set_nested(result, parts, value)
+        for config_key, value in paths.env_overrides():
+            parts = Config._parse_env_key(config_key)
+            Config._set_nested(result, parts, value)
 
         return result
 

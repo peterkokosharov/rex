@@ -121,7 +121,7 @@ class ACPBridgeTest(unittest.TestCase):
         rid = self.request("initialize", {"protocolVersion": 9, "clientCapabilities": {}})
         result = self.stdout.wait_id(rid)["result"]
         self.assertEqual(result["protocolVersion"], 1)
-        self.assertEqual(result["agentInfo"]["name"], "rex")
+        self.assertEqual(result["agentInfo"]["name"], "ai-rex")
         self.assertFalse(result["agentCapabilities"]["loadSession"])
 
     def test_prompt_streams_and_answers(self) -> None:

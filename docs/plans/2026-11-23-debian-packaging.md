@@ -105,7 +105,7 @@ Progress on step 2 (2026-11-23): DONE - `runtimelib/kikolib` is deleted; rex ven
 top-level `kikolib`: `runtimelib/__init__.py` appends `<root>/vendor` to `sys.path` (a system copy wins), `guard/entrypoint.py`
 does the same fallback, the image copies `vendor/kikolib` to `/app/vendor/kikolib` (`PYTHONPATH=/app:/app/vendor`), and the
 zip/deb scripts ship `vendor/kikolib` next to `runtimelib`. Renames `http_client`->`http`, `posix_utils`->`posix`. rex pins the
-stdlib HTTP backend at start-up. Image tag unified to `rex-guard:latest`, version read from `runtimelib.__version__`.
+stdlib HTTP backend at start-up. Image tag unified to `ai-rex-guard:latest`, version read from `runtimelib.__version__`.
 A separate `VERSION` file is not needed (the version lives in kikolib itself); the deb dropping `vendor/` for
 `python3-kikolib` belongs to step 3.
 

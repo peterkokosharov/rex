@@ -37,7 +37,7 @@ class Skill:
     body: str = ""
     files: list[str] = field(default_factory=list)  # relative POSIX paths, SKILL.md excluded
     real_root: Path | None = None  # folder.resolve() at discovery time; file access is pinned to it
-    project: bool = False  # found under <workspace>/.rex/skills (repository content, untrusted by default)
+    project: bool = False  # found under <workspace>/.ai-rex/skills (repository content, untrusted by default)
     trusted: bool = True  # False for project skills when workspace.trust is not set
     container: Path | None = None  # resolved search root a project skill must stay inside
 
@@ -117,13 +117,14 @@ def load_skill_folder(folder: Path, warnings: list[str] | None = None) -> Skill 
 def search_roots(workspace: Path | str, config: Any = None, home: Path | None = None) -> list[tuple[Path, bool]]:
     """(root, is_project) in precedence order: user config dir, config ``skills.paths``, then the workspace."""
     home = home if home is not None else Path.home()
-    roots: list[tuple[Path, bool]] = [(home / ".config" / "runtime" / "skills", False)]
+    roots: list[tuple[Path, bool]] = [(home / ".config" / "ai-rex" / "skills", False)]
     extra = config.get("skills.paths") if config is not None else None
     if isinstance(extra, str):
         extra = [extra]
     if isinstance(extra, (list, tuple)):
         roots.extend((Path(str(p)).expanduser(), False) for p in extra if p)
-    roots.append((Path(workspace) / ".rex" / "skills", True))
+    roots.append((Path(workspace) / ".ai-rex" / "skills", True))
+    roots.append((Path(workspace) / ".rex" / "skills", True))  # legacy name, still read
     return roots
 
 
@@ -137,7 +138,7 @@ def discover_skills(
 ) -> list[Skill]:
     """Find skills in the search roots. A later duplicate name is ignored with a warning.
 
-    Project skills (``<workspace>/.rex/skills``) are repository content: they are returned only when
+    Project skills (``<workspace>/.ai-rex/skills``) are repository content: they are returned only when
     ``workspace.trust`` is true, or (marked ``trusted=False``) with ``include_untrusted=True``.
     """
     trusted_ws = trust_workspace(config)

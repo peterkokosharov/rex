@@ -124,8 +124,8 @@ class Session:
         self.stdin_lock = threading.Lock()
         self.busy = False
         self.cancel_requested = False
-        threading.Thread(target=self._read_stdout, name=f"rex-acp-out-{sid}", daemon=True).start()
-        threading.Thread(target=self._read_stderr, name=f"rex-acp-err-{sid}", daemon=True).start()
+        threading.Thread(target=self._read_stdout, name=f"ai-rex-acp-out-{sid}", daemon=True).start()
+        threading.Thread(target=self._read_stderr, name=f"ai-rex-acp-err-{sid}", daemon=True).start()
 
     def _read_stdout(self) -> None:
         assert self.proc.stdout is not None
@@ -249,7 +249,7 @@ class ACPServer:
 
     def log(self, message: str) -> None:
         with self._log_lock:
-            sys.stderr.write(f"rex-acp: {message}\n")
+            sys.stderr.write(f"ai-rex-acp: {message}\n")
             sys.stderr.flush()
 
     # ---------- process management ----------
@@ -311,7 +311,7 @@ class ACPServer:
                 "promptCapabilities": {"image": False, "audio": False, "embeddedContext": True},
                 "sessionCapabilities": {"close": {}},
             },
-            "agentInfo": {"name": "rex", "title": "rex", "version": AGENT_VERSION},
+            "agentInfo": {"name": "ai-rex", "title": "ai-rex", "version": AGENT_VERSION},
             "authMethods": [],
         })
 
@@ -369,7 +369,7 @@ class ACPServer:
         threading.Thread(
             target=self._prompt_worker,
             args=(session, run),
-            name=f"rex-acp-prompt-{token}",
+            name=f"ai-rex-acp-prompt-{token}",
             daemon=True,
         ).start()
 
@@ -524,7 +524,7 @@ class ACPServer:
             self.error(msg.get("id"), -32601, f"method not found: {method}")
 
     def run(self) -> int:
-        threading.Thread(target=self._read_incoming, name="rex-acp-in", daemon=True).start()
+        threading.Thread(target=self._read_incoming, name="ai-rex-acp-in", daemon=True).start()
         while True:
             item = self.queue.get()
             if item[0] == "done":
@@ -569,7 +569,7 @@ def run_acp(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="rex acp",
+        prog="ai-rex acp",
         description="Agent Client Protocol server for JetBrains AI Assistant and other ACP clients",
     )
     parser.add_argument("--config", type=Path, default=None, help="Path to config file")

@@ -87,7 +87,7 @@ def load_instructions(
     A present project AGENTS.md of an untrusted workspace is not read; a notice says how to trust it.
     """
     workspace = Path(workspace) if workspace is not None else Path.cwd()
-    user_dir = Path(user_dir) if user_dir is not None else Path.home() / ".config" / "runtime"
+    user_dir = Path(user_dir) if user_dir is not None else Path.home() / ".config" / "ai-rex"
     result = Instructions()
 
     user_file = _find(user_dir)

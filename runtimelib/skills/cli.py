@@ -4,7 +4,7 @@
 # LLM: claude-sonnet-5-5
 # Licensed under MIT License
 
-"""`rex skills` and `rex skills show <name>`."""
+"""`ai-rex skills` and `ai-rex skills show <name>`."""
 
 from __future__ import annotations
 
@@ -40,5 +40,5 @@ def run_skills(argv: list[str], config: Any = None, workspace: Path | None = Non
             return 1
         print(skill.body, file=out)
         return 0
-    print("usage: rex skills [show <name>]", file=err)
+    print("usage: ai-rex skills [show <name>]", file=err)
     return 2

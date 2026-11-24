@@ -1,5 +1,5 @@
 [project]
-name = "runtime"
+name = "ai-rex"
 version = "0.3.0"
 description = "Small stdlib-only agent runtime for OpenAI-compatible endpoints"
 readme = "README.md"
@@ -11,7 +11,7 @@ dependencies = []
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 
 [project.scripts]
-runtime = "runtime.__main__:main"
+ai-rex = "runtime.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

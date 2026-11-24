@@ -227,10 +227,10 @@ def test_malformed_line_emits_error():
 def test_cli_jsonl_mode_stdout_is_pure_json():
     env = dict(os.environ)
     for key in list(env):
-        if key.startswith("RUNTIME_"):
+        if key.startswith(("RUNTIME_", "AI_REX_")):
             env.pop(key)
-    env["RUNTIME_LITELLM__BASE_URL"] = "http://dummy:4000"
-    env["RUNTIME_LITELLM__API_KEY"] = "dummy"
+    env["AI_REX_LITELLM__BASE_URL"] = "http://dummy:4000"
+    env["AI_REX_LITELLM__API_KEY"] = "dummy"
     result = subprocess.run(
         [sys.executable, "-m", "runtime", "--jsonl", "--local-tools"],
         cwd=REPO_ROOT, env=env,

@@ -1034,8 +1034,8 @@ class RuleVerdict:
 # ------------------------------------------------------------------- store
 
 def store_path(workspace: str | os.PathLike[str], base_dir: str | os.PathLike[str] | None = None) -> Path:
-    """``<base>/<sha1-of-workspace>.yaml`` (base default ``~/.config/runtime/permissions``)."""
-    base = Path(base_dir) if base_dir else Path.home() / ".config" / "runtime" / "permissions"
+    """``<base>/<sha1-of-workspace>.yaml`` (base default ``~/.config/ai-rex/permissions``)."""
+    base = Path(base_dir) if base_dir else Path.home() / ".config" / "ai-rex" / "permissions"
     digest = hashlib.sha1(_norm(str(workspace)).encode("utf-8")).hexdigest()
     return base / f"{digest}.yaml"
 

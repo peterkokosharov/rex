@@ -17,7 +17,7 @@ Licensed under MIT License
 - Context: 80% warning, mandatory compaction at 90%, window probe, context event.
 - Claude Code CLI gateway: tool calling emulated, clear 502/504 reasons, one retry.
 - Per-session store, AGENTS.md standing instructions, trust-gated project skills, render_diagram.
-- Guard Docker image fixed (rex-guard, Python 3.12).
+- Guard Docker image fixed (ai-rex-guard, Python 3.12).
 - Single version source (pyproject.toml and runtimelib must match).
 - Docs consolidated under docs/ (docs/INDEX.md).
 - CI: pytest on Linux/macOS/Windows with Python 3.12 and 3.14.
@@ -74,7 +74,7 @@ pip install -e .
 ```
 
 ### Configuration
-Create `~/.config/runtime/config.yaml`:
+Create `~/.config/ai-rex/config.yaml`:
 ```yaml
 liteLLM:
   base_url: "http://127.0.0.1:4000"
@@ -82,7 +82,7 @@ liteLLM:
   model: "gemini/gemini-flash"
 
 docker_guard:
-  image: "rex-guard:latest"
+  image: "ai-rex-guard:latest"
   memory: "2G"
   cpus: "2.0"
   network_mode: "bridge"
@@ -197,7 +197,7 @@ session:
   checkpoint_interval: 10
 ```
 
-### Role Config (`~/.config/runtime/roles/{role}.yaml`)
+### Role Config (`~/.config/ai-rex/roles/{role}.yaml`)
 ```yaml
 role: CODER
 model_class: SONNET

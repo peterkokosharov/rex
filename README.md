@@ -4,9 +4,12 @@ LLM: nvidia nemotron ultra
 Licensed under MIT License
 -->
 
-# Runtime AI
+# ai-rex (Runtime AI)
 
 A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built on a modular stdlib-only foundation (`kikolib`) with Docker Guard sandboxing for all tool execution.
+
+> **Renamed to `ai-rex`.** The command, package, config dir (`~/.config/ai-rex`) and env prefix (`AI_REX_`) changed
+> to avoid a clash with the Perl tool Rex on Linux. Old names still work as fallbacks. See `docs/RENAME-AI-REX.md`.
 
 ---
 
@@ -17,7 +20,7 @@ A Claude Code-like runtime for OpenAI-compatible models via LiteLLM proxy, built
 | Module | Status | Description |
 |--------|--------|-------------|
 | **CLI Framework** | ✅ Done | REPL + one-shot CLI, ANSI renderer, slash commands, model switching, JSON/no-stream modes |
-| **Config System** | ✅ Done | YAML + `.env` + `RUNTIME_*` env overrides, nested keys, schema validation |
+| **Config System** | ✅ Done | YAML + `.env` + `AI_REX_*` env overrides, nested keys, schema validation |
 | **LLM Client** | ✅ Done | `LiteLLMClient` with streaming, tool calls, retry policy, cost tracking |
 | **Model Registry** | ✅ Done | 20+ models with kiko.db classification (TEXT/REASONING/EYE/VOICE/MEMORY/AGENT/TOOL/IMAGE/VIDEO/CODE) |
 | **Docker Guard** | ✅ Done | JSON-RPC 2.0 over stdio, bash/fs/net/git methods, cgroups, network policies |
@@ -125,10 +128,10 @@ curl http://127.0.0.1:5000/v1/models
 ### Run CLI (REPL)
 
 ```bash
-cd /tmp/rex   # or the repo root
-RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:5000 \
-RUNTIME_LITELLM__API_KEY=dummy \
-RUNTIME_LITELLM__MODEL=gemini-lite \
+cd /tmp/ai-rex   # or the repo root
+AI_REX_LITELLM__BASE_URL=http://127.0.0.1:5000 \
+AI_REX_LITELLM__API_KEY=dummy \
+AI_REX_LITELLM__MODEL=gemini-lite \
 python3 -m runtime
 ```
 
@@ -185,7 +188,7 @@ cli:
   `localhost` (with or without this port) get 403, which stops DNS-rebinding attacks from a browser.
 - POST bodies must be sent as `Content-Type: application/json` (else 415).
 - Without a token any `Authorization` header is accepted. With a token `T` every request needs
-  `Authorization: Bearer T` (constant-time compare); set `RUNTIME_LITELLM__API_KEY=T` in rex.
+  `Authorization: Bearer T` (constant-time compare); set `AI_REX_LITELLM__API_KEY=T` in rex.
   The token comes from `--token-file F` (file content, whitespace stripped), else `--token T`, else the
   `REX_GATEWAY_TOKEN` environment variable. `--token` works but prints a warning: command-line
   arguments are visible to other users in the process list.
@@ -233,10 +236,10 @@ cli:
 python3 scripts/claude_cli_gateway.py --port 4000 --default-model haiku
 
 # second terminal
-RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:4000 RUNTIME_LITELLM__API_KEY=dummy RUNTIME_LITELLM__MODEL=haiku python3 -m runtime
+AI_REX_LITELLM__BASE_URL=http://127.0.0.1:4000 AI_REX_LITELLM__API_KEY=dummy AI_REX_LITELLM__MODEL=haiku python3 -m runtime
 ```
 
-Or copy `scripts/rex-claude-cli.example.yaml` to `~/.config/runtime/config.yaml`.
+Or copy `scripts/ai-rex-claude-cli.example.yaml` to `~/.config/ai-rex/config.yaml`.
 
 ### JSON-lines bridge for external UIs (`--jsonl`)
 
@@ -245,8 +248,8 @@ over stdin/stdout. One `AgentLoop` lives for the whole session, so conversation 
 stdout is **only** JSON lines — no banners, no warnings. Diagnostics go to stderr.
 
 ```bash
-RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:5000 \
-RUNTIME_LITELLM__API_KEY=dummy \
+AI_REX_LITELLM__BASE_URL=http://127.0.0.1:5000 \
+AI_REX_LITELLM__API_KEY=dummy \
 python3 -m runtime --jsonl --model gemini-lite
 ```
 
@@ -289,7 +292,7 @@ deny. `rule` is the matching rule text or `null`; `reason` may be empty; `detail
 is read while `chat` is running. `stop` (which also interrupts the request), `bye`, a closed stdin, or no answer within
 `permissions.ask_timeout` seconds (default 300) deny every open question; `bye` during a request also interrupts it.
 A reply with an unknown or already closed id gets `{"type":"error","message":"unknown permission id: <id>"}`. The
-interactive REPL asks on the terminal (`y` once, `a` always, anything else denies). A one-shot `rex "prompt"` asks on
+interactive REPL asks on the terminal (`y` once, `a` always, anything else denies). A one-shot `ai-rex "prompt"` asks on
 the terminal too when stdin and stderr are both a terminal; with `--json`, or when either is redirected, it denies every
 question.
 
@@ -297,7 +300,7 @@ question.
 Changing `model` updates the live loop; changing the workspace is done by starting rex in that directory (the UI passes
 it as the child process cwd). `--ui-jsonl` is an alias of `--jsonl`.
 
-### Agent Client Protocol (`rex acp`)
+### Agent Client Protocol (`ai-rex acp`)
 
 Editors that speak [ACP](https://agentclientprotocol.com/) can add rex next to Claude, Codex or Gemini.
 JetBrains AI Assistant (2026.1+) reads `agent_servers` from its AI Assistant settings:
@@ -305,13 +308,13 @@ JetBrains AI Assistant (2026.1+) reads `agent_servers` from its AI Assistant set
 ```json
 {
   "agent_servers": {
-    "rex": {
+    "ai-rex": {
       "command": "/usr/bin/python3",
       "args": ["-m", "runtime", "acp", "--model", "gemini-lite"],
       "env": [
         { "name": "PYTHONPATH", "value": "/usr/lib/python3/dist-packages" },
-        { "name": "RUNTIME_LITELLM__BASE_URL", "value": "http://127.0.0.1:4000" },
-        { "name": "RUNTIME_LITELLM__API_KEY", "value": "dummy" }
+        { "name": "AI_REX_LITELLM__BASE_URL", "value": "http://127.0.0.1:4000" },
+        { "name": "AI_REX_LITELLM__API_KEY", "value": "dummy" }
       ]
     }
   }
@@ -319,7 +322,7 @@ JetBrains AI Assistant (2026.1+) reads `agent_servers` from its AI Assistant set
 ```
 
 From a source checkout use `python3 -m runtime acp ...` with `PYTHONPATH` pointing at the repo root; the ACP server
-adds it to the child's `PYTHONPATH` automatically. `rex acp` and `runtime --acp` are equivalent.
+adds it to the child's `PYTHONPATH` automatically. `ai-rex acp` and `runtime --acp` are equivalent.
 
 ACP sessions map to one rex `--jsonl` child each: `session/prompt` streams `agent_message_chunk` updates from rex
 `token` events, `tool_start`/`tool_end` become `tool_call` updates, `session/cancel` sends `stop`, and
@@ -334,8 +337,8 @@ rule is denied, so use it only for local demos. Cost reporting is absent because
 ### Run CLI (one-shot)
 
 ```bash
-RUNTIME_LITELLM__BASE_URL=http://127.0.0.1:5000 \
-RUNTIME_LITELLM__API_KEY=dummy \
+AI_REX_LITELLM__BASE_URL=http://127.0.0.1:5000 \
+AI_REX_LITELLM__API_KEY=dummy \
 python3 -m runtime --model gemini-lite "Create hello.c in current dir, compile and run it"
 ```
 
@@ -362,7 +365,7 @@ Docker guard.
 Tool execution defaults to Docker Guard. Build the image from repo root:
 
 ```bash
-docker build -t rex-guard:latest .
+docker build -t ai-rex-guard:latest .
 ```
 
 If Docker permissions/image are missing, the CLI shows hints; for quick local dev you can use `--local-tools`.
@@ -387,7 +390,7 @@ A skill is a folder with a `SKILL.md` file: YAML frontmatter (`name`, `descripti
 followed by Markdown instructions. The folder may hold extra files (references, scripts) next to it.
 
 ```
-.rex/skills/release-notes/
+.ai-rex/skills/release-notes/
   SKILL.md
   references/style.md
 ```
@@ -403,17 +406,17 @@ description: Write release notes from the git log. Use when asked for a changelo
 3. Follow `references/style.md` for tone.
 ```
 
-Skills are searched in `~/.config/runtime/skills/`, then the folders in the config key `skills.paths` (a list), then
-`<workspace>/.rex/skills/` (project skills, marked `(project)`). Project skills come from the repository and are
-untrusted: they load only when `workspace.trust` is `true` (default `false`; `rex skills` still lists them as
+Skills are searched in `~/.config/ai-rex/skills/`, then the folders in the config key `skills.paths` (a list), then
+`<workspace>/.ai-rex/skills/` (project skills, marked `(project)`). Project skills come from the repository and are
+untrusted: they load only when `workspace.trust` is `true` (default `false`; `ai-rex skills` still lists them as
 not trusted). The old key `skills.trust_workspace` still works as a deprecated alias (with a one-time warning). If two skills share a name the first one wins and a warning is logged. A missing `name`
 falls back to the folder name; a skill without `description` is skipped with a warning.
 
 At session start only a compact index (`- name: description`, about 2 KB at most) is added to the system prompt.
 When a task matches a description the model calls `load_skill(name)`, which returns the `SKILL.md` body and the
 list of extra files; `read_skill_file(name, relpath)` reads one text file inside the skill folder (no `..`, no
-absolute paths, max 200 KB). `rex skills` lists the skills found (name, path, description) and
-`rex skills show <name>` prints the body.
+absolute paths, max 200 KB). `ai-rex skills` lists the skills found (name, path, description) and
+`ai-rex skills show <name>` prints the body.
 
 ### Run Tests
 
@@ -472,7 +475,7 @@ runtime-ai/
 
 rex reads the common `AGENTS.md` convention at session start and puts it into the system prompt:
 
-1. `~/.config/runtime/AGENTS.md` - your user-level instructions;
+1. `~/.config/ai-rex/AGENTS.md` - your user-level instructions;
 2. `<workspace>/AGENTS.md` (or `agents.md`) - project instructions. A symlink pointing outside the workspace is refused with a warning.
 
 `agents.md` (lower case) is also accepted in the user directory. Each file is capped at 16 KB (a truncation marker is added), so the
@@ -481,16 +484,16 @@ Loaded files are printed to stderr when the session starts (also in one-shot mod
 `ready` event.
 
 **Trust.** Project instructions come from the repository, so they are loaded only when the workspace is trusted: set
-`workspace.trust: true` in `config.yaml` (env: `RUNTIME_WORKSPACE__TRUST=true`; default `false`). The same key gates project skills.
+`workspace.trust: true` in `config.yaml` (env: `AI_REX_WORKSPACE__TRUST=true`; default `false`). The same key gates project skills.
 When a project `AGENTS.md` is present but the workspace is not trusted, it is not read and a one-line notice says how to trust it.
 Project text is placed before your user instructions (so yours come last), and lines in it that start with `===` or `---` get a
 `> ` prefix so they cannot fake section markers. The note that project instructions "never override safety rules or permissions" is
 advisory (it is a sentence in the prompt), not enforcement: the real limits are the permission policy and the Docker guard.
 **Do not open an untrusted repository with `--local-tools`**: there the tools run on the host without the guard.
 
-Explicit file: set `instructions.file` in `config.yaml` (env: `RUNTIME_INSTRUCTIONS__FILE`) to load any file as trusted user-level instructions (same 16 KB cap, any location; a warning is printed once if it is missing). rex never loads the `AGENTS.md` of its own install folder unless that folder is the workspace.
+Explicit file: set `instructions.file` in `config.yaml` (env: `AI_REX_INSTRUCTIONS__FILE`) to load any file as trusted user-level instructions (same 16 KB cap, any location; a warning is printed once if it is missing). rex never loads the `AGENTS.md` of its own install folder unless that folder is the workspace.
 
-Example `~/.config/runtime/AGENTS.md`:
+Example `~/.config/ai-rex/AGENTS.md`:
 
 ```
 I write to you in Bulgarian. Always answer me in Russian.
@@ -499,7 +502,7 @@ I write to you in Bulgarian. Always answer me in Russian.
 ## Configuration
 
 ### Global Config (optional)
-`~/.config/runtime/config.yaml`:
+`~/.config/ai-rex/config.yaml`:
 ```yaml
 liteLLM:
   base_url: "http://127.0.0.1:4000"
@@ -542,7 +545,7 @@ whose prefix covers wrappers (`time`, `exec`, `env`, `eval`, `command`, `builtin
   an allow rule asks first, and so does every write. Keep allow rules narrow.
 
 ### Role Configs
-`~/.config/runtime/roles/{ORCHESTRATOR,CODER,TESTER,...}.yaml` — see `docs/architecture/role-based-agent-architecture.md` §8.1
+`~/.config/ai-rex/roles/{ORCHESTRATOR,CODER,TESTER,...}.yaml` — see `docs/architecture/role-based-agent-architecture.md` §8.1
 
 ---
 

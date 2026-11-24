@@ -18,7 +18,7 @@ from ..guard import get_guard_client
 from ..config import Config
 from ..procutil import safe_which
 
-NO_BASH_WINDOWS = ("rex needs Git Bash on Windows: install Git for Windows from "
+NO_BASH_WINDOWS = ("ai-rex needs Git Bash on Windows: install Git for Windows from "
                    "https://git-scm.com/download/win")
 
 
@@ -154,7 +154,7 @@ class BashTool(Tool):
 _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL",
                       "AUTH", "COOKIE", "DATABASE_URL")
 _SECRET_SUFFIXES = ("_PAT",)
-_SECRET_PREFIXES = ("RUNTIME_LITELLM", "LITELLM")
+_SECRET_PREFIXES = ("AI_REX_LITELLM", "RUNTIME_LITELLM", "LITELLM")
 # Exact names that match a secret pattern but are needed and hold no secret
 # themselves (XAUTHORITY is the path X11 GUI programs need to find their cookie).
 _NOT_SECRET_NAMES = frozenset({"XAUTHORITY"})

@@ -14,6 +14,8 @@ from typing import Any, Optional
 
 from kikolib import yaml_lite, dotenv
 
+from . import paths
+
 
 class ConfigSource:
     """Base class for configuration sources."""
@@ -93,17 +95,15 @@ class CLISource(ConfigSource):
 
 
 class EnvVarSource(ConfigSource):
-    """RUNTIME_* environment variable source."""
+    """AI_REX_* environment variable source (legacy RUNTIME_* still read, deprecated)."""
 
-    PREFIX = "RUNTIME_"
+    PREFIX = "AI_REX_"
 
     def load(self) -> dict[str, Any]:
         result = {}
-        for key, value in os.environ.items():
-            if key.startswith(self.PREFIX):
-                config_key = key[len(self.PREFIX):]
-                parts = self._parse_env_key(config_key)
-                self._set_nested(result, parts, value)
+        for config_key, value in paths.env_overrides():
+            parts = self._parse_env_key(config_key)
+            self._set_nested(result, parts, value)
         return result
 
     def save(self, data: dict[str, Any]) -> None:

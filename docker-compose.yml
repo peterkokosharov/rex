@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: rex-guard:latest
+    image: ai-rex-guard:latest
     container_name: runtime-guard
     # Security: no network by default, enable via GUARD_ALLOWED_DOMAINS
     network_mode: "none"
@@ -24,7 +24,7 @@ services:
       - /var/tmp
     volumes:
       - .:/workspace:rw
-      - ~/.config/runtime:/home/guarduser/.config/runtime:ro
+      - ~/.config/ai-rex:/home/guarduser/.config/ai-rex:ro
       - ~/.kiko:/home/guarduser/.kiko:ro
     environment:
       - GUARD_WORKSPACE=/workspace

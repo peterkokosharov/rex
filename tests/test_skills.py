@@ -70,7 +70,7 @@ def test_frontmatter_folded_and_crlf_and_none():
 
 def test_missing_name_uses_folder_and_missing_description_skipped(env):
     ws, home = env
-    root = ws / ".rex" / "skills"
+    root = ws / ".ai-rex" / "skills"
     make_skill(root, "folder-name", None, "has desc")
     make_skill(root, "nodesc", "nodesc", None)
     warnings: list[str] = []
@@ -82,9 +82,9 @@ def test_missing_name_uses_folder_and_missing_description_skipped(env):
 def test_precedence_and_duplicate_warning(env, tmp_path):
     ws, home = env
     extra = tmp_path / "extra"
-    make_skill(ws / ".rex" / "skills", "a", "dup", "from workspace")
-    make_skill(home / ".config" / "runtime" / "skills", "b", "dup", "from home")
-    make_skill(home / ".config" / "runtime" / "skills", "c", "only-home", "h")
+    make_skill(ws / ".ai-rex" / "skills", "a", "dup", "from workspace")
+    make_skill(home / ".config" / "ai-rex" / "skills", "b", "dup", "from home")
+    make_skill(home / ".config" / "ai-rex" / "skills", "c", "only-home", "h")
     make_skill(extra, "d", "from-config", "cfg")
     warnings: list[str] = []
     skills = discover_skills(ws, Cfg({"skills.paths": [str(extra)], "workspace.trust": True}), home=home, warnings=warnings)
@@ -96,7 +96,7 @@ def test_precedence_and_duplicate_warning(env, tmp_path):
 
 def test_files_listed_without_skill_md(env):
     ws, home = env
-    d = make_skill(ws / ".rex" / "skills", "s", "s", "d")
+    d = make_skill(ws / ".ai-rex" / "skills", "s", "s", "d")
     (d / "references").mkdir()
     (d / "references" / "api.md").write_text("api", encoding="utf-8")
     (d / "run.sh").write_text("echo", encoding="utf-8")
@@ -106,7 +106,7 @@ def test_files_listed_without_skill_md(env):
 
 def test_index_format_and_size_cap(env):
     ws, home = env
-    root = ws / ".rex" / "skills"
+    root = ws / ".ai-rex" / "skills"
     make_skill(root, "short", "short", "tiny")
     make_skill(root, "long", "long", "x" * 1000)
     idx = skill_index(discover_skills(ws, TRUST, home=home))
@@ -122,7 +122,7 @@ def test_index_format_and_size_cap(env):
 
 def test_load_skill_tool(env):
     ws, home = env
-    d = make_skill(ws / ".rex" / "skills", "s", "s", "d", body="Step 1\n")
+    d = make_skill(ws / ".ai-rex" / "skills", "s", "s", "d", body="Step 1\n")
     (d / "notes.txt").write_text("n", encoding="utf-8")
     tool = LoadSkillTool(skills=discover_skills(ws, TRUST, home=home))
     r = tool.execute(name="s")
@@ -133,7 +133,7 @@ def test_load_skill_tool(env):
 
 def test_read_skill_file_and_confinement(env, tmp_path):
     ws, home = env
-    d = make_skill(ws / ".rex" / "skills", "s", "s", "d")
+    d = make_skill(ws / ".ai-rex" / "skills", "s", "s", "d")
     (d / "ref.md").write_text("hello", encoding="utf-8")
     (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
     (d / "bin.dat").write_bytes(b"\x00\x01")
@@ -155,7 +155,7 @@ def test_read_skill_file_and_confinement(env, tmp_path):
 
 def test_symlink_escape_rejected(env, tmp_path):
     ws, home = env
-    d = make_skill(ws / ".rex" / "skills", "s", "s", "d")
+    d = make_skill(ws / ".ai-rex" / "skills", "s", "s", "d")
     (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
     try:
         (d / "link.txt").symlink_to(tmp_path / "secret.txt")
@@ -170,7 +170,7 @@ def test_cli_list_and_show(env, monkeypatch):
     ws, home = env
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    make_skill(ws / ".rex" / "skills", "s", "alpha", "does alpha", body="ALPHA BODY\n")
+    make_skill(ws / ".ai-rex" / "skills", "s", "alpha", "does alpha", body="ALPHA BODY\n")
     out, err = io.StringIO(), io.StringIO()
     assert run_skills([], TRUST, workspace=ws, out=out, err=err) == 0
     line = out.getvalue().strip()
@@ -188,7 +188,7 @@ def test_agent_prompt_has_index_only_when_skills_exist(env, monkeypatch):
     monkeypatch.chdir(ws)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    make_skill(ws / ".rex" / "skills", "s", "alpha", "does alpha")
+    make_skill(ws / ".ai-rex" / "skills", "s", "alpha", "does alpha")
     cfg = TRUST
     loop = AgentLoop.__new__(AgentLoop)
     loop.config = cfg
@@ -205,8 +205,8 @@ def test_workspace_skills_untrusted_by_default(env, monkeypatch):
     ws, home = env
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    make_skill(ws / ".rex" / "skills", "s", "proj", "project skill")
-    make_skill(home / ".config" / "runtime" / "skills", "u", "user", "user skill")
+    make_skill(ws / ".ai-rex" / "skills", "s", "proj", "project skill")
+    make_skill(home / ".config" / "ai-rex" / "skills", "u", "user", "user skill")
     assert [s.name for s in discover_skills(ws, None, home=home)] == ["user"]
     both = discover_skills(ws, None, home=home, include_untrusted=True)
     assert {s.name: s.trusted for s in both} == {"user": True, "proj": False}
@@ -223,7 +223,7 @@ def test_workspace_skills_untrusted_by_default(env, monkeypatch):
 
 def test_folder_swapped_for_symlink_after_discovery_refused(env, tmp_path):
     ws, home = env
-    d = make_skill(ws / ".rex" / "skills", "s", "s", "d")
+    d = make_skill(ws / ".ai-rex" / "skills", "s", "s", "d")
     (d / "ref.md").write_text("ok", encoding="utf-8")
     other = tmp_path / "other"
     other.mkdir()
@@ -244,7 +244,7 @@ def test_folder_swapped_for_symlink_after_discovery_refused(env, tmp_path):
 def test_project_skill_symlinked_outside_container_skipped(env, tmp_path):
     ws, home = env
     other = make_skill(tmp_path / "elsewhere", "s", "s", "d")
-    root = ws / ".rex" / "skills"
+    root = ws / ".ai-rex" / "skills"
     root.mkdir(parents=True)
     try:
         (root / "s").symlink_to(other, target_is_directory=True)

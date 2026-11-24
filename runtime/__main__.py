@@ -16,6 +16,7 @@ from pathlib import Path
 
 import runtimelib
 from runtimelib import Config, get_config
+from runtimelib.config.paths import migrate_legacy_config
 from runtimelib.cli import (
     ArgumentParser,
     CommandRegistry,
@@ -30,7 +31,7 @@ from runtimelib.cli import (
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="runtime",
+        prog="ai-rex",
         description="Claude-like runtime for OpenAI-compatible models via LiteLLM proxy",
     )
     parser.add_argument("--version", action="version", version="%(prog)s " + runtimelib.__version__)
@@ -50,13 +51,14 @@ def create_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     argv = sys.argv[1:]
-    # `rex acp ...` is the form used in editor configs. Keep the old flat CLI
+    migrate_legacy_config()  # one-time copy ~/.config/runtime -> ~/.config/ai-rex (old dir is kept)
+    # `ai-rex acp ...` is the form used in editor configs. Keep the old flat CLI
     # intact; this only takes over when "acp" is the very first argument.
     if argv and argv[0] == "acp":
         from runtimelib.acp import main as acp_main
         return acp_main(argv[1:])
 
-    # `rex skills [show <name>]` lists the SKILL.md skills; a normal prompt otherwise.
+    # `ai-rex skills [show <name>]` lists the SKILL.md skills; a normal prompt otherwise.
     if argv and argv[0] == "skills" and (len(argv) == 1 or argv[1] == "show"):
         from runtimelib.skills.cli import run_skills
         return run_skills(argv[1:], get_config())
@@ -214,7 +216,7 @@ def _isatty(stream: Any) -> bool:
 
 
 def one_shot_asker(as_json: bool, stdin: Any = None, stderr: Any = None) -> Any:
-    """Asker for ``rex "prompt"``: the terminal when someone can answer, else None (deny).
+    """Asker for ``ai-rex "prompt"``: the terminal when someone can answer, else None (deny).
 
     Someone can answer when stdin and stderr are both a terminal and the
     output is not ``--json`` (a script reads that).
@@ -555,20 +557,20 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
 
     global _ASKER
     _ASKER = TerminalAsker(on_interrupt=_interrupt_repl_loop)
-    history_file = Path.home() / ".config" / "runtime" / "history"
+    history_file = Path.home() / ".config" / "ai-rex" / "history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
     history = HistoryManager(history_file)
     interface = ReadlineInterface(history, completer=lambda text, state: completer(text, state, registry, config))
 
     model = config.get("liteLLM.model", "?")
     base = config.get("liteLLM.base_url", "?")
-    print(ansi.bold("rex") + ansi.gray(f"  model={model}  endpoint={base}"))
+    print(ansi.bold("ai-rex") + ansi.gray(f"  model={model}  endpoint={base}"))
     print(ansi.gray("Команди: /help /model /models /context /reset /shell /doctor /exit  |  ! <команда> изпълнява локално  |  Ctrl+C прекъсва, Ctrl+D изход"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:
         try:
-            prompt = ansi.cyan("rex") + ansi.gray(" › ")
+            prompt = ansi.cyan("ai-rex") + ansi.gray(" › ")
             line = interface.read(prompt).strip()
         except EOFError:
             print()
