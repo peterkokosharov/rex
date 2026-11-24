@@ -146,7 +146,11 @@ class LiteLLMClient:
         timeout: float = 60.0,
         http_backend: Optional[HttpBackend] = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        base_url = base_url.strip().rstrip("/")
+        # Paths below add /v1 themselves; a base_url that already ends in /v1 must not double it.
+        while base_url.endswith("/v1"):
+            base_url = base_url[:-3].rstrip("/")
+        self.base_url = base_url
         self.api_key = api_key
         self.default_model = model
         self.timeout = timeout
@@ -300,6 +304,7 @@ class LiteLLMClient:
             return self._stream_chat(url, body)
         else:
             resp = self._request_with_retry("POST", url, headers=self._headers(), body=body)
+            self._check_status(resp, url)
             return resp
 
     def _request_with_retry(
@@ -317,6 +322,21 @@ class LiteLLMClient:
         resp, _ = retry.send_with_retry(send, self._retry_policy)
         return resp
 
+    @staticmethod
+    def _check_status(resp: Any, url: str) -> None:
+        """Turn an HTTP error into a clear exception instead of an empty answer."""
+        status = getattr(resp, "status", 200)
+        if not isinstance(status, int) or status < 400:
+            return
+        detail = ""
+        try:
+            raw = resp.read()
+            detail = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        except Exception:
+            pass
+        detail = " ".join(detail.split())[:300]
+        raise RuntimeError(f"HTTP {status} from {url}" + (f": {detail}" if detail else ""))
+
     def _stream_chat(
         self, url: str, body: bytes
     ) -> Iterator[ChatCompletionChunk]:
@@ -325,6 +345,7 @@ class LiteLLMClient:
         )
 
         try:
+            self._check_status(resp, url)
             for line in resp.iter_lines():
                 if not line.strip():
                     continue

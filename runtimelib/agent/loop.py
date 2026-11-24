@@ -384,8 +384,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
             # If no content and no tool calls, return empty response instead of looping
             if not response.content and not response.tool_calls:
-                self.state.messages.append(ChatMessage(role="assistant", content=""))
-                return ""
+                self.state.messages.pop()  # keep the history valid for a retry
+                raise RuntimeError("empty response from the model (no text, no tool call)")
 
         # Whatever stopped the loop, no tool call may stay without a result.
         self.state.messages = ensure_tool_results(self.state.messages)
