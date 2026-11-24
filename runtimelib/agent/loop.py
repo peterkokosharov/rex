@@ -193,7 +193,8 @@ class AgentLoop:
         factories = (
             ("fileops", lambda: FileOpsTool(self.config)),
             ("bash", lambda: BashTool(self.config)),
-            ("task", lambda: TaskSpawnTool()),
+            # "task" (TaskSpawnTool) stays hidden until it really runs a sub-agent: today it
+            # only claims delegation, which misleads the model.
             ("edit", lambda: EditTool(self.config, READ_TRACKER)),
             # allow_private comes from the host config only; it is not in the model's schema.
             ("webfetch", lambda: WebFetchTool(
