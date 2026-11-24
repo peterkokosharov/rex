@@ -35,7 +35,7 @@ cat > "$STAGE/usr/bin/ai-rex" <<'EOF'
 # Launch ai-rex from the system Python; modules live in /usr/lib/python3/dist-packages.
 PYTHONPATH=/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}
 export PYTHONPATH
-exec python3 -m runtime "$@"
+exec python3 -P -m runtime "$@"
 EOF
 chmod 0755 "$STAGE/usr/bin/ai-rex"
 

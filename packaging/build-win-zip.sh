@@ -35,7 +35,7 @@ cat > "$STAGE/rex/ai-rex.cmd" <<'EOF'
 @echo off
 setlocal
 set PYTHONPATH=%~dp0;%PYTHONPATH%
-python -m runtime %*
+python -P -m runtime %*
 EOF
 
 cat > "$STAGE/rex/README.txt" <<'EOF'
@@ -47,7 +47,7 @@ ai-rex for Windows (x64)
 2. Unzip anywhere, e.g. C:\Tools. The program folder inside the zip is still called `rex`
    (front-ends such as Layka and Sisi look for that name); the command is `ai-rex.cmd`.
 3. Run:  ai-rex.cmd --help
-   or:   python -m runtime --jsonl --local-tools
+   or:   python -P -m runtime --jsonl --local-tools
 
 Layka users: unzip ai-rex-win.zip next to layka.exe. Layka will find the `rex`
 subfolder automatically. rex_native.dll is optional; if it cannot be loaded,

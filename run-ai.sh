@@ -22,12 +22,12 @@ fi
 
 echo ""
 echo "🚀 Running Runtime AI CLI..."
-echo "   Usage: .venv/bin/python -m runtime \"your prompt\""
+echo "   Usage: .venv/bin/python -P -m runtime \"your prompt\""
 echo ""
 
 # If no args, show help
 if [ $# -eq 0 ]; then
-    .venv/bin/python -m runtime --help
+    .venv/bin/python -P -m runtime --help
 else
-    .venv/bin/python -m runtime "$@"
+    .venv/bin/python -P -m runtime "$@"
 fi
