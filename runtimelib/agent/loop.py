@@ -115,7 +115,7 @@ class AgentLoop:
         self.config = config
         # Own read tracker per loop, shared by edit and fileops: a read in one agent
         # must not unlock an edit in another.
-        self.read_tracker = read_tracker or ReadTracker()
+        self.read_tracker = ReadTracker() if read_tracker is None else read_tracker
         self.llm = llm_client or LiteLLMClient.from_config(config)
         self.state = AgentState()
         # LLM: nvidia nemotron ultra - respect configured step budget; the

@@ -77,7 +77,7 @@ class FileOpsTool(Tool):
         super().__init__("fileops", "File operations via guard", schema)
         self._config = config
         self._guard = None
-        self._tracker = tracker or READ_TRACKER
+        self._tracker = READ_TRACKER if tracker is None else tracker
 
     def _get_guard(self):
         if self._guard is None:

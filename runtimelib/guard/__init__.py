@@ -46,6 +46,8 @@ class GuardClient:
         # Serialises whole request lines on stdin: two agents writing at once must not
         # interleave the bytes of two JSON lines.
         self._write_lock = threading.Lock()
+        # Guards _responses/_results between the reader thread and the requesters.
+        self._pending_lock = threading.Lock()
         self._request_id = 0
         self._responses: dict[int, threading.Event] = {}
         self._results: dict[int, Any] = {}
@@ -165,11 +167,18 @@ class GuardClient:
             except json.JSONDecodeError:
                 continue
 
-            # Handle response
-            if "id" in resp and resp["id"] in self._responses:
-                req_id = resp["id"]
-                self._results[req_id] = resp
-                self._responses[req_id].set()
+            # Handle response. One lookup under the lock: the requester may have timed out
+            # and dropped its id meanwhile; a late answer is then ignored, never a KeyError
+            # that would end this thread (and with it every agent's guard calls).
+            if not isinstance(resp, dict):
+                continue
+            req_id = resp.get("id")
+            with self._pending_lock:
+                event = self._responses.get(req_id)
+                if event is not None:
+                    self._results[req_id] = resp
+            if event is not None:
+                event.set()
 
     def _send_request(self, method: str, params: dict[str, Any], timeout: float = 30.0) -> Any:
         """Send JSON-RPC request and wait for response."""
@@ -179,7 +188,8 @@ class GuardClient:
         with self._lock:
             self._request_id += 1
             req_id = self._request_id
-            event = threading.Event()
+        event = threading.Event()
+        with self._pending_lock:
             self._responses[req_id] = event
 
         request = {
@@ -190,17 +200,25 @@ class GuardClient:
         }
 
         try:
-            if not self._proc or not self._proc.stdin:
+            proc = self._proc  # read once: stop() may clear it from another thread
+            if not proc or not proc.stdin:
                 raise RuntimeError("Guard process not running")
 
-            with self._write_lock:
-                self._proc.stdin.write(json.dumps(request) + "\n")
-                self._proc.stdin.flush()
+            # Bounded wait for the write lock: another agent's write may be stuck on a full
+            # pipe while the guard runs a long call; this call then fails like any timeout.
+            if not self._write_lock.acquire(timeout=timeout):
+                raise TimeoutError(f"Guard request {method} timed out after {timeout}s (waiting to write)")
+            try:
+                proc.stdin.write(json.dumps(request) + "\n")
+                proc.stdin.flush()
+            finally:
+                self._write_lock.release()
 
             if not event.wait(timeout):
                 raise TimeoutError(f"Guard request {method} timed out after {timeout}s")
 
-            result = self._results.pop(req_id, None)
+            with self._pending_lock:
+                result = self._results.pop(req_id, None)
             if not result:
                 raise RuntimeError("No response received")
 
@@ -210,7 +228,9 @@ class GuardClient:
             return result.get("result")
 
         finally:
-            self._responses.pop(req_id, None)
+            with self._pending_lock:
+                self._responses.pop(req_id, None)
+                self._results.pop(req_id, None)
 
     # --- Tool Methods ---
 

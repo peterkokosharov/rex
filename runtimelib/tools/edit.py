@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Precise edit tool: exact match, read-before-edit hash check, unified diff.
@@ -170,7 +170,7 @@ def plan_edit(
     Returns ``{"text", "crlf", "replacements", "diff"}`` where ``text`` is the
     new content with the file's original line endings.
     """
-    tracker = tracker or READ_TRACKER
+    tracker = READ_TRACKER if tracker is None else tracker
     if not isinstance(old_string, str) or not isinstance(new_string, str):
         raise EditError("old_string and new_string must be strings")
     if old_string == "":
@@ -220,7 +220,7 @@ def apply_edit(
     tracker: ReadTracker | None = None,
 ) -> dict[str, Any]:
     """Edit ``f`` (LocalFile or GuardFile); returns ``{"ok","path","replacements","diff"}``."""
-    tracker = tracker or READ_TRACKER
+    tracker = READ_TRACKER if tracker is None else tracker
     plan = plan_edit(f, old_string, new_string, replace_all, tracker)
     digest = f.write(plan["text"])
     tracker.record(f.key, digest)
@@ -262,7 +262,7 @@ class EditTool(Tool):
         )
         super().__init__("edit", "Precise file edit with diff", schema)
         self._config = config
-        self._tracker = tracker or READ_TRACKER
+        self._tracker = READ_TRACKER if tracker is None else tracker
         self._guard = None
 
     def _file(self, path: str) -> Any:
