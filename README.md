@@ -272,11 +272,16 @@ Outgoing lines (rex → UI):
 {"type":"tool_start","name":"fileops","args":{"operation":"write"}}
 {"type":"tool_end","ok":true,"error":null}
 {"type":"final","text":"Done."}
+{"type":"usage","turn":{"input_tokens":120,"output_tokens":15},"session":{"input_tokens":340,"output_tokens":48},"estimated":false}
 {"type":"error","message":"..."}
 {"type":"reset_ok"}
 {"type":"model_ok","model":"gemini-lite"}
 {"type":"bye"}
 ```
+
+`usage` follows every `final`: token counts summed over all model requests of that turn and over the whole session
+(reset by `reset`). `estimated` is `true` when the provider sent no usage numbers and rex counted about 4 characters
+per token instead.
 
 Permission questions (when the gate says "ask"; for example a write in sandbox mode or an `ask` rule) use two more messages.
 rex sends the question and waits; the UI must answer **every** `permission` exactly once, and a front-end that cannot

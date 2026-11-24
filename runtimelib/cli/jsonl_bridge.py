@@ -288,6 +288,14 @@ class JsonlBridge:
         finally:
             self._busy = False
         self.emit("final", text=response or "".join(self.tokens))
+        state = getattr(loop, "state", None)
+        if state is not None and hasattr(state, "turn_tokens_in"):
+            self.emit(
+                "usage",
+                turn={"input_tokens": state.turn_tokens_in, "output_tokens": state.turn_tokens_out},
+                session={"input_tokens": state.total_tokens_in, "output_tokens": state.total_tokens_out},
+                estimated=bool(state.turn_estimated),
+            )
         self._flush_context()
 
     def _handle_model(self, name: str) -> None:

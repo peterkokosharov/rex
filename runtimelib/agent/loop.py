@@ -44,6 +44,8 @@ from .context import (
     compact_threshold,
     context_tokens,
     ensure_tool_results,
+    estimate_tokens,
+    message_tokens,
     overhead_tokens,
     resolve_context_window_info,
 )
@@ -78,6 +80,9 @@ class AgentState:
     total_tokens_in: int = 0
     total_tokens_out: int = 0
     total_cost: float = 0.0
+    turn_tokens_in: int = 0
+    turn_tokens_out: int = 0
+    turn_estimated: bool = False
 
 
 class AgentLoop:
@@ -305,6 +310,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.current_tool_calls = []
         self.state.interrupted = False
         self.state.turn = 0
+        self.state.total_tokens_in = 0
+        self.state.total_tokens_out = 0
         self._ctx_warned = False
         self._interrupt_event.clear()
         self._rebuild_prompts()
@@ -331,6 +338,9 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.interrupted = False
         self._interrupt_event.clear()
         self.state.turn += 1
+        self.state.turn_tokens_in = 0
+        self.state.turn_tokens_out = 0
+        self.state.turn_estimated = False
         self.state.messages = ensure_tool_results(self.state.messages)
 
         # Add user message to the shared context
@@ -508,6 +518,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         full_content = ""
         tool_calls: dict[int, ToolCall] = {}
         last_index: int | None = None
+        usage: dict[str, Any] | None = None
 
         stream = self.llm.chat_completion(
             messages=messages,
@@ -520,6 +531,10 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             if self._interrupt_event.is_set():
                 self.state.interrupted = True
                 break
+
+            chunk_usage = getattr(chunk, "usage", None)
+            if isinstance(chunk_usage, dict) and chunk_usage:
+                usage = chunk_usage
 
             # Handle content delta
             if chunk.content:
@@ -545,8 +560,31 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         else:
             msg = ChatMessage(role="assistant", content=full_content)
 
+        self._record_usage(usage, messages, full_content, tool_calls)
         self.state.messages.append(msg)
         return msg
+
+    def _record_usage(self, usage, messages, full_content, tool_calls) -> None:
+        """Add one request's token counts to the turn and session totals.
+
+        Providers that send no numbers get a chars/4 estimate, flagged.
+        """
+        tin = tout = 0
+        if isinstance(usage, dict):
+            try:
+                tin = int(usage.get("prompt_tokens") or 0)
+                tout = int(usage.get("completion_tokens") or 0)
+            except (TypeError, ValueError):
+                tin = tout = 0
+        if not tin and not tout:
+            self.state.turn_estimated = True
+            tin = sum(message_tokens(m) for m in messages)
+            tout = estimate_tokens(full_content) + sum(
+                estimate_tokens(json.dumps(tc.function, default=str)) for tc in tool_calls.values())
+        self.state.turn_tokens_in += tin
+        self.state.turn_tokens_out += tout
+        self.state.total_tokens_in += tin
+        self.state.total_tokens_out += tout
 
     def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> None:
         """Execute tool calls and add results to conversation.

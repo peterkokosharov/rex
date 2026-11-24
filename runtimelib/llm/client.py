@@ -80,6 +80,7 @@ class ChatCompletionChunk:
     created: int = 0
     object: str = "chat.completion.chunk"
     error: Any = None
+    usage: dict[str, int] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChatCompletionChunk":
@@ -290,6 +291,8 @@ class LiteLLMClient:
             payload["tool_choice"] = tool_choice
         if max_tokens:
             payload["max_tokens"] = max_tokens
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
 
         body = json.dumps(payload).encode("utf-8")
 
