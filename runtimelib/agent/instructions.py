@@ -118,7 +118,7 @@ def load_instructions(
     if project_file is not None and not trusted:
         result.notices.append(
             f"{project_file} not loaded: the workspace is not trusted "
-            "(set workspace.trust: true or RUNTIME_WORKSPACE__TRUST=true to load it)"
+            "(set workspace.trust: true or AI_REX_WORKSPACE__TRUST=true to load it)"
         )
     elif project_file is not None:
         try:

@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -36,6 +38,8 @@ def test_packaging_scripts_never_install_plain_rex():
                 continue
             for m in plain.finditer(line):
                 # allow only prose-free structural hits; any hit in a path/package context is a failure
+                if name == "build-win-zip.sh" and "$STAGE/rex" in line:
+                    continue  # the zip's inner folder stays `rex`: Layka and Sisi look for that name
                 if re.search(r"(usr/bin/|doc/|Package: |dist/|\$STAGE/|\.cmd|\.deb|\.zip)", line):
                     raise AssertionError(f"{name}: plain `rex` in: {line.strip()}")
 
@@ -66,8 +70,51 @@ def test_migration_skipped_when_new_dir_exists(tmp_path):
     (tmp_path / ".config" / "runtime").mkdir(parents=True)
     (tmp_path / ".config" / "runtime" / "a").write_text("old", encoding="utf-8")
     (tmp_path / ".config" / "ai-rex").mkdir()
+    (tmp_path / ".config" / "ai-rex" / "mine.yaml").write_text("new", encoding="utf-8")
     assert paths.migrate_legacy_config(tmp_path) is False
     assert not (tmp_path / ".config" / "ai-rex" / "a").exists()
+
+
+def test_migration_treats_empty_new_dir_as_missing(tmp_path):
+    (tmp_path / ".config" / "runtime").mkdir(parents=True)
+    (tmp_path / ".config" / "runtime" / "a").write_text("old", encoding="utf-8")
+    (tmp_path / ".config" / "ai-rex" / "sub").mkdir(parents=True)  # directories only, no files
+    assert paths.migrate_legacy_config(tmp_path) is True
+    assert (tmp_path / ".config" / "ai-rex" / "a").read_text(encoding="utf-8") == "old"
+    assert (tmp_path / ".config" / "runtime" / "a").exists()
+
+
+def test_migration_leftover_temp_dir_and_lost_race(tmp_path, monkeypatch):
+    base = tmp_path / ".config"
+    (base / "runtime").mkdir(parents=True)
+    (base / "runtime" / "a").write_text("old", encoding="utf-8")
+    tmp = base / f".ai-rex.tmp-{os.getpid()}"
+    tmp.mkdir()
+    (tmp / "junk").write_text("partial", encoding="utf-8")  # leftover of a crashed run
+    assert paths.migrate_legacy_config(tmp_path) is True
+    assert not (base / "ai-rex" / "junk").exists() and (base / "ai-rex" / "a").exists()
+    assert not tmp.exists()
+    # another process wins the race: replace fails, temp is removed, their dir is kept
+    shutil.rmtree(base / "ai-rex")
+    real_replace = os.replace
+
+    def racing_replace(src, dst):
+        (base / "ai-rex").mkdir()
+        (base / "ai-rex" / "theirs").write_text("x", encoding="utf-8")
+        raise OSError("exists")
+
+    monkeypatch.setattr(os, "replace", racing_replace)
+    assert paths.migrate_legacy_config(tmp_path) is False
+    monkeypatch.setattr(os, "replace", real_replace)
+    assert (base / "ai-rex" / "theirs").exists() and not tmp.exists()
+    assert (base / "runtime" / "a").exists()
+
+
+def test_deprecation_note_is_silent_in_protocol_mode(monkeypatch, capsys):
+    monkeypatch.setenv("RUNTIME_FOO__BAR", "1")
+    paths.set_quiet(True)
+    paths.env_overrides()
+    assert capsys.readouterr().err == ""
 
 
 def test_env_new_prefix_wins_and_old_is_fallback(monkeypatch, capsys):
@@ -76,7 +123,3 @@ def test_env_new_prefix_wins_and_old_is_fallback(monkeypatch, capsys):
     assert "deprecated" in capsys.readouterr().err
     monkeypatch.setenv("AI_REX_LITELLM__MODEL", "new")
     assert dict(paths.env_overrides())["LITELLM__MODEL"] == "new"
-    monkeypatch.setenv("REX_FOO", "legacy")
-    assert paths.getenv("FOO") == "legacy"
-    monkeypatch.setenv("AI_REX_FOO", "new")
-    assert paths.getenv("FOO") == "new"

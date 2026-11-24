@@ -16,7 +16,7 @@ from pathlib import Path
 
 import runtimelib
 from runtimelib import Config, get_config
-from runtimelib.config.paths import migrate_legacy_config
+from runtimelib.config.paths import migrate_legacy_config, set_quiet
 from runtimelib.cli import (
     ArgumentParser,
     CommandRegistry,
@@ -51,6 +51,8 @@ def create_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     argv = sys.argv[1:]
+    protocol_mode = bool(argv) and (argv[0] == "acp" or any(a in ("--jsonl", "--ui-jsonl", "--acp") for a in argv))
+    set_quiet(protocol_mode)  # deprecation notes only in REPL / one-shot mode
     migrate_legacy_config()  # one-time copy ~/.config/runtime -> ~/.config/ai-rex (old dir is kept)
     # `ai-rex acp ...` is the form used in editor configs. Keep the old flat CLI
     # intact; this only takes over when "acp" is the very first argument.

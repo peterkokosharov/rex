@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -62,6 +63,24 @@ class GuardClient:
             network_mode=guard_cfg.get("network_mode", "none"),
         )
 
+    def _resolve_image(self) -> str:
+        """Use the old ``rex-guard:latest`` image when ``ai-rex-guard:latest`` is not built yet."""
+        if self.image != "ai-rex-guard:latest":
+            return self.image
+
+        def exists(name: str) -> bool:
+            try:
+                return subprocess.run(["docker", "image", "inspect", name], capture_output=True,
+                                      timeout=30).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                return False
+
+        if not exists("ai-rex-guard:latest") and exists("rex-guard:latest"):
+            print("ai-rex: image ai-rex-guard:latest not found, using the old rex-guard:latest "
+                  "(rebuild with: docker build -t ai-rex-guard:latest .)", file=sys.stderr)
+            return "rex-guard:latest"
+        return self.image
+
     def start(self) -> None:
         """Start the guard container."""
         with self._lock:
@@ -100,7 +119,7 @@ class GuardClient:
             cmd.extend(["-e", "GUARD_WORKSPACE=/workspace"])
             cmd.extend(["-e", f"KIKO_DB_PATH=/home/guarduser/.kiko/kiko.db"])
 
-            cmd.append(self.image)
+            cmd.append(self._resolve_image())
 
             self._proc = subprocess.Popen(
                 cmd,

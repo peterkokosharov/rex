@@ -18,6 +18,12 @@ LEGACY_ENV_PREFIXES = ("RUNTIME_", "REX_")
 LEGACY_CONFIG_DIR_NAMES = ("runtime",)
 
 _warned: set[str] = set()
+_quiet = False  # set by the entry point for --jsonl / acp: the streams belong to the protocol
+
+
+def set_quiet(value: bool) -> None:
+    global _quiet
+    _quiet = value
 
 
 def config_dir(home: Path | None = None) -> Path:
@@ -25,40 +31,43 @@ def config_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".config" / APP_NAME
 
 
-def migrate_legacy_config(home: Path | None = None) -> bool:
-    """Copy the old config dir to the new one when the new one does not exist yet.
+def _has_files(path: Path) -> bool:
+    return path.is_dir() and any(p.is_file() for p in path.rglob("*"))
 
-    One-time and non-destructive: the old directory is left in place. Returns True when a copy was made.
+
+def migrate_legacy_config(home: Path | None = None) -> bool:
+    """Copy the old config dir to the new one when the new one is missing or holds no files.
+
+    One-time and non-destructive: the old directory is never deleted. The copy goes to a temporary sibling
+    (``.ai-rex.tmp-<pid>``) and is moved into place with ``os.replace``, so a crash never leaves a half-copied
+    ``ai-rex`` directory. Returns True when the new directory was created by this call.
     """
     new = config_dir(home)
-    if new.exists():
+    if _has_files(new):
         return False
     base = (home or Path.home()) / ".config"
     for old_name in LEGACY_CONFIG_DIR_NAMES:
         old = base / old_name
-        if old.is_dir():
-            try:
-                shutil.copytree(old, new)
-            except OSError as exc:
-                print(f"ai-rex: could not copy {old} to {new}: {exc}", file=sys.stderr)
+        if not old.is_dir():
+            continue
+        tmp = base / f".{APP_NAME}.tmp-{os.getpid()}"
+        try:
+            if tmp.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(old, tmp)
+            if new.is_dir():
+                shutil.rmtree(new)  # holds no files (checked above): only empty directories are removed
+            os.replace(tmp, new)
+        except OSError as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if _has_files(new):  # somebody else created it meanwhile: keep theirs
                 return False
-            print(f"ai-rex: copied the old config directory {old} to {new} (the old one was kept).",
-                  file=sys.stderr)
-            return True
+            print(f"ai-rex: could not copy {old} to {new}: {exc}", file=sys.stderr)
+            return False
+        print(f"ai-rex: copied the old config directory {old} to {new} (the old one was kept).",
+              file=sys.stderr)
+        return True
     return False
-
-
-def getenv(name: str, default: str | None = None) -> str | None:
-    """Value of ``AI_REX_<name>``; falls back to ``RUNTIME_<name>`` / ``REX_<name>`` (deprecated)."""
-    value = os.environ.get(ENV_PREFIX + name)
-    if value is not None:
-        return value
-    for prefix in LEGACY_ENV_PREFIXES:
-        value = os.environ.get(prefix + name)
-        if value is not None:
-            _deprecation(prefix + name, ENV_PREFIX + name)
-            return value
-    return default
 
 
 def env_overrides() -> list[tuple[str, str]]:
@@ -76,7 +85,7 @@ def env_overrides() -> list[tuple[str, str]]:
 
 
 def _deprecation(old: str, new: str) -> None:
-    if old in _warned:
+    if _quiet or old in _warned:
         return
     _warned.add(old)
     print(f"ai-rex: environment variable {old} is deprecated, use {new}.", file=sys.stderr)

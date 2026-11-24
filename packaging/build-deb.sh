@@ -51,6 +51,8 @@ Priority: optional
 Architecture: $ARCH
 Maintainer: Peter Kokosharov <peter.kokosharov@gmail.com>
 Depends: python3 (>= 3.12)
+Replaces: rex (<< 0.4~)
+Breaks: rex (<< 0.4~)
 Description: AI agent runtime with a JSON-lines bridge
  ai-rex is the Python runtime driven by Layka and other front-ends over stdin/stdout.
  This package installs the 'ai-rex' command, the runtime/runtimelib modules, the pinned kikolib 0.2.x and the

@@ -18,13 +18,13 @@ Licensed under MIT License
 >   `webfetch` (host-side, SSRF-checked), `render_diagram` (Mermaid via merman-cli), `load_skill` /
 >   `read_skill_file`, `task`, plus MCP tools (`mcp.servers`, stdio client).
 > - **Sessions (section 6):** `SessionStore` in `runtimelib/session/` writes one `<id>.jsonl` per session under
->   `session.dir` (default `~/.config/runtime/sessions`). It is not yet wired into the REPL or the JSONL bridge
+>   `session.dir` (default `~/.config/ai-rex/sessions`). It is not yet wired into the REPL or the JSONL bridge
 >   (resume/continue is open).
 > - **Context:** the estimate counts system prompt, tool schemas and messages; one warning at
 >   `context.warn_percent` (default 80), mandatory auto-compaction at 90 % (`cli.compact_ratio`, clamped 0.5-0.95).
 > - **Instructions and skills:** `AGENTS.md` (user and project) goes into the system prompt;
->   Claude-style skills (`SKILL.md`) come from `~/.config/runtime/skills`, `skills.paths` and
->   `<workspace>/.rex/skills`. Repository content (project skills, project `AGENTS.md`) is used only when
+>   Claude-style skills (`SKILL.md`) come from `~/.config/ai-rex/skills`, `skills.paths` and
+>   `<workspace>/.ai-rex/skills`. Repository content (project skills, project `AGENTS.md`) is used only when
 >   `workspace.trust` is true.
 > - **Tool choice (section 3.2)** is `auto` whenever tools exist; the first-turn `none` rule was dropped.
 > - **LLM access:** LiteLLM or any OpenAI-compatible endpoint; `scripts/claude_cli_gateway.py` serves the local

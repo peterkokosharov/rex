@@ -24,3 +24,6 @@ def _no_standing_instructions(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "DEFAULT_CONFIG_PATH", home / ".config" / "ai-rex" / "config.yaml")
     monkeypatch.setattr(cfg, "DEFAULT_ENV_PATH", home / ".config" / "ai-rex" / ".env")
     instructions._WARNED_MISSING.clear()
+    from runtimelib.config import paths
+    monkeypatch.setattr(paths, "_warned", set())
+    monkeypatch.setattr(paths, "_quiet", False)
