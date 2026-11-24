@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# AI models: claude-sonnet-5-5
 # Licensed under MIT License
 """Names of ai-rex config/data directories and environment variables, plus the legacy fallbacks.
 
