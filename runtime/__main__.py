@@ -50,6 +50,9 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # cp1252/cp1251 consoles crash on box-drawing glyphs; never fail on output encoding.
+    from runtimelib.cli.jsonl_bridge import force_utf8_stdio
+    force_utf8_stdio()
     argv = sys.argv[1:]
     protocol_mode = bool(argv) and (argv[0] == "acp" or any(a in ("--jsonl", "--ui-jsonl", "--acp") for a in argv))
     set_quiet(protocol_mode)  # deprecation notes only in REPL / one-shot mode
