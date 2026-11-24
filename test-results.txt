@@ -1,5 +1,5 @@
-date (UTC): 2026-11-24 16:25:46
-git commit: 086fc5e
+date (UTC): 2026-11-24 16:44:43
+git commit: 7a2a1a1
 os: Windows-11-10.0.26200-SP0 (python 3.14.7)
 
 suite: attribution headers
@@ -9,7 +9,7 @@ suite: attribution headers
 
 suite: python (pytest)
   command: python -m pytest -q
-  passed: 721  failed: 0  skipped: 16
+  passed: 727  failed: 0  skipped: 16
   result: PASS
 
 suite: native C++ (test_native)
