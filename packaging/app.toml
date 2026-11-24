@@ -1,0 +1,31 @@
+# Project values for the Windows zip (built by packaging/vendor/pkgkit/build.py; see packaging/README.md).
+# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# AI models: claude-sonnet-5-5
+
+[app]
+name = "ai-rex"
+description = "ai-rex: small stdlib-only agent runtime for OpenAI-compatible endpoints"
+# Read from the code (no 3.12-only syntax or API found in runtime/, runtimelib/, vendor/); CI runs 3.12 and 3.14.
+min_python = "3.11"
+version_file = "runtimelib/__init__.py"
+
+[payload]
+# The folder inside the install dir stays "rex": Layka and Sisi look for it.
+dir = "rex"
+include = ["runtime", "runtimelib", "vendor/kikolib"]
+
+[[payload.file]]
+src = "packaging/ai-rex.cmd.in"
+dest = "ai-rex.cmd"
+
+[shortcut]
+name = "ai-rex"
+target = "rex/ai-rex.cmd"
+args = "--help"
+console = true
+
+[check]
+cmd = ["rex/ai-rex.cmd", "--version"]
+
+[readme]
+extra = "packaging/README-win.txt"

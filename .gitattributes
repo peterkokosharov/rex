@@ -1,1 +1,3 @@
 vendor/kikolib/** text eol=lf
+# pkgkit is a pinned, unmodified copy (kiko-src, tag pkgkit-v0.1.0): LF so SHA256SUMS holds on every OS.
+packaging/vendor/pkgkit/** text eol=lf

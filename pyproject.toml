@@ -4,7 +4,7 @@ version = "0.3.0"
 description = "Small stdlib-only agent runtime for OpenAI-compatible endpoints"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]

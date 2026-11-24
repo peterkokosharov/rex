@@ -111,7 +111,7 @@ All documentation is indexed in [`docs/INDEX.md`](docs/INDEX.md) (reading order,
 
 ### Prerequisites
 
-- Python 3.12+ (older versions are no longer tested or supported; stdlib-only runtime; no pip/venv required for basic CLI)
+- Python 3.11+ (the Windows zip installer accepts 3.11; CI tests 3.12 and 3.14; stdlib-only runtime; no pip/venv required for basic CLI)
 - **Windows: Git Bash is required** (install Git for Windows from https://git-scm.com/download/win). With
   `--local-tools` rex runs every bash command with Git Bash (`bash -c`), never with cmd.exe; if Git Bash is not
   found the bash tool answers "rex needs Git Bash on Windows: install Git for Windows from
