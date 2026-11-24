@@ -1,0 +1,19 @@
+date (UTC): 2026-11-24 09:31:36
+git commit: 643258d
+os: Windows-11-10.0.26200-SP0 (python 3.14.7)
+
+suite: attribution headers
+  command: python -I tools/check_ai_header.py
+  passed: 1  failed: 0  skipped: 0
+  result: PASS
+
+suite: python (pytest)
+  command: python -m pytest -q
+  passed: 708  failed: 0  skipped: 16
+  result: PASS
+
+suite: native C++ (test_native)
+  command: g++ -std=c++17 -pthread native/test_native.cpp native/rex_native.cpp && run
+  not run here: no C++ compiler (g++) on PATH
+
+OVERALL: PASS

@@ -425,11 +425,8 @@ absolute paths, max 200 KB). `ai-rex skills` lists the skills found (name, path,
 
 ### Run Tests
 
-```bash
-python3 -m unittest tests.test_cli -v
-# If pytest is installed:
-# python3 -m pytest tests/ -v
-```
+See [TESTING.md](TESTING.md) for prerequisites, the one-command runner (`python tools/run_tests.py`) and what each
+suite covers.
 
 ---
 
