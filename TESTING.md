@@ -96,7 +96,7 @@ C++ test) on Ubuntu, Windows and macOS (Python 3.12 and 3.14), and uploads `test
 ## 8. Tests are never shipped
 
 `packaging/build-deb.sh` and `packaging/build-win-zip.sh` copy only `runtime/`, `runtimelib/` and `vendor/kikolib`.
-`tests/`, `tools/` and `native/test_native.cpp` are not copied; check with `unzip -l dist/ai-rex-win.zip` or
+`tests/`, `tools/` and `native/test_native.cpp` are not copied; check with `unzip -l dist/ai-rex-*-win-x64.zip` or
 `dpkg -c dist/*.deb`.
 
 ## 9. Manual test plans
