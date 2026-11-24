@@ -1,7 +1,7 @@
 # kikolib
 
 Small, standard-library-only library for kiko-lite (a stdlib proxy so Claude Code can talk to
-NVIDIA / Groq / Gemini / Qwen / OpenAI). Version 0.2.0. Python >= 3.11 (import fails earlier).
+NVIDIA / Groq / Gemini / Qwen / OpenAI). Version 0.2.1. Python >= 3.11 (import fails earlier).
 Primary target Linux (Debian 12, Q4OS, Mint); Windows also works (launcher `kiko-lite.cmd`).
 
 The wider role of kikolib as a shared base for kiko, rex, kircho and an agent system is described in
@@ -24,7 +24,7 @@ The wider role of kikolib as a shared base for kiko, rex, kircho and an agent sy
 
 kikolib has one home: this repository (`gateway/kikolib`). Never fork or edit it elsewhere.
 
-1. Copy the whole `kikolib/` folder, unmodified, from the release tag `kikolib-v0.2.0` (version = `kikolib.__version__`).
+1. Copy the whole `kikolib/` folder, unmodified, from the release tag `kikolib-v0.2.1` (version = `kikolib.__version__`).
 2. Keep its `SHA256SUMS` in the copy (sha256 of every file, LF endings, sorted; `.gitattributes` forces `eol=lf`).
    Add `<dir>/kikolib/** text eol=lf` to the consumer's own `.gitattributes`, otherwise Windows `autocrlf`
    checkouts change the bytes and the hash check fails.

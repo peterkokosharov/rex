@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
 # LLM: claude-sonnet-5-5
-"""vendor/kikolib must be the pinned, unmodified release copy (kiko repo, tag kikolib-v0.2.0)."""
+"""vendor/kikolib must be the pinned, unmodified release copy (kiko repo, tag kikolib-v0.2.1)."""
 
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 
-PINNED_VERSION = "0.2.0"
+PINNED_VERSION = "0.2.1"
 PKG = Path(__file__).resolve().parent.parent / "vendor" / "kikolib"
 MANIFEST = "SHA256SUMS"
 

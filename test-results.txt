@@ -1,5 +1,5 @@
-date (UTC): 2026-11-24 11:55:18
-git commit: 915f911
+date (UTC): 2026-11-24 16:00:39
+git commit: 5592aa3
 os: Windows-11-10.0.26200-SP0 (python 3.14.7)
 
 suite: attribution headers

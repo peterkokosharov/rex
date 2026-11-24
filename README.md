@@ -448,7 +448,7 @@ runtime-ai/
 │   ├── mcp/                    # MCP client
 │   ├── logging/                # Structured logging, audit
 │   └── rex.py                  # REX API class
-├── vendor/kikolib/             # Stdlib-only foundation: pinned, UNMODIFIED copy of kiko `kikolib-v0.2.0` (SHA256SUMS-checked)
+├── vendor/kikolib/             # Stdlib-only foundation: pinned, UNMODIFIED copy of kiko `kikolib-v0.2.1` (SHA256SUMS-checked)
 ├── runtime/                    # App-specific (thin wrapper)
 │   ├── __main__.py             # CLI entry point
 │   └── commands.py             # /guard, /agent, /tool, /history
