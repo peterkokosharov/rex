@@ -24,7 +24,8 @@ Usage:
                                          [--max-concurrent 4] [--allow-unsafe] [--no-json-schema]
 
 The token comes from --token-file F, else --token T (visible in the process
-list, so a warning is printed), else the REX_GATEWAY_TOKEN environment variable.
+list, so a warning is printed), else the AI_REX_GATEWAY_TOKEN environment variable
+(the old name REX_GATEWAY_TOKEN still works as a fallback).
 
 Binds to 127.0.0.1 only. Requests whose Host header is not 127.0.0.1 or
 localhost are refused (DNS rebinding), POST bodies must be application/json,
@@ -76,7 +77,8 @@ popen_group_kwargs = _procutil.popen_group_kwargs
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 4000
-TOKEN_ENV = "REX_GATEWAY_TOKEN"
+TOKEN_ENV = "AI_REX_GATEWAY_TOKEN"
+LEGACY_TOKEN_ENV = "REX_GATEWAY_TOKEN"  # old name, still read as a fallback
 DEFAULT_MODEL = "haiku"
 DEFAULT_TIMEOUT = 300.0
 DEFAULT_MAX_CONCURRENT = 4
@@ -783,6 +785,40 @@ def interpret_reply(result: dict[str, Any], spec: ToolSpec) -> tuple[str | None,
 
 MIN_RETRY_SECONDS = 10.0
 
+NUDGE = "Reply with only the JSON tool envelope if a tool is needed."
+
+# A prose reply that refuses a tool or merely announces one. Deliberately narrow: ordinary answers
+# that mention tools in passing are never retried.
+_REFUSAL_RE = re.compile(
+    r"no such tool"
+    r"|tool[^.]{0,40}(?:not available|unavailable|isn't available)"
+    r"|(?:don't|do not|doesn't|cannot|can't|unable to)[^.]{0,40}\b(?:access|use|call|run|invoke)\b[^.]{0,30}\btools?\b"
+    r"|^\s*(?:i(?:'ll| will| am going to|'m going to)|let me)\s+(?:use|run|call|execute|invoke)\b[^.]{0,60}\b(?:tool|bash|command)",
+    re.IGNORECASE)
+
+
+def looks_like_tool_refusal(text: str) -> bool:
+    """True for prose that refuses to use a tool or only announces that it will."""
+    return bool(_REFUSAL_RE.search(text[:600]))
+
+
+def _nudge_once(runner: Any, prompt: str, model: str, claude_bin: str, budget: float, spec: ToolSpec,
+                run_kw: dict[str, Any] | None, stats: dict[str, Any]) -> dict[str, Any] | None:
+    """One retry with a short nudge after a prose refusal; None keeps the first (prose) answer."""
+    if budget < MIN_RETRY_SECONDS:
+        return None
+    result = runner(prompt + "\n\n[Gateway note]\n" + NUDGE, model, claude_bin, budget, **(run_kw or {}))
+    stats["usage"] = sum_usage(stats["usage"], result.get("usage") or {})
+    stats["retries"] = 1
+    try:
+        content, calls = interpret_reply(result, spec)
+    except ProtocolError:
+        return None
+    if not calls:
+        return None
+    stats.update(content=content, calls=calls)
+    return stats
+
 
 def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout: float,
                   spec: ToolSpec, run_kw: dict[str, Any] | None = None,
@@ -808,6 +844,13 @@ def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout
             reason = str(exc)
         else:
             stats.update(content=content, calls=calls)
+            if (attempt == 1 and not calls and spec.choice == "auto" and content
+                    and not str(result.get("text") or "").lstrip().startswith("{")
+                    and not isinstance(result.get("structured"), dict)
+                    and looks_like_tool_refusal(content)):
+                nudged = _nudge_once(runner, prompt, model, claude_bin, deadline - clock(), spec, run_kw, stats)
+                if nudged is not None:
+                    return nudged
             return stats
         if attempt == 2:
             break
@@ -1045,7 +1088,7 @@ def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
 
 
 def resolve_token(token: str | None, token_file: str | None, environ: Any = None) -> str | None:
-    """Pick the bearer token: --token-file, else --token (warns), else $REX_GATEWAY_TOKEN.
+    """Pick the bearer token: --token-file, else --token (warns), else $AI_REX_GATEWAY_TOKEN, else the old $REX_GATEWAY_TOKEN.
 
     Raises ValueError for an unreadable or empty token file, or both flags given.
     """
@@ -1065,7 +1108,7 @@ def resolve_token(token: str | None, token_file: str | None, environ: Any = None
               file=sys.stderr)
         return token
     env = os.environ if environ is None else environ
-    return env.get(TOKEN_ENV) or None
+    return env.get(TOKEN_ENV) or env.get(LEGACY_TOKEN_ENV) or None
 
 
 def main(argv: list[str] | None = None) -> int:

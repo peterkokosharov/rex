@@ -617,3 +617,11 @@ def test_unknown_get_still_404(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(_url(server, "/nope"), timeout=10)
     assert exc.value.code == 404
+
+
+def test_resolve_token_new_env_name_wins_and_old_name_falls_back():
+    assert gw.TOKEN_ENV == "AI_REX_GATEWAY_TOKEN"
+    both = {"AI_REX_GATEWAY_TOKEN": "new", "REX_GATEWAY_TOKEN": "old"}
+    assert gw.resolve_token(None, None, both) == "new"
+    assert gw.resolve_token(None, None, {"REX_GATEWAY_TOKEN": "old"}) == "old"
+    assert gw.resolve_token(None, None, {}) is None

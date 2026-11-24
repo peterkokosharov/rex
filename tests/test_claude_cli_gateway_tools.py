@@ -771,3 +771,44 @@ def test_main_no_json_schema_switch():
         assert ms.call_args.kwargs["json_schema"] is False
         assert gw.main(["--port", "4000"]) == 0
         assert ms.call_args.kwargs["json_schema"] is True
+
+
+# ---------------------------------------------------------------- nudge after a prose tool refusal
+
+@pytest.mark.parametrize("text", ["No such tool available: bash", "I will use the bash tool to list the files.",
+                                  "I cannot use tools in this chat."])
+def test_refusal_prose_under_auto_is_nudged_once(make_srv, text):
+    runner = Script(text, READ_CALL)
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        assert json.load(r)["choices"][0]["finish_reason"] == "tool_calls"
+    assert len(runner.calls) == 2
+    assert runner.calls[1]["prompt"].endswith("Reply with only the JSON tool envelope if a tool is needed.")
+
+
+def test_nudge_that_still_gives_prose_keeps_the_first_answer(make_srv):
+    runner = Script("No such tool available: bash", "Still no.")
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        msg = json.load(r)["choices"][0]["message"]
+    assert msg["content"] == "No such tool available: bash" and len(runner.calls) == 2
+
+
+def test_ordinary_prose_and_tool_choice_none_are_not_nudged(make_srv):
+    runner = Script("The answer is 42.")
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        assert json.load(r)["choices"][0]["message"]["content"] == "The answer is 42."
+    assert len(runner.calls) == 1
+    assert gw.looks_like_tool_refusal("The tool registry is a list of names.") is False
+
+
+def test_nudge_skipped_when_time_is_short():
+    clock = Clock()
+
+    def runner(prompt, model, binary, timeout):
+        clock.now += 295
+        return {"text": "No such tool available: bash", "usage": {}}
+
+    out = gw.run_tool_turn(runner, "P", "haiku", "claude", 300, spec(), clock=clock)
+    assert out["content"] == "No such tool available: bash" and out["retries"] == 0

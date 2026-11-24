@@ -190,7 +190,7 @@ cli:
 - Without a token any `Authorization` header is accepted. With a token `T` every request needs
   `Authorization: Bearer T` (constant-time compare); set `AI_REX_LITELLM__API_KEY=T` in rex.
   The token comes from `--token-file F` (file content, whitespace stripped), else `--token T`, else the
-  `REX_GATEWAY_TOKEN` environment variable. `--token` works but prints a warning: command-line
+  `AI_REX_GATEWAY_TOKEN` environment variable (the old name `REX_GATEWAY_TOKEN` still works as a fallback). `--token` works but prints a warning: command-line
   arguments are visible to other users in the process list.
 - Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6`.
 - Tools are emulated and always run in rex, never in `claude`: the CLI keeps `--tools ""`, `--strict-mcp-config`
