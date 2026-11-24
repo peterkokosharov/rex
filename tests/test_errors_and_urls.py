@@ -73,3 +73,51 @@ def test_empty_model_answer_is_an_error():
     loop.llm = Llm()
     with pytest.raises(RuntimeError, match="empty response"):
         loop.run("hi")
+
+
+def test_400_about_stream_options_retries_without_it():
+    import json as _json
+
+    class Http:
+        def __init__(self):
+            self.bodies = []
+
+        def request(self, method, url, **kw):
+            self.bodies.append(_json.loads(kw["body"]))
+            if "stream_options" in self.bodies[-1]:
+                return _Resp(400, b'{"error":"unknown field stream_options"}')
+            return _Resp(200)
+
+    http = Http()
+    c = LiteLLMClient("http://h", "k", "m", http_backend=http)
+    list(c.chat_completion([ChatMessage(role="user", content="x")], stream=True))
+    assert len(http.bodies) == 2 and "stream_options" not in http.bodies[1]
+
+
+def test_other_400_still_raises():
+    c = LiteLLMClient("http://h", "k", "m", http_backend=_Http(_Resp(400, b"bad model")))
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        list(c.chat_completion([ChatMessage(role="user", content="x")], stream=True))
+
+
+def test_empty_answer_after_a_tool_step_is_not_an_error():
+    from runtimelib.llm import ToolCall
+
+    loop = create_agent_loop(Config({"liteLLM": {"base_url": "http://d:4000", "api_key": "k", "model": "m"}}))
+    n = {"i": 0}
+
+    class Llm:
+        default_model = "m"
+
+        def chat_completion(self, **kw):
+            n["i"] += 1
+            if n["i"] == 1:
+                delta = {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                                         "function": {"name": "nope", "arguments": "{}"}}]}
+            else:
+                delta = {}
+            return iter([ChatCompletionChunk(choices=[{"delta": delta, "finish_reason": "stop"}])])
+
+    loop.llm = Llm()
+    assert loop.run("hi") == ""
+    assert n["i"] == 2

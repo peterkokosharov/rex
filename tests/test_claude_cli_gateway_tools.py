@@ -812,3 +812,25 @@ def test_nudge_skipped_when_time_is_short():
 
     out = gw.run_tool_turn(runner, "P", "haiku", "claude", 300, spec(), clock=clock)
     assert out["content"] == "No such tool available: bash" and out["retries"] == 0
+
+
+def test_failed_nudge_keeps_the_first_prose_answer(make_srv):
+    runner = Script("No such tool available: bash", gw.GatewayError(504, "claude CLI timed out", "timeout"))
+    srv = make_srv(runner)
+    with post(srv, REQ) as r:
+        msg = json.load(r)["choices"][0]["message"]
+    assert msg["content"] == "No such tool available: bash" and len(runner.calls) == 2
+
+
+def test_stream_include_usage_adds_final_usage_chunk(make_srv):
+    runner = Script({"text": "hello", "usage": {"input_tokens": 7, "output_tokens": 3}})
+    srv = make_srv(runner)
+    with post(srv, {**REQ, "stream": True, "stream_options": {"include_usage": True}}) as r:
+        raw = r.read().decode()
+    chunks = [json.loads(x[6:]) for x in raw.split("\n\n") if x.startswith("data: ") and "[DONE]" not in x]
+    assert chunks[-1]["choices"] == []
+    assert chunks[-1]["usage"] == {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+    runner2 = Script({"text": "hello", "usage": {"input_tokens": 7, "output_tokens": 3}})
+    srv2 = make_srv(runner2)
+    with post(srv2, {**REQ, "stream": True}) as r:
+        assert "usage" not in r.read().decode()

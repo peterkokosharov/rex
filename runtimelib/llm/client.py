@@ -345,6 +345,23 @@ class LiteLLMClient:
         )
 
         try:
+            if getattr(resp, "status", 200) == 400 and b"stream_options" in body:
+                # Some endpoints reject stream_options: retry once without it (no usage numbers then).
+                try:
+                    detail = resp.read()
+                except Exception:
+                    detail = b""
+                if isinstance(detail, bytes) and b"stream_options" in detail:
+                    resp.close()
+                    payload = json.loads(body)
+                    payload.pop("stream_options", None)
+                    resp = self._http.request(
+                        "POST", url, headers=self._headers(stream=True),
+                        body=json.dumps(payload).encode("utf-8"), timeout=self.timeout, stream=True
+                    )
+                else:
+                    raise RuntimeError(f"HTTP 400 from {url}: " + " ".join(
+                        (detail.decode("utf-8", "replace") if isinstance(detail, bytes) else "").split())[:300])
             self._check_status(resp, url)
             for line in resp.iter_lines():
                 if not line.strip():

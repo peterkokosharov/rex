@@ -384,8 +384,12 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
             # If no content and no tool calls, return empty response instead of looping
             if not response.content and not response.tool_calls:
-                self.state.messages.pop()  # keep the history valid for a retry
-                raise RuntimeError("empty response from the model (no text, no tool call)")
+                if self.state.step == 1:
+                    # Nothing ran in this turn: an empty answer is a failure, not a result.
+                    self.state.messages.pop()  # keep the history valid for a retry
+                    raise RuntimeError("empty response from the model (no text, no tool call)")
+                # After tool steps a silent finish is fine (its empty message is already in the history).
+                return ""
 
         # Whatever stopped the loop, no tool call may stay without a result.
         self.state.messages = ensure_tool_results(self.state.messages)

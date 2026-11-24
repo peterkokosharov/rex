@@ -40,7 +40,7 @@ deleted or changed; remove it yourself when you are happy. `RUNTIME_*` variables
   `runtime` and `runtimelib`.
 - Native helper files and symbols `rex_native.*`, `librex_native.*`, `rex_*` C functions (not installed as `rex`).
 - Logger names (`rex.skills`), temp prefixes, User-Agent `rex-webfetch/1.0`, internal `REX_COMMAND`/`REX_ROOT`.
-- `scripts/claude_cli_gateway.py` and its `REX_GATEWAY_TOKEN` variable: not touched on purpose (a gateway is running);
-  rename it to `AI_REX_GATEWAY_TOKEN` (with the old name as fallback) in a later change.
+- `scripts/claude_cli_gateway.py`: its token variable is now `AI_REX_GATEWAY_TOKEN`; the old `REX_GATEWAY_TOKEN`
+  is still read as a fallback.
 - `.runtime/sessions` inside a project (sandbox data), `docker-compose.yml` container names, GitHub repo name in `deploy.sh`.
 - Test-only variable `REX_LIVE_CLAUDE`; history documents under `docs/history`.

@@ -737,7 +737,8 @@ def completion_body(text: str | None, model: str, usage: dict[str, Any],
     }
 
 
-def sse_events(text: str | None, model: str, tool_calls: list[dict[str, Any]] | None = None) -> list[bytes]:
+def sse_events(text: str | None, model: str, tool_calls: list[dict[str, Any]] | None = None,
+               usage: dict[str, int] | None = None) -> list[bytes]:
     """SSE chunks rex can parse: role+content chunk, finish chunk, [DONE].
 
     With tool calls the first chunk also carries every call complete (index, id, type, name and
@@ -756,11 +757,16 @@ def sse_events(text: str | None, model: str, tool_calls: list[dict[str, Any]] | 
     first: dict[str, Any] = {"role": "assistant", "content": text}
     if tool_calls:
         first["tool_calls"] = [{"index": i, **call} for i, call in enumerate(tool_calls)]
-    return [
+    events = [
         chunk(first, None),
         chunk({}, "tool_calls" if tool_calls else "stop"),
-        b"data: [DONE]\n\n",
     ]
+    if usage is not None:  # stream_options.include_usage: a last chunk with empty choices
+        body = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [], "usage": usage}
+        events.append(b"data: " + json.dumps(body).encode("utf-8") + b"\n\n")
+    events.append(b"data: [DONE]\n\n")
+    return events
 
 
 def interpret_reply(result: dict[str, Any], spec: ToolSpec) -> tuple[str | None, list[tuple[str, dict]]]:
@@ -807,7 +813,10 @@ def _nudge_once(runner: Any, prompt: str, model: str, claude_bin: str, budget: f
     """One retry with a short nudge after a prose refusal; None keeps the first (prose) answer."""
     if budget < MIN_RETRY_SECONDS:
         return None
-    result = runner(prompt + "\n\n[Gateway note]\n" + NUDGE, model, claude_bin, budget, **(run_kw or {}))
+    try:
+        result = runner(prompt + "\n\n[Gateway note]\n" + NUDGE, model, claude_bin, budget, **(run_kw or {}))
+    except GatewayError:
+        return None  # the first prose answer is valid; a failed retry must not turn it into an error
     stats["usage"] = sum_usage(stats["usage"], result.get("usage") or {})
     stats["retries"] = 1
     try:
@@ -1023,7 +1032,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             try:
-                for event in sse_events(text, model, calls):
+                opts = req.get("stream_options")
+                want_usage = isinstance(opts, dict) and bool(opts.get("include_usage"))
+                for event in sse_events(text, model, calls, _openai_usage(usage) if want_usage else None):
                     self.wfile.write(event)
                 self.wfile.flush()
             except OSError:
