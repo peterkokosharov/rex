@@ -8,6 +8,8 @@ Licensed under MIT License
 
 Date: 2026-11-24. Revision 2 (after the independent review
 `docs/reviews/DESIGN-orchestration-review-fable.md`; the response to every finding is in Appendix A).
+**Revision 3 (2026-11-25): sub-agents are OS processes, not threads — owner decisions recorded in section 1.2.
+This changes step 0's thread model; the REX API names and D1-D4 are unchanged.**
 Status: step 0 (groundwork) implemented; its globals list is `docs/architecture/process-globals.md`. Steps 1-7 not started.
 Scope: ai-rex runtime plus the shared protocol that Layka, Sisi and
 Lassie render. Front-end work is described only as far as the protocol needs it; each front-end repository gets
@@ -50,6 +52,59 @@ snapshots, full task transcripts over the protocol.
   most 4 CLI calls (`scripts/claude_cli_gateway.py:84`, V); the parent needs one, and abandoned calls after a
   cancel or an LLM client timeout can hold slots for up to 300 s, so 2 leaves headroom.
 - **D4. Depth 1.** Sub-agents never get task tools and `TaskManager.start` refuses a caller with `depth > 0`.
+
+### 1.2 Revision 3 (2026-11-25): sub-agents are processes, per-role files, `spawn(role)`
+
+Owner decisions of 2026-11-25. **What changes from step 0:** step 0 (section 3, section 4.4 and
+`docs/architecture/process-globals.md`) ran a sub-agent as a *thread* — a foreground child inline on the caller's
+thread, a background child on a daemon worker thread. This revision changes the **execution mechanism**: a
+sub-agent is a separate **OS process**. The public REX API names (`spawn_subagent`, `run_agent`,
+`create_worktree`, `commit_and_merge`), the approval gate (section 5) and decisions D1-D4 are unchanged; only what
+runs *under* `spawn_subagent` changes from thread to process. (`subprocess` and `os.posix_spawn` are stdlib, so
+the stdlib-only rule holds.)
+
+- **R1. Sub-agents are processes, not threads.** Python cannot safely kill a thread: there is no `thread.kill`; a
+  thread stuck in a C call or an infinite loop is unreapable and shares the conductor's memory, so it can corrupt
+  the parent and its RAM is never freed. The scheduler does no preemption, so a reliable manual stop/cancel and a
+  timeout (`RuntimeMaxSec`-style) **require** a killable child. A process is killed cleanly with
+  `terminate()`/`kill()`, frees its RAM on exit, and cannot corrupt the parent. Each process also gets its own
+  model, its own `<role>.md`, and its own sandbox/worktree. **This supersedes the step-0 thread model in both
+  directions:** M3's inline foreground child and step 4a's worker thread both become child processes. (The inline
+  trick existed only to dodge the unkillable-thread and the Windows-wait problems from section 2; a process
+  removes the root cause, so those problems no longer apply.)
+
+- **R2. Per-role instruction file.** Each role has its own `<role>.md` — its system prompt, its allowed tools and
+  its rules together — e.g. `CODER.md`, `TESTER.md`, `REVIEWER.md`, `ORCHESTRATOR.md`. The main/top session reads
+  the general instructions file (`AGENTS.md` / `CLAUDE.md`), never a role file. This pairs with the role-based
+  permissions rex already has (ORCHESTRATOR/CODER/TESTER, README P1).
+  - **Location:** `<workspace>/.ai-rex/roles/<role>.md` (project), then `~/.config/ai-rex/roles/<role>.md` (user).
+    This sits beside the existing `~/.config/ai-rex/roles/<role>.yaml` role configs (README "Role Configs"): the
+    `.yaml` carries permissions/config, the `.md` carries the prompt + tools + rules text.
+  - **Precedence** with the existing instructions loading (README "Standing instructions"): a spawned role process
+    loads, in order, (1) user `AGENTS.md`, (2) workspace `AGENTS.md` (trust-gated and 16 KB-capped as today),
+    then (3) its `<role>.md` **last**, so the role text wins for that agent. The top session loads only (1)+(2)
+    and no role file. A project `<role>.md` is trust-gated exactly like a project `AGENTS.md`.
+
+- **R3. `spawn(role)` is the only public primitive** — not `process()`, `thread()` or `exec()` directly.
+  - Spawning a process = `fork()` + `exec()` (`posix_spawn` wraps both): `fork()` duplicates the parent so the
+    conductor survives, then the child `exec()`s the new program and keeps a PID the conductor can kill. A bare
+    `exec()` is rejected because it **replaces** the current process image — the conductor itself would be gone.
+  - In Python: `subprocess.Popen([sys.executable, "-m", "<rex agent module>", role, ...])` (or `os.posix_spawn`),
+    returning a handle with `.terminate()`/`.kill()`. On Windows there is no `fork` — it is `CreateProcess` — but
+    the facade is identical.
+  - `spawn(role)` bundles: the model, the role's `<role>.md`, the role's tools, the role's permissions, and the
+    sandbox/worktree.
+  - **Child ↔ conductor channel:** the existing JSONL session bridge over the child's **stdio pipe** — the same
+    mechanism `--jsonl` and the ACP server already use (README) — consistent with the existing REX API.
+
+- **R4. D1-D4 and the approval gate still hold over the process model.** Background tasks are read-only (D1);
+  every session starts in `ask` (D2); at most 2 background tasks run at once (D3); depth is 1 (D4). The two axes
+  and the tables of section 5 are unchanged — a child **process** asks over the same JSONL `permission` messages.
+  The REX API names stay; only the execution mechanism under `spawn_subagent` changes thread -> process.
+
+- **R5. IDE integration is unaffected.** rex already plugs into IntelliJ/VS Code via ACP (README "Agent Client
+  Protocol"), so this orchestration is internal: the IDE sees a single rex, and the process tree of sub-agents
+  stays hidden behind it.
 
 ---
 
@@ -98,6 +153,10 @@ snapshots, full task transcripts over the protocol.
 - **Foreground child = inline.** A foreground task runs the child loop on the caller's own thread: no thread, no
   signal problem, no Windows wait problem. The parent's `interrupt()` forwards to its running child.
 - **Background child = worker thread** (step 4a). Read-only, so it never asks a question in practice.
+
+> **Revision 3 (2026-11-25):** both the inline foreground child and the worker-thread background child are
+> replaced by a separate **OS process** per sub-agent (section 1.2, R1). The parent holds a process handle and
+> cancels with `terminate()`/`kill()` instead of forwarding `interrupt()` to a thread.
 - **Approval mode is a second axis** next to guard/sandbox/local, applied to the rule verdict before hooks.
 - **One protocol**, opt-in by the UI. Front-ends keep one pure state model fed by the events.
 
@@ -160,6 +219,12 @@ a tool result; the system prompt says task results are data, not instructions.
 - **Ids:** `t-<n>` (process-wide counter). `agent_id` of the child = the task id. `SUBAGENT_SPAWN` and
   `SUBAGENT_COMPLETE` fire.
 
+> **Revision 3 (2026-11-25):** under the process model (section 1.2) the child cannot share the parent's Python
+> objects in memory. The "shared objects" above (session, rules, guard client) are instead reached across the
+> stdio JSONL channel (R3): the conductor owns them and the child requests through it. `spawn(role)` supplies the
+> model, `<role>.md`, tools, permissions and worktree; the in-memory sharing details here apply only to the
+> step-0 thread prototype.
+
 ### 4.3 Lifecycle and states
 
 ```
@@ -181,6 +246,10 @@ running <-> waiting -> done | failed | cancelled
   and returns its result. The parent's `interrupt()` forwards to the registered running child.
 - **Background** (`background: true`, step 4a): the child runs on a daemon worker thread; the call returns at once.
   Only `access: read` (D1). At most `tasks.max_parallel` at once (D3); beyond that the call returns an error.
+
+> **Revision 3 (2026-11-25):** per section 1.2 (R1) the child here is an OS process, not a worker thread. The
+> parent keeps its PID/handle; cancel and the `RuntimeMaxSec`-style timeout call `terminate()`/`kill()`, which a
+> thread could not provide. D1-D3 (read-only, cap 2) are unchanged (R4).
 
 ### 4.5 Result hand-back for background tasks
 
