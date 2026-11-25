@@ -1,6 +1,6 @@
 <!--
 Author: Peter Kokosharov <peter.kokosharov@gmail.com>
-AI models: claude-opus-5-5
+AI models: claude-opus-5-5, claude-sonnet-5-5
 Licensed under MIT License
 -->
 
@@ -387,6 +387,32 @@ case-folded on Windows and macOS (`.GIT/`, `Agents.md`).
   secondary label ("from task t-3: Run the tests"). One question at a time, in arrival order.
 - The asker timeout (`permissions.ask_timeout`, 300 s) applies per question.
 
+### 5.7 Run modes and the host guard (owner decision 2026-11-25, answers owner question 1)
+
+Two run modes:
+
+- **(A) Docker automode:** tool execution runs inside the Docker guard sandbox, so it is contained and may auto-run
+  (the `auto` / `full` approval modes apply).
+- **(B) Host mode (no Docker):** tools run directly on the host behind a path guard, the same model roni uses today.
+
+The host guard:
+
+- On **every** tool operation the target is first resolved to a canonical **absolute** path (resolve `..`, follow
+  symlinks with realpath, make absolute) and only **then** checked: a prefix/regex test against the workspace root
+  plus the remembered allowed directories. The normalization must happen before the test; a regex on the raw string
+  is not enough, `../..` or a symlink would slip through.
+- Inside an allowed root: proceed. Outside: a hook asks the user, three choices: allow once / allow every time /
+  deny.
+- "Allow every time" stores the **directory** as an absolute path in an allowlist buffer (LRU, about 100 entries)
+  under `REX_HOME/state`. Deleting the `REX_HOME` folder also clears the remembered permissions (code, config and
+  state in one folder; delete the folder = clean machine).
+- `bash`, `git` and any operation whose touched paths cannot be statically proven to stay inside an allowed root:
+  the guard cannot prove containment, so it asks (allow once / every time / deny), the same rule roni's guard uses
+  for commands it cannot analyse. `bash` is the main hole a pure path check cannot close (a command can `cd` out or
+  follow a symlink), which is why unprovable commands fall through to the prompt.
+- This maps onto the existing `PermissionPolicy` (ALLOW/DENY/ASK, fnmatch): the host guard is the ASK verdict plus
+  the remembered absolute-path allowlist. No new core machinery; D1-D4 and the approval modes are unchanged.
+
 ---
 
 ## 6. Tasks panel model (what every front-end shows)
@@ -579,10 +605,8 @@ modes.
 
 ## 13. Owner questions
 
-1. May `full` (and `auto`) run project code on the host without a question, that is tests, builds, any shell
-   command, network and MCP, when tools run without Docker? 1) no: on the host `full` equals `auto` (only edits
-   and a short list of read-only commands run unasked), 2) only after an explicit config switch, 3) yes, like in
-   Docker. (recommended: 1)
+1. **Answered (2026-11-25), see 5.7.** (Was: May `full` (and `auto`) run project code on the host without a
+   question, when tools run without Docker? Options were 1) no, 2) only after a config switch, 3) yes.)
 2. Stop after step 3 (foreground tasks and approval modes) and use it for a while before building background
    tasks? (yes/no; recommended: yes)
 3. Which front-end gets the tasks panel and the approval switch first? 1) Layka, 2) Sisi, 3) Lassie.
