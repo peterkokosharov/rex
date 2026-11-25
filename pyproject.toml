@@ -26,6 +26,8 @@ include = ["runtime", "runtime.*", "runtimelib", "runtimelib.*", "kikolib*"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+markers = ["live: needs network access to real search engines (deselected by default)"]
+addopts = "-m 'not live'"
 
 [tool.ruff]
 line-length = 100

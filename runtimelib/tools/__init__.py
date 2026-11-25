@@ -20,15 +20,7 @@ from .git import GitTool, create_git_tool
 from .diagram import DiagramTool, create_diagram_tool
 from .skills import LoadSkillTool, ReadSkillFileTool, create_skill_tools
 
-# TaskSpawnTool is now in orchestrator package; runtime provides a thin wrapper
-try:
-    from orchestrator.taskspawn import TaskSpawnTool as OrchestratorTaskSpawnTool
-    from orchestrator.taskspawn import create_taskspawn_tool as orchestrator_create_taskspawn_tool
-    TaskSpawnTool = OrchestratorTaskSpawnTool
-    create_taskspawn_tool = orchestrator_create_taskspawn_tool
-except ImportError:
-    # Fallback if orchestrator not available
-    from .taskspawn import TaskSpawnTool, create_taskspawn_tool
+from .taskspawn import TaskSpawnTool, create_taskspawn_tool
 
 __all__ = [
     "Tool",

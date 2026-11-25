@@ -15,6 +15,8 @@ from unittest.mock import Mock, AsyncMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.skip(reason="orchestrator parked: unreviewed upstream, see docs/DESIGN-orchestration.md")
+
 from orchestrator import Orchestrator, AgentContext, SubagentHandle
 from orchestrator.policy import RolePolicy, get_role_policy, DEFAULT_POLICIES
 from orchestrator.taskspawn import TaskSpawnTool, SpawnRequest

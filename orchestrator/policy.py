@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
-import yaml
+from kikolib import yaml_lite
 
 
 @dataclass
@@ -172,8 +172,7 @@ def load_policy_file(path: str | Path) -> dict[str, RolePolicy]:
     if not path.exists():
         return DEFAULT_POLICIES.copy()
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+    data = yaml_lite.load_file(path) or {}
 
     policies = DEFAULT_POLICIES.copy()
     for role_name, role_data in data.get("roles", {}).items():

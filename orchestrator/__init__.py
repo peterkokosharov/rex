@@ -14,7 +14,10 @@ This package contains all orchestration logic that was previously embedded in th
 The runtime (runtimelib/) is now clean: tools, isolation, protocol only.
 """
 
-# Avoid circular imports by not importing at module level
+from .policy import RolePolicy, get_role_policy, load_policy_file
+from .orchestrator import Orchestrator, SubagentHandle, AgentContext
+from .taskspawn import TaskSpawnTool, create_taskspawn_tool
+
 __all__ = [
     "TaskSpawnTool",
     "create_taskspawn_tool",
