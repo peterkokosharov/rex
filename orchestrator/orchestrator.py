@@ -213,7 +213,6 @@ class Orchestrator:
     def create_taskspawn_tool(self) -> "TaskSpawnTool":
         """Create a TaskSpawnTool bound to this orchestrator."""
         from .taskspawn import TaskSpawnTool
-        from ..runtimelib.config import Config
         return TaskSpawnTool(orchestrator=self)
 
     # --- Subagent Management ---
@@ -299,21 +298,67 @@ class Orchestrator:
         return handle
 
     async def _run_subagent(self, handle: SubagentHandle) -> None:
-        """Run a subagent to completion."""
+        """Run a subagent to completion using the AgentLoop."""
         try:
             # Build runtime config from context
             runtime_config = self._build_runtime_config(handle.context)
 
-            # TODO: Actually run the agent loop with this config
-            # For now, simulate execution
-            await asyncio.sleep(0.1)  # Placeholder
+            # Build proper config dict for Config class
+            config_dict = {
+                "liteLLM": {
+                    "base_url": runtime_config.get("liteLLM", {}).get("base_url", "http://127.0.0.1:4000"),
+                    "api_key": runtime_config.get("liteLLM", {}).get("api_key", "dummy"),
+                    "model": runtime_config.get("liteLLM", {}).get("model", "gemini-lite"),
+                },
+                "agent": {
+                    "max_steps": handle.context.max_steps,
+                    "allowed_tools": handle.context.allowed_tools,
+                },
+            }
 
-            # Simulate result
+            # Create AgentLoop
+            from runtimelib.config import Config
+            from runtimelib.agent import create_agent_loop
+            loop = create_agent_loop(
+                config=Config({
+                    "liteLLM": {
+                        "base_url": runtime_config.get("liteLLM", {}).get("base_url", "http://127.0.0.1:4000"),
+                        "api_key": runtime_config.get("liteLLM", {}).get("api_key", "dummy"),
+                        "model": runtime_config.get("liteLLM", {}).get("model", "gemini-lite"),
+                    },
+                    "agent": {
+                        "max_steps": handle.context.max_steps,
+                        "allowed_tools": handle.context.allowed_tools,
+                    },
+                }),
+                on_token=lambda t: self._emit_hook({"type": "token", "agent_id": handle.agent_id, "token": t}),
+                on_tool_start=lambda n, a: self._emit_hook({"type": "tool_start", "agent_id": handle.agent_id, "tool": n, "args": a}),
+                on_tool_end=lambda r: self._emit_hook({"type": "tool_end", "agent_id": handle.agent_id, "tool_result": r}),
+                on_thinking=lambda t: self._emit_hook({"type": "thinking", "agent_id": handle.agent_id, "thinking": t}),
+                on_context=lambda c: self._emit_hook({"type": "context", "agent_id": handle.agent_id, **c}),
+                session_manager=None,
+                hook_engine=None,
+                checkpoint_manager=None,
+                gate=None,
+                asker=None,
+            )
+
+            # Override the taskspawn tool with our orchestrator-bound one
+            loop.tools["task"] = self.create_taskspawn_tool()
+            loop.tool_schemas = [t.to_openai() for t in loop.tools.values()]
+
+            # Add task to conversation
+            from runtimelib.llm import ChatMessage
+            loop.state.messages.append(ChatMessage(role="user", content=handle.context.task))
+
+            # Run the agent loop
+            result_text = loop.run(handle.context.task)
+
+            # Build result
             result = AgentResult(
                 success=True,
-                output=f"Completed task: {handle.context.task}",
-                tokens_used={"input": 1000, "output": 500},
-                cost=0.001,
+                output=result_text,
+                tokens_used=loop.state.turn_tokens_in,  # Approximate
             )
 
             handle._result = result

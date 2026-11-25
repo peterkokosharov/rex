@@ -1,6 +1,6 @@
-date (UTC): 2026-11-24 11:55:18
-git commit: 915f911
-os: Windows-11-10.0.26200-SP0 (python 3.14.7)
+date (UTC): 2026-11-24 20:09:44
+git commit: 5592aa3
+os: Linux-7.0.0-43-generic-x86_64-with-glibc2.39 (python 3.12.3)
 
 suite: attribution headers
   command: python -I tools/check_ai_header.py
@@ -9,11 +9,11 @@ suite: attribution headers
 
 suite: python (pytest)
   command: python -m pytest -q
-  passed: 711  failed: 0  skipped: 16
-  result: PASS
+  not run here: pytest is not installed in this Python (see TESTING.md)
 
 suite: native C++ (test_native)
   command: g++ -std=c++17 -pthread native/test_native.cpp native/rex_native.cpp && run
-  not run here: no C++ compiler (g++) on PATH
+  passed: 1  failed: 0  skipped: 0
+  result: PASS
 
-OVERALL: PASS
+OVERALL: FAIL

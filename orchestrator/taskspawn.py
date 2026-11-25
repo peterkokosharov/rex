@@ -68,26 +68,18 @@ class SpawnResponse:
     error: str | None = None
 
 
-class TaskSpawnTool:
+class TaskSpawnTool(Tool):
     """Tool to spawn subagents for delegated tasks via the Orchestrator.
 
     This tool is called by the agent loop when the model invokes the `task` tool.
     It delegates to the Orchestrator which handles the actual subagent lifecycle.
     """
 
-    name = "task"
-    description = "Spawn a subagent to handle a delegated task"
-
     def __init__(self, orchestrator: "Orchestrator" = None, config: Config = None):
-        self.orchestrator = orchestrator
-        self.config = config
-
-    @property
-    def schema(self) -> dict:
-        return {
-            "name": "task",
-            "description": "Spawn a subagent to handle a delegated task",
-            "parameters": {
+        schema = ToolSchema(
+            name="task",
+            description="Spawn a subagent to handle a delegated task",
+            parameters={
                 "type": "object",
                 "properties": {
                     "prompt": {
@@ -120,7 +112,10 @@ class TaskSpawnTool:
                 },
                 "required": ["prompt"],
             },
-        }
+        )
+        super().__init__("task", "Spawn a subagent to handle a delegated task", schema)
+        self.orchestrator = orchestrator
+        self.config = config
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the task spawn via Orchestrator."""
