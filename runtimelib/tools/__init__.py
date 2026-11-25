@@ -4,18 +4,31 @@
 # LLM: nvidia nemotron ultra
 # Licensed under MIT License
 
-"""Tools framework."""
+"""Tools framework.
+
+Note: TaskSpawnTool has moved to orchestrator package (orchestrator.taskspawn).
+The runtime keeps a thin wrapper for backward compatibility.
+"""
 
 from .base import Tool, ToolSchema, ToolResult
 from .registry import ToolRegistry
 from .executor import ToolExecutor
 from .fileops import FileOpsTool, create_fileops_tool
 from .bash import BashTool, create_bash_tool
-from .taskspawn import TaskSpawnTool, create_taskspawn_tool
 from .websearch import WebSearchTool, create_websearch_tool
 from .git import GitTool, create_git_tool
 from .diagram import DiagramTool, create_diagram_tool
 from .skills import LoadSkillTool, ReadSkillFileTool, create_skill_tools
+
+# TaskSpawnTool is now in orchestrator package; runtime provides a thin wrapper
+try:
+    from orchestrator.taskspawn import TaskSpawnTool as OrchestratorTaskSpawnTool
+    from orchestrator.taskspawn import create_taskspawn_tool as orchestrator_create_taskspawn_tool
+    TaskSpawnTool = OrchestratorTaskSpawnTool
+    create_taskspawn_tool = orchestrator_create_taskspawn_tool
+except ImportError:
+    # Fallback if orchestrator not available
+    from .taskspawn import TaskSpawnTool, create_taskspawn_tool
 
 __all__ = [
     "Tool",
