@@ -17,7 +17,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from runtimelib.skills import (
-    FILE_SIZE_CAP, Skill, discover_skills, parse_frontmatter, read_skill_file, resolve_skill_file, skill_index,
+    BUILTIN_DIR, FILE_SIZE_CAP, Skill, discover_skills, load_skill_folder, parse_frontmatter, read_skill_file,
+    resolve_skill_file, skill_index,
 )
 from runtimelib.skills.cli import run_skills
 from runtimelib.tools.skills import LoadSkillTool, ReadSkillFileTool
@@ -74,7 +75,7 @@ def test_missing_name_uses_folder_and_missing_description_skipped(env):
     make_skill(root, "folder-name", None, "has desc")
     make_skill(root, "nodesc", "nodesc", None)
     warnings: list[str] = []
-    skills = discover_skills(ws, TRUST, home=home, warnings=warnings)
+    skills = discover_skills(ws, TRUST, home=home, warnings=warnings, include_builtin=False)
     assert [s.name for s in skills] == ["folder-name"]
     assert any("nodesc" in w and "description" in w for w in warnings)
 
@@ -87,7 +88,8 @@ def test_precedence_and_duplicate_warning(env, tmp_path):
     make_skill(home / ".config" / "ai-rex" / "skills", "c", "only-home", "h")
     make_skill(extra, "d", "from-config", "cfg")
     warnings: list[str] = []
-    skills = discover_skills(ws, Cfg({"skills.paths": [str(extra)], "workspace.trust": True}), home=home, warnings=warnings)
+    skills = discover_skills(ws, Cfg({"skills.paths": [str(extra)], "workspace.trust": True}), home=home,
+                             warnings=warnings, include_builtin=False)
     by = {s.name: s for s in skills}
     assert by["dup"].description == "from home"
     assert set(by) == {"dup", "only-home", "from-config"}
@@ -100,7 +102,7 @@ def test_files_listed_without_skill_md(env):
     (d / "references").mkdir()
     (d / "references" / "api.md").write_text("api", encoding="utf-8")
     (d / "run.sh").write_text("echo", encoding="utf-8")
-    (skill,) = discover_skills(ws, TRUST, home=home)
+    (skill,) = discover_skills(ws, TRUST, home=home, include_builtin=False)
     assert skill.files == ["references/api.md", "run.sh"]
 
 
@@ -161,7 +163,7 @@ def test_symlink_escape_rejected(env, tmp_path):
         (d / "link.txt").symlink_to(tmp_path / "secret.txt")
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not available")
-    (skill,) = discover_skills(ws, TRUST, home=home)
+    (skill,) = discover_skills(ws, TRUST, home=home, include_builtin=False)
     with pytest.raises(PermissionError):
         read_skill_file(skill, "link.txt")
 
@@ -208,8 +210,8 @@ def test_workspace_skills_untrusted_by_default(env, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     make_skill(ws / ".ai-rex" / "skills", "s", "proj", "project skill")
     make_skill(home / ".config" / "ai-rex" / "skills", "u", "user", "user skill")
-    assert [s.name for s in discover_skills(ws, None, home=home)] == ["user"]
-    both = discover_skills(ws, None, home=home, include_untrusted=True)
+    assert [s.name for s in discover_skills(ws, None, home=home, include_builtin=False)] == ["user"]
+    both = discover_skills(ws, None, home=home, include_untrusted=True, include_builtin=False)
     assert {s.name: s.trusted for s in both} == {"user": True, "proj": False}
     out, err = io.StringIO(), io.StringIO()
     run_skills([], None, workspace=ws, out=out, err=err)
@@ -229,7 +231,7 @@ def test_folder_swapped_for_symlink_after_discovery_refused(env, tmp_path):
     other = tmp_path / "other"
     other.mkdir()
     (other / "ref.md").write_text("evil", encoding="utf-8")
-    (skill,) = discover_skills(ws, TRUST, home=home)
+    (skill,) = discover_skills(ws, TRUST, home=home, include_builtin=False)
     assert read_skill_file(skill, "ref.md") == "ok"
     for f in d.iterdir():
         f.unlink()
@@ -252,8 +254,41 @@ def test_project_skill_symlinked_outside_container_skipped(env, tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not available")
     warnings: list[str] = []
-    assert discover_skills(ws, TRUST, home=home, warnings=warnings) == []
+    assert discover_skills(ws, TRUST, home=home, warnings=warnings, include_builtin=False) == []
     assert any("outside" in w for w in warnings)
+
+
+BUILTIN_NAMES = {"code-review", "write-tests", "debug", "commit-pr"}
+
+
+def test_builtin_skills_bundled_and_valid():
+    # Each bundled folder has a SKILL.md that parses with a name and description.
+    folders = sorted(p for p in BUILTIN_DIR.iterdir() if (p / "SKILL.md").is_file())
+    parsed = {}
+    for f in folders:
+        s = load_skill_folder(f)
+        assert s is not None, f
+        assert s.name and s.description, f
+        parsed[s.name] = s
+    assert BUILTIN_NAMES <= set(parsed)
+    # commit-pr ships its reference file and it reads back through the confined reader.
+    assert "references/style.md" in parsed["commit-pr"].files
+    assert "Conventional Commits" in read_skill_file(parsed["commit-pr"], "references/style.md")
+
+
+def test_builtin_skills_discovered_by_default_and_overridable(env):
+    ws, home = env  # empty user/workspace roots -> only the built-ins are found
+    found = {s.name: s for s in discover_skills(ws, TRUST, home=home)}
+    assert BUILTIN_NAMES <= set(found)
+    for name in BUILTIN_NAMES:
+        assert found[name].trusted and not found[name].project
+    idx = skill_index(discover_skills(ws, TRUST, home=home))
+    assert "- code-review:" in idx and "(project)" not in idx
+    # include_builtin=False leaves them out; a user skill of the same name wins over the built-in.
+    assert discover_skills(ws, TRUST, home=home, include_builtin=False) == []
+    make_skill(home / ".config" / "ai-rex" / "skills", "code-review", "code-review", "my override", body="MINE\n")
+    override = {s.name: s for s in discover_skills(ws, TRUST, home=home)}["code-review"]
+    assert override.description == "my override" and override.body == "MINE\n"
 
 
 def test_load_skill_body_capped():

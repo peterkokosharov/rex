@@ -22,6 +22,10 @@ build-backend = "setuptools.build_meta"
 where = [".", "vendor"]
 include = ["runtime", "runtime.*", "runtimelib", "runtimelib.*", "kikolib*"]
 
+[tool.setuptools.package-data]
+# Built-in skills ship as data inside the package so they load by default from an installed wheel.
+"runtimelib.skills" = ["builtin/*/SKILL.md", "builtin/*/references/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

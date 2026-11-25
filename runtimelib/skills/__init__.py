@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Claude-style skills: a folder with SKILL.md (frontmatter + Markdown body) and optional extra files.
@@ -20,6 +20,9 @@ from typing import Any, Iterable
 from ..trust import trust_workspace
 
 SKILL_FILE = "SKILL.md"
+# Skills bundled with the install. They ship inside the package, so they are trusted and loaded by default;
+# because they are the lowest-precedence root, any same-named skill from ~/.config (or a trusted workspace) wins.
+BUILTIN_DIR = Path(__file__).resolve().parent / "builtin"
 INDEX_CAP_BYTES = 2048
 DESC_MAX_CHARS = 200
 FILE_SIZE_CAP = 200 * 1024
@@ -135,17 +138,24 @@ def discover_skills(
     roots: Iterable[Path] | None = None,
     warnings: list[str] | None = None,
     include_untrusted: bool = False,
+    include_builtin: bool = True,
 ) -> list[Skill]:
     """Find skills in the search roots. A later duplicate name is ignored with a warning.
 
     Project skills (``<workspace>/.ai-rex/skills``) are repository content: they are returned only when
     ``workspace.trust`` is true, or (marked ``trusted=False``) with ``include_untrusted=True``.
+
+    Built-in skills (bundled in ``BUILTIN_DIR``) are appended last, so they load by default yet a same-named
+    skill from any earlier root overrides them. ``include_builtin=False`` leaves them out (used by tests).
+    They are skipped when ``roots`` is given, since that selects an explicit set of roots.
     """
     trusted_ws = trust_workspace(config)
     if roots is not None:
         root_list = [(Path(r), False) for r in roots]
     else:
         root_list = search_roots(workspace, config, home)
+        if include_builtin:
+            root_list.append((BUILTIN_DIR, False))
     found: dict[str, Skill] = {}
     for root, project in root_list:
         if project and not trusted_ws and not include_untrusted:
@@ -232,6 +242,7 @@ def read_skill_file(skill: Skill, relpath: Any) -> str:
 
 __all__ = [
     "Skill",
+    "BUILTIN_DIR",
     "parse_frontmatter",
     "load_skill_folder",
     "search_roots",

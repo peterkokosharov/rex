@@ -412,7 +412,9 @@ description: Write release notes from the git log. Use when asked for a changelo
 ```
 
 Skills are searched in `~/.config/ai-rex/skills/`, then the folders in the config key `skills.paths` (a list), then
-`<workspace>/.ai-rex/skills/` (project skills, marked `(project)`). Project skills come from the repository and are
+`<workspace>/.ai-rex/skills/` (project skills, marked `(project)`), and finally the built-in skills bundled with
+ai-rex (`code-review`, `write-tests`, `debug`, `commit-pr`), which are trusted and loaded by default. Because the
+built-ins come last, a skill of the same name in any earlier folder overrides one. Project skills come from the repository and are
 untrusted: they load only when `workspace.trust` is `true` (default `false`; `ai-rex skills` still lists them as
 not trusted). The old key `skills.trust_workspace` still works as a deprecated alias (with a one-time warning). If two skills share a name the first one wins and a warning is logged. A missing `name`
 falls back to the folder name; a skill without `description` is skipped with a warning.
