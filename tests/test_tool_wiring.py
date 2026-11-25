@@ -4,7 +4,7 @@
 # LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
-"""Default tool wiring: edit, webfetch, MCP tools; no fake websearch."""
+"""Default tool wiring: edit, webfetch, websearch, MCP tools."""
 
 from __future__ import annotations
 
@@ -58,13 +58,13 @@ def call(loop, name, args):
 
 
 class DefaultTools(unittest.TestCase):
-    def test_edit_and_webfetch_registered_websearch_gone(self):
+    def test_edit_webfetch_and_websearch_registered(self):
         loop, _ = make_loop()
         try:
             names = {s["function"]["name"] for s in loop.tool_schemas}
             self.assertIn("edit", names)
             self.assertIn("webfetch", names)
-            self.assertNotIn("websearch", names)
+            self.assertIn("websearch", names)
             self.assertIs(loop.tools["edit"]._tracker, loop.read_tracker)
             self.assertIs(loop.tools["fileops"]._tracker, loop.read_tracker)
             self.assertIn("Read a file before editing it", loop.system_prompt)

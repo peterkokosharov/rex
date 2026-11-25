@@ -1,68 +1,66 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Brave Search Results</title>
+    <title>asyncio - Brave Search</title>
 </head>
 <body>
-    <div data-testid="results">
-        <div data-testid="result">
-            <div data-testid="result-title-link" href="https://docs.python.org/3/library/asyncio.html">
-                <span>asyncio — Asynchronous I/O — Python 3.12 documentation</span>
-            </div>
-            <div data-testid="result-snippet">
-                <p>This module provides infrastructure for writing single-threaded concurrent code using coroutines, multiplexing I/O access over sockets and other resources, running network clients and servers, and other related primitives.</p>
-            </div>
-            <div data-testid="result-url">
-                <span>https://docs.python.org/3/library/asyncio.html</span>
-            </div>
-        </div>
-
-        <div data-testid="result">
-            <div data-testid="result-title-link" href="https://realpython.com/async-io-python/">
-                <span>Async IO in Python: A Complete Walkthrough</span>
-            </div>
-            <div data-testid="result-snippet">
-                <p>Learn how to use Python's asyncio library to write concurrent code. This tutorial covers async/await syntax, event loops, tasks, and more.</            </div>
-            <div data-testid="result-url">
-                <span>https://realpython.com/async-io-python/</span>
+    <main>
+    <div id="results" class="results">
+        <div class="snippet svelte-abc123" data-testid="result" data-pos="1">
+            <div class="snippet-content">
+                <a href="https://docs.python.org/3/library/asyncio.html" class="heading-serpresult" data-testid="result-title-link">
+                    <span class="title">asyncio &mdash; Asynchronous I/O &mdash; Python 3.12 documentation</span>
+                </a>
+                <div class="snippet-description" data-testid="result-snippet">
+                    asyncio is a library to write concurrent code using the async/await syntax, used as a foundation for multiple Python asynchronous frameworks.
+                </div>
             </div>
         </div>
 
-        <div data-testid="result">
-            <div data-testid="result-title-link" href="https://github.com/python/asyncio">
-                <span>GitHub - python/asyncio: asyncio module for Python</span>
-            </div>
-            <div data-testid="result-snippet">
-                <p>asyncio module for Python. Contribute to python/asyncio development by creating an account on GitHub.</div>
-            </div>
-            <div data-testid="result-url">
-                <span>https://github.com/python/asyncio</span>
-            </div>
-        </div>
-
-        <div data-testid="result">
-            <div data-testid="result-title-link" href="https://docs.aiohttp.org/">
-                <span>aiohttp - Async HTTP Client/Server for Python</span>
-            </div>
-            <div data-testid="result-snippet">
-                <p>aiohttp is an async HTTP client/server framework. Supports both client and server WebSockets.</div>
-            </div>
-            <div data-testid="result-url">
-                <span>https://docs.aiohttp.org/</span>
+        <div class="snippet svelte-abc123" data-testid="result" data-pos="2">
+            <div class="snippet-content">
+                <a data-testid="result-title-link" class="heading-serpresult" href="https://realpython.com/async-io-python/">
+                    <span class="title">Async IO in Python: A Complete Walkthrough</span>
+                </a>
+                <div class="snippet-description" data-testid="result-snippet">
+                    Learn how to use Python&#39;s async IO library to write concurrent code with async/await, event loops, tasks and more.
+                </div>
             </div>
         </div>
 
-        <div data-testid="result">
-            <div data-testid="result-title-link" href="https://fastapi.tiangolo.com/async/">
-                <span>Async - FastAPI</span>
+        <div class="snippet svelte-abc123" data-testid="result" data-pos="3">
+            <div class="snippet-content">
+                <a href="https://github.com/python/cpython" class="heading-serpresult" data-testid="result-title-link">
+                    <span class="title">GitHub - python/cpython: The Python programming language</span>
+                </a>
+                <div class="snippet-description" data-testid="result-snippet">
+                    The Python programming language. Contribute to python/cpython development by creating an account on GitHub.
+                </div>
             </div>
-            <div data-testid="result-snippet">
-                <p>FastAPI supports async request handling out of the box. Learn how to use async/await with FastAPI.</div>
+        </div>
+
+        <div class="snippet svelte-abc123" data-testid="result" data-pos="4">
+            <div class="snippet-content">
+                <a href="https://docs.aiohttp.org/" data-testid="result-title-link" class="heading-serpresult">
+                    <span class="title">aiohttp &mdash; Async HTTP Client/Server for Python</span>
+                </a>
+                <div class="snippet-description" data-testid="result-snippet">
+                    aiohttp is an asynchronous HTTP client/server framework built on top of the standard library event loop.
+                </div>
             </div>
-            <div data-testid="result-url">
-                <span>https://fastapi.tiangolo.com/async/</span>
+        </div>
+
+        <div class="snippet svelte-abc123" data-testid="result" data-pos="5">
+            <div class="snippet-content">
+                <a href="https://fastapi.tiangolo.com/async/" class="heading-serpresult" data-testid="result-title-link">
+                    <span class="title">Concurrency and async / await - FastAPI</span>
+                </a>
+                <div class="snippet-description" data-testid="result-snippet">
+                    Details about the async / await syntax for coroutines and how FastAPI handles concurrency.
+                </div>
             </div>
         </div>
     </div>
+    </main>
 </body>
 </html>

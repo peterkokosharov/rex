@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """DuckDuckGo Search engine implementation."""
@@ -30,44 +30,23 @@ class DuckDuckGoEngine(SearchEngine):
     name = "duckduckgo"
     base_url = "https://html.duckduckgo.com/html/"
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, user_agent: str | None = None) -> None:
+        super().__init__(user_agent)
         self.name = "duckduckgo"
         self.base_url = "https://html.duckduckgo.com/html/"
         self._last_html = ""
 
     async def search(self, query: str, max_results: int = 10) -> list:
-        """Search DuckDuckGo and return results."""
+        """Search DuckDuckGo and return results (raises on fetch failure)."""
         if not query or not query.strip():
             return []
 
-        params = {
-            "q": query,
-            "kl": "us-en",
-        }
-
-        try:
-            html_content = await self.fetch_html(
-                self.base_url,
-                params=params,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                  "Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                    "Accept-Encoding": "gzip, deflate",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                }
-            )
-
-            # Store for parsing
-            self._last_html = html_content
-            return self._parse_ddg_results(html_content, max_results)
-
-        except Exception as e:
-            return []
+        html_content = await self.fetch_html(
+            self.base_url,
+            params={"q": query, "kl": "us-en"},
+        )
+        self._last_html = html_content
+        return self._parse_ddg_results(html_content, max_results)
 
     def _parse_ddg_results(self, html_content: str, max_results: int) -> list:
         """Parse DuckDuckGo HTML results."""

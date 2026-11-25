@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Result merger for combining search results from multiple engines."""
@@ -56,14 +56,27 @@ def merge_results(
     if engine_weights is None:
         engine_weights = {"brave": 1.0, "bing": 0.9, "duckduckgo": 0.8}
 
+    def rank_key(result: dict) -> tuple[float, float, float]:
+        """Deterministic preference key for ranking and tie-breaking.
+
+        Order: (1) adjusted score (engine weight x raw score minus a position
+        penalty); on a tie (2) the higher single-engine raw score wins; on a
+        further tie (3) the heavier engine wins. Any remaining tie keeps the
+        first result seen (insertion order), because Python's sort and the
+        dedup loop below are both stable.
+        """
+        return (
+            result.get("adjusted_score", 0.0),
+            result.get("score", 0.0),
+            engine_weights.get(result.get("engine", ""), 0.5),
+        )
+
     # Collect all results with engine weight applied
     all_results = []
     for engine, results in engine_results.items():
         weight = engine_weights.get(engine, 0.5)
-        for i, result in enumerate(results):
-            # Apply engine weight and position penalty
-            base_score = result.get("score", 1.0)
-            position_penalty = (result.get("rank", 1) - 1) * 0.02
+        for result in results:
+            # Apply engine weight and a per-position penalty.
             adjusted_score = result.get("score", 1.0) * weight - (result.get("rank", 1) - 1) * 0.02
             adjusted_score = max(adjusted_score, 0.01)
 
@@ -73,22 +86,16 @@ def merge_results(
             result["engine"] = engine  # Ensure engine is set
             all_results.append(result)
 
-    # Deduplicate by normalized URL
+    # Deduplicate by normalized URL, keeping the better result per the rank key.
     seen_urls = {}
     for result in all_results:
-        url = result.get("url", "")
-        norm_url = normalize_url(url)
-
-        if norm_url not in seen_urls:
+        norm_url = normalize_url(result.get("url", ""))
+        existing = seen_urls.get(norm_url)
+        if existing is None or rank_key(result) > rank_key(existing):
             seen_urls[norm_url] = result
-        else:
-            # Keep the one with higher score
-            existing = seen_urls[norm_url]
-            if result.get("adjusted_score", 0) > existing.get("adjusted_score", 0):
-                seen_urls[norm_url] = result
 
-    # Sort by adjusted score descending
-    merged = sorted(seen_urls.values(), key=lambda r: r.get("adjusted_score", 0), reverse=True)
+    # Sort by the same deterministic key, best first.
+    merged = sorted(seen_urls.values(), key=rank_key, reverse=True)
 
     # Assign final ranks
     for i, result in enumerate(merged[:max_results]):

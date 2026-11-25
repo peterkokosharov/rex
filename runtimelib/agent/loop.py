@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 from ..config import Config
 from ..llm import LiteLLMClient, ChatMessage, ChatCompletionChunk, ToolCall
 from ..llm.models import get_registry
-from ..tools import FileOpsTool, BashTool, TaskSpawnTool, GitTool, DiagramTool
+from ..tools import FileOpsTool, BashTool, TaskSpawnTool, GitTool, DiagramTool, WebSearchTool
 from ..tools.edit import EditTool, ReadTracker
 from ..tools.mcp_tool import load_mcp_tools
 from ..tools.webfetch import WebFetchTool
@@ -207,6 +207,7 @@ class AgentLoop:
             # allow_private comes from the host config only; it is not in the model's schema.
             ("webfetch", lambda: WebFetchTool(
                 allow_private=bool(self.config.get("webfetch.allow_private", False)))),
+            ("websearch", lambda: WebSearchTool(self.config)),
             ("git", lambda: GitTool(self.config)),
             ("render_diagram", lambda: DiagramTool(self.config)),
         )

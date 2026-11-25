@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Task spawn tool for subagent creation."""
@@ -49,14 +49,16 @@ class TaskSpawnTool(Tool):
         super().__init__("task", "Spawn subagent for delegated task", schema)
 
     def execute(self, **kwargs: Any) -> Any:
-        # This will be implemented by the agent loop
-        # For now, return a placeholder
+        # Honest stub: real orchestration is not wired here, so no subagent is
+        # created. Report that plainly instead of faking a spawn (no agent_id,
+        # no "success"/"spawned"/"delegated" claim) so the model is not misled.
+        # This tool is intentionally not registered in the default tool set
+        # (see AgentLoop._init_default_tools) until real spawning exists.
         return {
-            "status": "delegated",
-            "prompt": kwargs["prompt"],
-            "tools": kwargs.get("tools", []),
-            "model_class": kwargs.get("model_class", "SONNET"),
-            "note": "Subagent execution handled by orchestrator",
+            "status": "not_implemented",
+            "implemented": False,
+            "error": "task spawning is not implemented in this build; no subagent was created",
+            "prompt": kwargs.get("prompt", ""),
         }
 
 

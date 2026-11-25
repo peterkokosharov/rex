@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Bing Search engine implementation."""
@@ -30,43 +30,20 @@ class BingEngine(SearchEngine):
     name = "bing"
     base_url = "https://www.bing.com/search"
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, user_agent: str | None = None) -> None:
+        super().__init__(user_agent)
         self.name = "bing"
         self.base_url = "https://www.bing.com/search"
         self._last_html = ""
 
     async def search(self, query: str, max_results: int = 10) -> list:
-        """Search Bing and return results."""
+        """Search Bing and return results (raises on fetch failure)."""
         if not query or not query.strip():
             return []
 
-        params = {
-            "q": query,
-        }
-
-        try:
-            html_content = await self.fetch_html(
-                self.base_url,
-                params={"q": query},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                  "Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                    "Accept-Encoding": "gzip, deflate",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                }
-            )
-
-            # Store for parsing
-            self._last_html = html_content
-            return self._parse_bing_results(html_content, max_results)
-
-        except Exception as e:
-            return []
+        html_content = await self.fetch_html(self.base_url, params={"q": query})
+        self._last_html = html_content
+        return self._parse_bing_results(html_content, max_results)
 
     def _parse_bing_results(self, html_content: str, max_results: int) -> list:
         """Parse Bing Search HTML results."""

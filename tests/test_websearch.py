@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Tests for websearch engines and WebSearchTool."""
@@ -34,7 +34,6 @@ class TestBraveEngine:
     def engine(self):
         return BraveEngine()
 
-    @pytest.mark.skip(reason="bug: brave fixture invented, does not match real Brave markup/regex")
     def test_parse_brave_results(self, engine):
         """Test parsing Brave HTML results."""
         html = load_fixture("brave_results.html")
@@ -54,7 +53,6 @@ class TestBraveEngine:
         assert first["score"] > 0
         assert first["rank"] == 1
 
-    @pytest.mark.skip(reason="bug: brave fixture invented, does not match real Brave markup/regex")
     def test_max_results_limit(self, engine):
         """Test max_results limit is respected."""
         html = load_fixture("brave_results.html")
@@ -196,24 +194,19 @@ class TestMerger:
         )
         assert len(merged_limited) == 3
 
-    @pytest.mark.skip(reason="bug: tie at merger.py:87, dedup tie-break undefined")
     def test_deduplication_prefers_higher_score(self):
-        """Test that deduplication keeps higher scored result."""
-        engine_results = {
-            "brave": [
-                {"url": "https://example.com/1", "title": "R1", "snippet": "s", "engine": "brave", "score": 0.9, "rank": 1},
-            ],
-            "bing": [
-                {"url": "https://example.com/1", "title": "R1", "snippet": "s", "engine": "bing", "score": 1.0, "rank": 1},
-            ],
-        }
+        """On a weighted-score tie, dedup keeps the higher single-engine score.
 
+        brave: 0.9 x weight 1.0 = 0.90; bing: 1.0 x weight 0.9 = 0.90 -> tie on
+        the adjusted score. The documented tie-break (higher raw single-engine
+        score, see merger.rank_key) then keeps bing (raw 1.0 > brave's 0.9).
+        """
         merged = merge_results({"brave": [{"url": "https://example.com/1", "title": "R1", "snippet": "s", "engine": "brave", "score": 0.9, "rank": 1}],
                                  "bing": [{"url": "https://example.com/1", "title": "R1", "snippet": "s", "engine": "bing", "score": 1.0, "rank": 1}]}, max_results=5)
 
-        # Should have 1 result, with bing's higher score
+        # Should have 1 result, with bing's higher single-engine score
         assert len(merged) == 1
-        assert merged[0]["engine"] == "bing"  # bing has higher weight (0.9 vs brave's 1.0 * 0.9?)
+        assert merged[0]["engine"] == "bing"
 
 
 class TestWebSearchTool:
@@ -224,18 +217,20 @@ class TestWebSearchTool:
         return WebSearchTool()
 
     def test_schema(self, tool):
-        """Test tool schema is correct."""
+        """Test tool schema is correct (a proper ToolSchema, like fileops/edit)."""
         schema = tool.schema
-        assert schema["name"] == "websearch"
-        assert "query" in schema["parameters"]["properties"]
-        assert "max_results" in schema["parameters"]["properties"]
-        assert "engines" in schema["parameters"]["properties"]
-        assert schema["parameters"]["required"] == ["query"]
+        assert schema.name == "websearch"
+        assert "query" in schema.parameters["properties"]
+        assert "max_results" in schema.parameters["properties"]
+        assert "engines" in schema.parameters["properties"]
+        assert schema.parameters["required"] == ["query"]
 
     def test_to_openai(self, tool):
-        """Test OpenAI function format."""
+        """Test OpenAI function format matches the schema's own conversion."""
         openai_schema = tool.to_openai()
-        assert openai_schema == tool.schema
+        assert openai_schema == tool.schema.to_openai()
+        assert openai_schema["type"] == "function"
+        assert openai_schema["function"]["name"] == "websearch"
 
     def test_execute_empty_query(self, tool):
         """Test empty query returns error."""
@@ -250,8 +245,7 @@ class TestWebSearchTool:
 
     def test_schema_structure(self, tool):
         """Test schema has correct structure."""
-        schema = tool.schema
-        params = schema["parameters"]["properties"]
+        params = tool.schema.parameters["properties"]
 
         assert params["query"]["type"] == "string"
         assert params["max_results"]["type"] == "integer"
