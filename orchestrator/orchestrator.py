@@ -78,7 +78,12 @@ class SubagentHandle:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                # The task we cancelled raising CancelledError is expected and
+                # swallowed. But if *this* coroutine is itself being cancelled,
+                # that cancellation must propagate to our caller.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling() > 0:
+                    raise
 
     async def stream_events(self) -> AsyncGenerator[dict, None]:
         """Stream lifecycle events (tool_start, tool_end, token, etc.)."""
