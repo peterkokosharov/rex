@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5, nemotron-super
 # Licensed under MIT License
 
 """DuckDuckGo Search engine implementation."""
 
 from __future__ import annotations
 
-import html
 import re
 from typing import Any
 from .base import SearchEngine
@@ -49,138 +48,43 @@ class DuckDuckGoEngine(SearchEngine):
         return self._parse_ddg_results(html_content, max_results)
 
     def _parse_ddg_results(self, html_content: str, max_results: int) -> list:
-        """Parse DuckDuckGo HTML results."""
+        """Parse DuckDuckGo HTML into result dicts.
+
+        Same approach as Bing: split on the result-container marker, then read
+        each field from the small block with bounded patterns (no S8786/S6019).
+        The split marker includes the closing '>' so it matches only the
+        container div, not the 'result-title-a'/'result-snippet'/'result-url'
+        attributes that share the 'result' prefix.
+        """
         results = []
-
-        # DDG uses data-testid attributes for results
-        # Pattern: data-testid="result" containers
-        # Title: data-testid="result-title-a"
-        # Snippet: data-testid="result-snippet"
-        # URL: data-testid="result-url"
-
-        # Try to find result containers with data-testid="result"
-        result_containers = re.findall(
-            r'data-testid="result"[^>]*>(.*?)(?=data-testid="result"|$)',
-            html_content,
-            re.DOTALL | re.IGNORECASE
-        )
-
-        results = []
-
-        if result_containers:
-            for container in result_containers[:max_results]:
-                # Extract title and URL
-                title_match = re.search(
-                    r'data-testid="result-title-a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                    container, re.DOTALL | re.IGNORECASE
-                )
-                if not title_match:
-                    # Try alternative
-                    title_match = re.search(
-                        r'class="result__title"[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                        container, re.DOTALL | re.IGNORECASE
-                    )
-
-                if not title_match:
-                    continue
-
-                url = self.normalize_url(title_match.group(1))
-                title = html.unescape(title_match.group(2)).strip()
-
-                if not title or not url:
-                    continue
-
-                # Extract snippet
-                snippet = ""
-                snippet_match = re.search(
-                    r'data-testid="result-snippet"[^>]*>(.*?)</a>',
-                    container, re.DOTALL
-                )
-                if not snippet_match:
-                    snippet_match = re.search(
-                        r'class="result__snippet"[^>]*>(.*?)</a>',
-                        container, re.DOTALL
-                    )
-                if snippet_match:
-                    snippet = html.unescape(snippet_match.group(1)).strip()
-
-                # Extract URL
-                url_match = re.search(
-                    r'data-testid="result-url"[^>]*>(.*?)</span>',
-                    container, re.DOTALL
-                )
-                if not url_match:
-                    url_match = re.search(
-                        r'class="result__url"[^>]*>(.*?)</span>',
-                        container, re.DOTALL
-                    )
-                display_url = html.unescape(url_match.group(1)).strip() if url_match else ""
-
-                rank = len(results) + 1
-                score = 0.8 - (len(results)) * 0.02
-
-                results.append({
-                    "url": self.normalize_url(result_match.group(1)) if 'result_match' in locals() else url,
-                    "title": title,
-                    "snippet": snippet,
-                    "engine": "duckduckgo",
-                    "score": max(score, 0.1),
-                    "rank": len(results) + 1,
-                })
-
-                if len(results) >= max_results:
-                    break
-
-            return results
-
-        # Fallback: try to find result-title-a links
-        title_matches = re.findall(
-            r'data-testid="result-title-a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-            html_content, re.DOTALL | re.IGNORECASE
-        )
-
-        if not title_matches:
-            # Try alternative class-based pattern
-            title_matches = re.findall(
-                r'class="result__title"[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                html_content, re.DOTALL | re.IGNORECASE
+        blocks = html_content.split('data-testid="result">')[1:]
+        for block in blocks:
+            if len(results) >= max_results:
+                break
+            title_match = re.search(
+                r'data-testid="result-title-a"[^>]*href="([^"]*)"[^>]*>(.{0,400}?)</a>',
+                block, re.IGNORECASE | re.DOTALL,
             )
-
-        results = []
-        for i, (url, title) in enumerate(title_matches[:50]):
-            title = html.unescape(title).strip()
-            url = self.normalize_url(url)
-
-            if not title or not url:
+            if not title_match:
                 continue
-
-            rank = len(results) + 1
-            score = 0.8 - (len(results)) * 0.02
-
-            # Try to find snippet
+            url = self.normalize_url(title_match.group(1))
+            title = self.clean_text(title_match.group(2))
+            if not url or not title:
+                continue
             snippet = ""
             snippet_match = re.search(
-                r'data-testid="result-snippet"[^>]*>(.*?)</a>',
-                html_content, re.DOTALL
+                r'data-testid="result-snippet"[^>]*>(.{0,2000}?)</a>',
+                block, re.IGNORECASE | re.DOTALL,
             )
-            if not snippet_match:
-                snippet_match = re.search(
-                    r'class="result__snippet"[^>]*>(.*?)</a>',
-                    html_content, re.DOTALL
-                )
             if snippet_match:
-                snippet = html.unescape(snippet_match.group(1)).strip()
-
+                snippet = self.clean_text(snippet_match.group(1))
+            rank = len(results) + 1
             results.append({
-                "url": self.normalize_url(url),
+                "url": url,
                 "title": title,
                 "snippet": snippet,
                 "engine": "duckduckgo",
-                "score": max(0.8 - len(results) * 0.02, 0.1),
-                "rank": len(results) + 1,
+                "score": max(0.8 - (rank - 1) * 0.02, 0.1),
+                "rank": rank,
             })
-
-            if len(results) >= max_results:
-                break
-
         return results

@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5, nemotron-super
 # Licensed under MIT License
 
 """Bing Search engine implementation."""
 
 from __future__ import annotations
 
-import html
 import re
 from typing import Any
 from .base import SearchEngine
@@ -46,111 +45,42 @@ class BingEngine(SearchEngine):
         return self._parse_bing_results(html_content, max_results)
 
     def _parse_bing_results(self, html_content: str, max_results: int) -> list:
-        """Parse Bing Search HTML results."""
+        """Parse Bing HTML into result dicts.
+
+        We split on the result-container marker with a plain string op (no regex
+        on the whole untrusted page), then read each field from the small block
+        with bounded patterns, so there is no super-linear backtracking (S8786)
+        and no empty-match ambiguity (S6019).
+        """
         results = []
-
-        # Bing uses li.b_algo for result containers
-        # Title: h2 a
-        # Snippet: p or div.b_caption p
-        # URL: cite or a cite
-
-        # Pattern for result containers
-        result_containers = re.findall(
-            r'<li class="b_algo"[^>]*>(.*?)(?=<li class="b_algo"|</ol>|$)',
-            html_content,
-            re.DOTALL | re.IGNORECASE
-        )
-
-        results = []
-
-        if result_containers:
-            for container in result_containers[:max_results]:
-                # Extract title and URL
-                title_match = re.search(
-                    r'<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a></h2>',
-                    container, re.DOTALL | re.IGNORECASE
-                )
-                if not title_match:
-                    # Try alternative pattern
-                    title_match = re.search(
-                        r'<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                        container, re.DOTALL | re.IGNORECASE
-                    )
-
-                if not title_match:
-                    continue
-
-                url = self.normalize_url(title_match.group(1))
-                title = html.unescape(title_match.group(2)).strip()
-
-                if not title or not url:
-                    continue
-
-                # Extract snippet
-                snippet = ""
-                snippet_match = re.search(
-                    r'<div class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>',
-                    container, re.DOTALL
-                )
-                if not snippet_match:
-                    # Try alternative snippet pattern
-                    snippet_match = re.search(
-                        r'<p[^>]*>(.*?)</p>',
-                        container, re.DOTALL
-                    )
-                if snippet_match:
-                    snippet = html.unescape(snippet_match.group(1)).strip()
-
-                # Extract URL
-                url_match = re.search(
-                    r'<cite[^>]*>(.*?)</cite>',
-                    container, re.DOTALL | re.IGNORECASE
-                )
-                display_url = html.unescape(url_match.group(1)).strip() if url_match else ""
-
-                rank = len(results) + 1
-                score = 0.9 - (len(results)) * 0.02
-
-                results.append({
-                    "url": url,
-                    "title": title,
-                    "snippet": snippet,
-                    "engine": "bing",
-                    "score": max(score, 0.1),
-                    "rank": len(results) + 1,
-                })
-
-                if len(results) >= max_results:
-                    break
-
-        # Fallback: try to find any h2 links
-        if not results:
-            title_matches = re.findall(
-                r'<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                html_content, re.DOTALL | re.IGNORECASE
+        # First chunk is page preamble before the first result; drop it.
+        blocks = html_content.split('<li class="b_algo"')[1:]
+        for block in blocks:
+            if len(results) >= max_results:
+                break
+            title_match = re.search(
+                r'<h2[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>(.{0,400}?)</a>',
+                block, re.IGNORECASE | re.DOTALL,
             )
-
-            results = []
-            for i, (url, title) in enumerate(title_matches[:50]):
-                title = html.unescape(title).strip()
-                url = self.normalize_url(url)
-
-                if not title or not url:
-                    continue
-
-                rank = len(results) + 1
-                score = 0.9 - (len(results)) * 0.02
-
-                results.append({
-                    "url": self.normalize_url(url),
-                    "title": title,
-                    "snippet": "",
-                    "engine": "bing",
-                    "score": max(0.9 - len(results) * 0.02, 0.1),
-                    "rank": len(results) + 1,
-                })
-
-                if len(results) >= max_results:
-                    break
-
+            if not title_match:
+                continue
+            url = self.normalize_url(title_match.group(1))
+            title = self.clean_text(title_match.group(2))
+            if not url or not title:
+                continue
+            snippet = ""
+            snippet_match = re.search(
+                r'<p[^>]*>(.{0,2000}?)</p>', block, re.IGNORECASE | re.DOTALL,
+            )
+            if snippet_match:
+                snippet = self.clean_text(snippet_match.group(1))
+            rank = len(results) + 1
+            results.append({
+                "url": url,
+                "title": title,
+                "snippet": snippet,
+                "engine": "bing",
+                "score": max(0.9 - (rank - 1) * 0.02, 0.1),
+                "rank": rank,
+            })
         return results
