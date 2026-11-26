@@ -112,14 +112,14 @@ A separate `VERSION` file is not needed (the version lives in kikolib itself); t
 ## Sources
 
 - `rex/packaging/build-deb.sh`, `rex/packaging/build-win-zip.sh`, `rex/pyproject.toml`, `rex/README.md`,
-  `rex/RELEASE.md`, `rex/.github/workflows/build.yml`, `rex/runtimelib/kikolib/`, `rex/Dockerfile` - local repo
-  `C:/Users/a1bg546136/rex`, HEAD `a893e45`, read 2026-11-23.
+  `rex/RELEASE.md`, `rex/.github/workflows/build.yml`, `rex/runtimelib/kikolib/`, `rex/Dockerfile` -
+  local checkout `rex` (sibling checkouts), HEAD `a893e45`, read 2026-11-23.
 - `layka/packaging/build-deb.sh`, `layka/.github/workflows/build.yml`, `layka/src/core.h`, `layka/src/main.cpp` -
-  `C:/Users/a1bg546136/layka`, HEAD `0592b25`, read 2026-11-23.
+  local checkout `layka` (sibling checkouts), HEAD `0592b25`, read 2026-11-23.
 - `sisi/README.md`, `sisi/packaging/package-linux.sh`, `sisi/CMakeLists.txt`, `sisi/.github/workflows/build.yml` -
-  `C:/Users/a1bg546136/sisi`, HEAD `5bb879b`, read 2026-11-23.
+  local checkout `sisi` (sibling checkouts), HEAD `5bb879b`, read 2026-11-23.
 - `lassie/pyproject.toml`, `lassie/README.md`, `lassie/lassie/config.py`, `lassie/lassie/rexproc.py` -
-  `C:/Users/a1bg546136/lassie`, HEAD `1e2e617`, read 2026-11-23.
+  local checkout `lassie` (sibling checkouts), HEAD `1e2e617`, read 2026-11-23.
 - Old kiko monorepo snapshot (`packages/{kikolib,core,proxy}/debian/`, `pyproject.toml`, `.github/workflows/ci.yml`,
   built debs dated 2026-11-01) - `roni/projects/kiko/notes/import-2026-11-03/D-kiko` (and `H-kiko`), imported
   2026-11-03.
