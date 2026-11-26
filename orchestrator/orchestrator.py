@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra
+# LLM: Nemotron 3 Ultra, nemotron-super
 # Licensed under MIT License
 
 """Orchestrator — multi-agent orchestration layer for ai-rex.
@@ -185,12 +185,7 @@ class Orchestrator:
         # Verify git repo
         self._git_repo = self.project_root
         try:
-            subprocess.run(
-                ["git", "rev-parse", "--git-dir"],
-                cwd=self.project_root,
-                check=True,
-                capture_output=True,
-            )
+            await self._git("rev-parse", "--git-dir", cwd=self.project_root)
         except subprocess.CalledProcessError:
             raise RuntimeError(f"Not a git repository: {self.project_root}")
 
@@ -432,12 +427,7 @@ class Orchestrator:
 
         try:
             # Create worktree
-            subprocess.run(
-                ["git", "worktree", "add", "-b", branch, str(worktree_path), "main"],
-                cwd=self.project_root,
-                check=True,
-                capture_output=True,
-            )
+            await self._git("worktree", "add", "-b", branch, str(worktree_path), "main", cwd=self.project_root)
             self.worktrees[agent_id] = str(worktree_path)
             return str(worktree_path)
         except subprocess.CalledProcessError as e:
@@ -461,12 +451,7 @@ class Orchestrator:
             return False
 
         try:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", path],
-                cwd=self.project_root,
-                check=True,
-                capture_output=True,
-            )
+            await self._git("worktree", "remove", "--force", path, cwd=self.project_root)
             del self.worktrees[agent_id]
             return True
         except subprocess.CalledProcessError:
@@ -489,44 +474,27 @@ class Orchestrator:
 
         try:
             # Stage all changes
-            subprocess.run(
-                ["git", "add", "-A"],
-                cwd=worktree.path,
-                check=True,
-                capture_output=True,
-            )
+            await self._git("add", "-A", cwd=worktree.path)
 
             # Commit
-            commit_cmd = ["git", "commit", "-m", message]
+            commit_args = ["commit", "-m", message]
             if author:
-                commit_cmd.extend(["--author", author])
-            subprocess.run(
-                commit_cmd,
-                cwd=worktree.path,
-                check=True,
-                capture_output=True,
-            )
+                commit_args.extend(["--author", author])
+            await self._git(*commit_args, cwd=worktree.path)
 
             # Get commit hash
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=worktree.path,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            result = await self._git("rev-parse", "HEAD", cwd=worktree.path, text=True)
             commit_hash = result.stdout.strip()
 
             # Merge to main
-            subprocess.run(
-                ["git", "checkout", "main"],
+            await self._git("checkout", "main", cwd=self.project_root)
+            await self._git(
+                "merge",
+                "--no-ff",
+                f"{agent_id}-branch",
+                "-m",
+                f"Merge {agent_id}: {message}",
                 cwd=self.project_root,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "merge", "--no-ff", f"{agent_id}-branch", "-m", f"Merge {agent_id}: {message}"],
-                cwd=self.project_root,
-                check=True,
             )
 
             # Clean up worktree
@@ -554,6 +522,25 @@ class Orchestrator:
             capture_output=True,
             text=True,
         )
+
+    async def _git(
+        self,
+        *args: str,
+        cwd: str | Path,
+        text: bool = False,
+    ) -> subprocess.CompletedProcess:
+        """Run a git command off the event loop so parallel subagents are not
+        blocked. Raises subprocess.CalledProcessError on a non-zero exit;
+        callers that need the message catch it and read stderr."""
+        return await asyncio.to_thread(
+            subprocess.run,
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=text,
+        )
+
 
     # --- Hook System ---
 
