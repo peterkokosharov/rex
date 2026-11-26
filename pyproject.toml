@@ -20,7 +20,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 # kikolib: pinned, unmodified copy in vendor/kikolib, installed as the top-level package `kikolib`
 where = [".", "vendor"]
-include = ["runtime", "runtime.*", "runtimelib", "runtimelib.*", "kikolib*"]
+include = ["ai_runtime_rex", "ai_runtime_rex.*", "runtime", "runtime.*", "runtimelib", "runtimelib.*", "kikolib*"]
 
 [tool.setuptools.package-data]
 # Built-in skills ship as data inside the package so they load by default from an installed wheel.
