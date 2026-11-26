@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# LLM: nvidia nemotron ultra, claude-opus-5-5, nemotron-super
 # Licensed under MIT License
 
 """REX Runtime API — Main entry point for orchestrators (RONI, Archeo)."""
@@ -63,6 +63,7 @@ class SubagentHandle:
     agent_id: str
     context: AgentContext
     _result_future: asyncio.Future = field(default_factory=asyncio.Future)
+    _task: asyncio.Task | None = None
 
     async def wait(self) -> AgentResult:
         return await self._result_future
@@ -217,7 +218,7 @@ class REX:
             except Exception as e:
                 handle._result_future.set_exception(e)
 
-        asyncio.create_task(_run())
+        handle._task = asyncio.create_task(_run())
 
         # Emit SUBAGENT_SPAWN
         self.hook_engine.trigger(HookEvent.SUBAGENT_SPAWN,
