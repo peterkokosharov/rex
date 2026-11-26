@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
 
-from runtimelib import procutil
+from .. import procutil
 
 MAX_PAGES = 100  # safety bound for cursor paging
 

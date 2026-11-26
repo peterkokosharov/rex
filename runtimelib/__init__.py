@@ -1,182 +1,50 @@
 # SPDX-License-Identifier: MIT
-
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia-nemotron-super
 # Licensed under MIT License
+"""Back-compat shim: the engine moved to ai_runtime_rex.core.
 
-"""runtimelib - Core library for Runtime AI agent platform."""
-
+`runtimelib` and every `runtimelib.<sub>` resolve to the identical module object as
+`ai_runtime_rex.core` / `ai_runtime_rex.core.<sub>`, so old import paths and isinstance checks keep working.
+Remove this package once every caller imports ai_runtime_rex.core directly (plan step 10).
+"""
 from __future__ import annotations
 
-# kikolib is a pinned, unmodified copy in <repo>/vendor/kikolib (see vendor/kikolib/README.md). Make it
-# importable as the top-level package `kikolib`. Appended, so an installed system kikolib wins.
-import sys as _sys
-from pathlib import Path as _Path
+import importlib
+import importlib.abc
+import importlib.util
+import sys
 
-_VENDOR = str(_Path(__file__).resolve().parent.parent / "vendor")
-if _VENDOR not in _sys.path:
-    _sys.path.append(_VENDOR)
-
-def _check_kikolib() -> None:
-    import kikolib as _k
-    _v = str(getattr(_k, "__version__", "unknown"))
-    if _v.split(".")[:2] != ["0", "2"]:
-        raise ImportError(f"rex needs kikolib 0.2.x; found {_v} at {getattr(_k, '__file__', '?')}")
+_OLD = "runtimelib"
+_NEW = "ai_runtime_rex.core"
 
 
-_check_kikolib()
+class _AliasLoader(importlib.abc.Loader):
+    """Load `runtimelib.x` by returning the already-imported `ai_runtime_rex.core.x` object."""
 
-from kikolib import factory as _factory, http as _kikolib_http  # noqa: E402,F401
+    def __init__(self, target: str) -> None:
+        self._target = target
 
-# Pin the stdlib HTTP backend (never silently switch to WinHTTP on Windows).
-_factory.choose("http", override="stdlib")
+    def create_module(self, spec):
+        return importlib.import_module(self._target)
 
-# Version
+    def exec_module(self, module) -> None:
+        pass
+
+
+class _AliasFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name != _OLD and not name.startswith(_OLD + "."):
+            return None
+        new_name = _NEW + name[len(_OLD):]
+        return importlib.util.spec_from_loader(name, _AliasLoader(new_name))
+
+
+if not any(isinstance(f, _AliasFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _AliasFinder())
+
+# Keep the single source of the version textually here for the consistency test.
 __version__ = "0.3.0"
 
-# CLI
-from .cli import CommandRegistry, CommandHandler, ReadlineInterface, HistoryManager, ArgumentParser
-
-# Config
-from .config import Config, ConfigSchema, validate_config, DEFAULT_CONFIG_PATH, DEFAULT_ENV_PATH, get_config
-from .config.sources import FileSource, EnvSource, CLISource, EnvVarSource, merge_sources
-
-# LLM
-from .llm import LiteLLMClient, ChatMessage, ToolCall, ChatCompletionChunk, ChatCompletion
-from .llm.models import ModelRegistry, ModelInfo, ModelClass, get_registry
-
-# Guard
-from .guard import GuardClient, get_guard_client
-
-# REX
-from .rex import REX, AgentRole, AgentContext, AgentResult, SubagentHandle, Subscription
-
-# Tools
-from .tools import Tool, ToolSchema, ToolResult, ToolRegistry, ToolExecutor
-from .tools.fileops import FileOpsTool, create_fileops_tool
-from .tools.bash import BashTool, create_bash_tool
-from .tools.taskspawn import TaskSpawnTool, create_taskspawn_tool
-from .tools.websearch import WebSearchTool, create_websearch_tool
-from .tools.git import GitTool, create_git_tool
-
-# Agent
-from .agent import AgentLoop, AgentState, create_agent_loop
-from .agent.state import CheckpointManager
-from .agent.callbacks import StreamingCallbacks, TokenCallback, ToolCallback, ThinkingCallback
-
-# Session
-from .session import SessionManager, SessionEntry, create_session_manager
-
-# Hooks
-from .hooks import HookEngine, HookRegistry, Hook, HookEvent, HookContext, get_hook_engine
-
-# MCP
-from .mcp import MCPClient, MCPClientManager, MCPServerConfig, MCPTool, MCPResource, MCPPrompt, get_mcp_manager
-
-# Logging
-from .logging import setup_logging, get_logger, AuditLogger, set_trace_id, set_session_id, clear_context
-
-__all__ = [
-    # Version
-    "__version__",
-
-    # CLI
-    "CommandRegistry",
-    "CommandHandler",
-    "ReadlineInterface",
-    "HistoryManager",
-    "ArgumentParser",
-
-    # Config
-    "Config",
-    "ConfigSchema",
-    "validate_config",
-    "DEFAULT_CONFIG_PATH",
-    "DEFAULT_ENV_PATH",
-    "FileSource",
-    "EnvSource",
-    "CLISource",
-    "EnvVarSource",
-    "merge_sources",
-
-    # LLM
-    "LiteLLMClient",
-    "ChatMessage",
-    "ToolCall",
-    "ChatCompletionChunk",
-    "ChatCompletion",
-    "ModelRegistry",
-    "ModelInfo",
-    "ModelClass",
-    "get_registry",
-
-    # Guard
-    "GuardClient",
-    "get_guard_client",
-
-    # REX
-    "REX",
-    "AgentRole",
-    "AgentContext",
-    "AgentResult",
-    "SubagentHandle",
-    "Subscription",
-
-    # Tools
-    "Tool",
-    "ToolSchema",
-    "ToolResult",
-    "ToolRegistry",
-    "ToolExecutor",
-    "FileOpsTool",
-    "create_fileops_tool",
-    "BashTool",
-    "create_bash_tool",
-    "TaskSpawnTool",
-    "create_taskspawn_tool",
-    "WebSearchTool",
-    "create_websearch_tool",
-    "GitTool",
-    "create_git_tool",
-
-    # Agent
-    "AgentLoop",
-    "AgentState",
-    "create_agent_loop",
-    "CheckpointManager",
-    "StreamingCallbacks",
-    "TokenCallback",
-    "ToolCallback",
-    "ThinkingCallback",
-
-    # Session
-    "SessionManager",
-    "SessionEntry",
-    "create_session_manager",
-
-    # Hooks
-    "HookEngine",
-    "HookRegistry",
-    "Hook",
-    "HookEvent",
-    "HookContext",
-    "get_hook_engine",
-
-
-    # MCP
-    "MCPClient",
-    "MCPClientManager",
-    "MCPServerConfig",
-    "MCPTool",
-    "MCPResource",
-    "MCPPrompt",
-    "get_mcp_manager",
-
-    # Logging
-    "setup_logging",
-    "get_logger",
-    "AuditLogger",
-    "set_trace_id",
-    "set_session_id",
-    "clear_context",
-]
+# Bind this module to the real core package object right now.
+sys.modules[__name__] = importlib.import_module(_NEW)

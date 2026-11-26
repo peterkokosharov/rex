@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-opus-5-5
+# LLM: claude-opus-5-5, nvidia-nemotron-super
 # Licensed under MIT License
 
 """Tiny OpenAI-compatible gateway in front of the local Claude Code CLI.
@@ -62,8 +62,8 @@ from typing import Any
 
 
 def _load_procutil() -> Any:
-    """Load runtimelib/procutil.py by path (stdlib only; avoids importing the whole runtime package)."""
-    path = Path(__file__).resolve().parent.parent / "runtimelib" / "procutil.py"
+    """Load ai_runtime_rex/core/procutil.py by path (stdlib only; avoids importing the whole runtime package)."""
+    path = Path(__file__).resolve().parent.parent / "ai_runtime_rex" / "core" / "procutil.py"
     spec = importlib.util.spec_from_file_location("_gateway_procutil", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

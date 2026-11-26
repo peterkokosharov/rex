@@ -36,7 +36,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
-from runtimelib import procutil
+from .. import procutil
 
 DEFAULT_TIMEOUT = 10.0
 MAX_NOTE_CHARS = 2048

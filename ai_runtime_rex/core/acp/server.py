@@ -46,7 +46,7 @@ import uuid
 from pathlib import Path
 from typing import Any, IO, Optional
 
-from runtimelib import __version__
+from .. import __version__
 
 PROTOCOL_VERSION = 1
 AGENT_VERSION = __version__
@@ -56,7 +56,7 @@ CLOSE_TIMEOUT = 5.0
 # Directory that contains the ``runtime`` and ``runtimelib`` packages. Needed
 # when rex is launched straight from a source checkout: IntelliJ starts the
 # bridge with cwd set to the user's project, not to the rex checkout.
-REX_ROOT = Path(__file__).resolve().parents[2]
+REX_ROOT = Path(__file__).resolve().parents[3]
 
 TOOL_KINDS = {
     "bash": "execute",
