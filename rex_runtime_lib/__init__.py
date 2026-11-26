@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-opus-4-8
+# LLM: claude-opus-4-8, claude-sonnet-5-5
 # Licensed under MIT License
 """rex_runtime_lib: a thin, importable facade over the rex ``runtimelib`` agent.
 
@@ -20,8 +20,8 @@ OpenAI-compatible endpoint). Everything here is wiring over ``runtimelib``; no a
 
 from __future__ import annotations
 
-from .llm import GatewayLLM, llm_from_gateway
-from .session import AgentEvent, Session, serve_acp
+# Back-compat shim: the code moved to ai_runtime_rex.runtime.embed (kept until all importers use the new path).
+from ai_runtime_rex.runtime.embed import AgentEvent, GatewayLLM, Session, llm_from_gateway, serve_acp
 
 __all__ = ["Session", "AgentEvent", "GatewayLLM", "llm_from_gateway", "serve_acp"]
 __version__ = "0.1.0"
