@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
+# AI models: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Bash execution tool using guard client."""
@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from .base import Tool, ToolSchema
 from ..guard import get_guard_client
 from ..config import Config
-from ..procutil import safe_which
+from ..procutil import kill_tree, popen_group_kwargs, safe_which
 
 NO_BASH_WINDOWS = ("ai-rex needs Git Bash on Windows: install Git for Windows from "
                    "https://git-scm.com/download/win")
@@ -142,19 +142,105 @@ class BashTool(Tool):
                 # quotes). Pass the text in the environment; the argv is then constant.
                 env["REX_COMMAND"] = command
                 argv = [shell, "-c", 'eval "$REX_COMMAND"']
-            proc = subprocess.run(
-                argv, shell=False, cwd=cwd, env=env,
-                capture_output=True, text=True, errors="replace", timeout=timeout,
-            )
-            return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
-        except subprocess.TimeoutExpired as e:
-            return {
-                "exit_code": 124,
-                "stdout": to_text(e.stdout),
-                "stderr": to_text(e.stderr) + f"\nTimeout after {timeout}s",
-            }
+            code, out, err, timed_out = run_tree(argv, cwd=cwd, env=env, timeout=timeout)
+            if timed_out:
+                return {"exit_code": 124, "stdout": out, "stderr": err + f"\nTimeout after {timeout}s"}
+            return {"exit_code": code, "stdout": out, "stderr": err}
         except Exception as e:
             return {"exit_code": 1, "stdout": "", "stderr": str(e)}
+
+
+def run_tree(argv: list[str], cwd: Any, env: dict[str, str], timeout: float) -> tuple[int, str, str, bool]:
+    """Run ``argv`` in its own process group; on timeout kill the whole tree (``sleep 9 &`` included).
+
+    Returns ``(exit_code, stdout, stderr, timed_out)``. Background children that keep the pipes open
+    would otherwise make the call wait for them long after the timeout, and stay behind as orphans.
+    """
+    import subprocess
+    kw = popen_group_kwargs()
+    job = _WinJob.create() if os.name == "nt" else None
+    if job is not None:
+        kw["creationflags"] = kw.get("creationflags", 0) | _CREATE_SUSPENDED
+    proc = subprocess.Popen(argv, shell=False, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", **kw)
+    if job is not None:
+        job.adopt(proc)  # assigns, then resumes: every child the command starts is in the job
+
+    def kill() -> None:
+        if job is not None:
+            job.terminate()
+        kill_tree(proc)
+
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out or "", err or "", False
+    except subprocess.TimeoutExpired:
+        kill()
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired as e:  # a child outside the tree still holds a pipe: give up on it
+            out, err = to_text(e.stdout), to_text(e.stderr)
+        return 124, to_text(out), to_text(err), True
+    except BaseException:
+        kill()
+        raise
+    finally:
+        if job is not None:
+            job.close()
+
+
+_CREATE_SUSPENDED = 0x00000004
+
+
+class _WinJob:
+    """A Windows job object holding one command and all its children (Git Bash detaches background
+    processes from the parent/child tree, so ``taskkill /T`` alone misses ``sleep 9 &``).
+
+    The process starts suspended, joins the job, then resumes: nothing escapes before it is in the job.
+    Closing the handle does not kill anything (no KILL_ON_JOB_CLOSE): a server the command deliberately
+    left running stays, only a timeout ends the job. Any failure falls back to ``kill_tree`` alone.
+    """
+
+    def __init__(self, k32: Any, ntdll: Any, handle: int) -> None:
+        self._k32, self._ntdll, self._handle = k32, ntdll, handle
+
+    @classmethod
+    def create(cls) -> "_WinJob | None":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            ntdll = ctypes.WinDLL("ntdll")
+            k32.CreateJobObjectW.restype = wintypes.HANDLE
+            k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+            k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            k32.AssignProcessToJobObject.restype = wintypes.BOOL
+            k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            k32.TerminateJobObject.restype = wintypes.BOOL
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+            ntdll.NtResumeProcess.restype = ctypes.c_long
+            handle = k32.CreateJobObjectW(None, None)
+        except (OSError, AttributeError, ImportError):
+            return None
+        return cls(k32, ntdll, handle) if handle else None
+
+    def adopt(self, proc: Any) -> None:
+        ph = int(proc._handle)  # noqa: SLF001 - the Popen process handle (Windows)
+        if not self._k32.AssignProcessToJobObject(self._handle, ph):
+            self.close()
+        if self._ntdll.NtResumeProcess(ph) != 0:  # must run even when it could not join the job
+            kill_tree(proc)
+            raise OSError("could not start the command (resume failed)")
+
+    def terminate(self) -> None:
+        if self._handle:
+            self._k32.TerminateJobObject(self._handle, 124)
+
+    def close(self) -> None:
+        if self._handle:
+            self._k32.CloseHandle(self._handle)
+            self._handle = 0
 
 
 # Variables that look like credentials are never passed to agent commands.

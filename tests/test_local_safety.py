@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-opus-5-5, claude-sonnet-5-5
+# AI models: claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
 """Safety tests for running rex without Docker (local tools) and for
@@ -175,9 +175,10 @@ def test_bash_local_runs_with_scrubbed_env(monkeypatch):
 
     def fake_run(cmd, **kw):
         seen.update(kw["env"])
-        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+        return 0, "ok", "", False
 
-    with mock.patch("subprocess.run", fake_run):
+    from runtimelib.tools import bash as bash_mod
+    with mock.patch.object(bash_mod, "run_tree", fake_run):
         out = BashTool(LOCAL).execute(command="echo hi", description="t")
     assert out["exit_code"] == 0
     assert "REX_TEST_API_KEY" not in seen
@@ -189,12 +190,12 @@ def test_bash_local_uses_bash_not_a_shell(monkeypatch):
     from runtimelib.tools import bash as bash_mod
     seen = {}
 
-    def fake_run(cmd, **kw):
+    def fake_popen(cmd, **kw):
         seen["cmd"], seen["shell"] = cmd, kw.get("shell")
-        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+        raise OSError("not started in this test")
 
     monkeypatch.setattr(bash_mod, "find_bash", lambda: "C:/Git/bin/bash.exe")
-    with mock.patch("subprocess.run", fake_run):
+    with mock.patch("subprocess.Popen", fake_popen):
         BashTool(LOCAL).execute(command="echo 'a & b'", description="t")
     if os.name == "nt":  # the text travels in the environment, argv is constant
         assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", 'eval "$REX_COMMAND"']
@@ -239,8 +240,30 @@ def _raise_timeout_bytes(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=b"partial \xc3\xa9", stderr=b"err\xff")
 
 
-def test_bash_timeout_decodes_bytes():
-    with mock.patch("subprocess.run", _raise_timeout_bytes):
+class _SlowProc:
+    """Popen stand-in: times out, then hands back partial output as bytes (as on POSIX)."""
+    pid = 0
+    returncode = None
+    _handle = 0
+
+    def __init__(self, cmd, **kw):
+        self.cmd, self.calls = cmd, 0
+
+    def communicate(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+        raise subprocess.TimeoutExpired(self.cmd, timeout, output=b"partial \xc3\xa9", stderr=b"err\xff")
+
+    def kill(self):
+        pass
+
+
+def test_bash_timeout_decodes_bytes(monkeypatch):
+    from runtimelib.tools import bash as bash_mod
+    monkeypatch.setattr(bash_mod, "kill_tree", lambda proc: None)
+    monkeypatch.setattr(bash_mod._WinJob, "create", classmethod(lambda cls: None))
+    with mock.patch("subprocess.Popen", _SlowProc):
         out = BashTool(LOCAL).execute(command="sleep 9", description="t", timeout=1)
     assert out["exit_code"] == 124
     assert out["stdout"] == "partial \u00e9"
@@ -333,8 +356,8 @@ def test_git_and_bash_cwd_confined(workspace, bad):
 
 
 def test_bash_cwd_inside_workspace(workspace):
-    with mock.patch("subprocess.run") as run:
-        run.return_value = subprocess.CompletedProcess([], 0, "", "")
+    from runtimelib.tools import bash as bash_mod
+    with mock.patch.object(bash_mod, "run_tree", return_value=(0, "", "", False)) as run:
         BashTool(LOCAL).execute(command="echo hi", description="t", cwd="src")
     assert Path(run.call_args[1]["cwd"]) == (workspace / "src").resolve()
 
