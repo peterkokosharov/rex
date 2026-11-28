@@ -24,8 +24,12 @@ In the plain REPL and one-shot runs (no `--config`, `--env-file`, `--jsonl`, `--
 - **Written:** the REPL history (`~/.config/ai-rex/history`), the conversation log
   (`~/.config/ai-rex/history.jsonl`, or `AI_REX_SESSION__HISTORY_FILE`), `--session` / `--continue` files, and
   whatever the model writes in the workspace through its tools (after you allow it). Nothing else.
-- **"Allow always" answers** last for the running session only. Set `AI_REX_PERMISSIONS_FILE=<path>` to keep them in
-  that one file across runs (it is read at start and updated on every "always").
+- **"Allow always" answers for files and folders** inside the workspace go to the persistent **allow buffer** (see
+  "Allow buffer (long runs without Docker)"): `<install folder>/state/allow-buffer/` for a portable install,
+  `AI_REX_STATE_DIR/allow-buffer/` when that variable is set, else `<workspace>/.ai-rex/allow-buffer/` (a repo
+  checkout). Other "always" answers (commands, web domains, git) last for the running session only; set
+  `AI_REX_PERMISSIONS_FILE=<path>` to keep them in that one file across runs (it is read at start and updated on
+  every "always").
 - **Read, never written:** the user-level `~/.config/ai-rex/AGENTS.md` and instruction layers in
   `~/.config/ai-rex/agents/` (see "How the agent is instructed"), the install folder, and the workspace.
 
@@ -84,6 +88,47 @@ timeout kills the command's whole process tree (on Windows a job object, so back
 Ctrl+C in the REPL ends a running command at once (exit 130, `[interrupted]`). An unknown `AI_REX_SHELL` /
 `tools.shell` value means `auto`; a named shell that is not installed fails the call with a clear message.
 
+## Allow buffer (long runs without Docker)
+
+Without Docker every write (and, with `AI_REX_PERMISSIONS__DEFAULTS__READ=ask`, every read) asks first. The allow
+buffer remembers your "always" answers for paths, so after a while almost everything the agent needs is approved
+and it runs on its own for days or weeks, without a container.
+
+- **What is stored:** paths (files or folders) per kind of access: `read`, `write`, and `exec` (the working folder
+  of a shell command). A folder entry covers everything below it. The permission prompt says what "always" will
+  remember (`('always' is remembered in the allow buffer: write src/app.py)`) and offers `[f] always for src/` to
+  approve the whole folder at once.
+- **Commands are not paths:** an `exec` entry only records where commands were approved; it never runs a command
+  without asking. Commands keep the normal rules and their own "always" command rules (session only, or
+  `AI_REX_PERMISSIONS_FILE`).
+- **Only inside the workspace:** paths are made absolute, symlinks (and junctions) resolved, compared case-
+  insensitively on Windows. Anything outside the workspace (`..`, a symlink leading out, another drive, a UNC path)
+  is never stored and never allowed by the buffer: it asks every time. Entries in the file that point outside the
+  workspace are ignored.
+- **Precedence:** deny rules always win, then ask rules, then allow rules, then the buffer, then the mode default.
+  The buffer only turns an "ask" into "allow"; it never overrides a deny. Writes into the buffer folder itself (when
+  it is inside the workspace) are always denied.
+- **Size:** counted in paths, not bytes: `--allow-buffer N` > `AI_REX_ALLOW_BUFFER` > config
+  `permissions.allow_buffer_size` > `1024`. Allowed `0..1000000`; `0` turns the buffer off ("always" then lasts for
+  the session, as before). When it is full the least recently **used** entry is dropped; every allow decided by the
+  buffer refreshes its entry.
+- **Storage:** one small JSON file per workspace (named by a hash of the workspace path), version 1, written
+  atomically (temporary file + rename) and merged with what another ai-rex process in the same workspace wrote.
+  Where: `AI_REX_STATE_DIR/allow-buffer/` if set; else `<install folder>/state/allow-buffer/` (portable install,
+  one-folder rule: deleting the install folder removes it; reinstalling keeps it); else, from a repo checkout,
+  `<workspace>/.ai-rex/allow-buffer/` (with a `.gitignore` so it is never committed). A corrupt file is copied to
+  `<file>.bak`, a warning is printed and the buffer starts empty. "Last used" times are written at most once a
+  minute and at exit.
+- **REPL commands:** `/allow list` (kind, last used, path), `/allow remove <path>` (all kinds; `/allow remove write
+  <path>` for one), `/allow clear`, `/allow size [N]` (show, or change for this session; a smaller size drops the
+  least recently used entries). `ai-rex --allow-buffer-list` prints the list and exits.
+- **Speed:** a lookup walks the path's parent folders (dict lookups, O(depth)). Measured on Windows 11, Python 3.14:
+  1,000,000 entries load in about 2 s (about 430 MB RAM), a lookup takes about 0.2 ms (mostly resolving the path on
+  disk), adding an entry to a full 1,000,000 buffer rewrites the 120 MB file in about 3 s. At the default 1024
+  entries all of this is instant.
+
+The buffer is not a sandbox: an approved command can still write anywhere. For untrusted code use the Docker guard.
+
 ## Modes
 
 | Situation | Mode |
@@ -121,6 +166,8 @@ always beats the environment, so `--port 4001` wins over `AI_REX_BASE_URL`.
 | `--no-mcp` | ignore every MCP server, also those from the environment or `--config` | | |
 | `--mcp-allow PATTERN` | run these MCP tools without asking (repeatable) | | ask |
 | `--mcp-trust-readonly` | run MCP tools the server marks `readOnlyHint` without asking (sets `mcp.trust_readonly`) | `AI_REX_MCP__TRUST_READONLY=true`, config `mcp.trust_readonly` (`true`/`1`/`yes`/`on`) | ask |
+| `--allow-buffer N` | size of the allow buffer in paths (entries), `0` = off, max `1000000`; see "Allow buffer" | `AI_REX_ALLOW_BUFFER`, config `permissions.allow_buffer_size` | `1024` (REPL / one-shot); off for `--config` / bridges unless set |
+| `--allow-buffer-list` | print the allow buffer of the workspace (kind, last used, path) and exit | | |
 | `--non-interactive` | never ask; a call that needs permission is denied | | asks if a terminal is attached |
 | `--session ID` | one-shot: keep the conversation in session `ID` (created if new; letters, digits, `-`, `_`) | | |
 | `--continue` | one-shot: continue the latest session started in this folder (new one if none) | | |
@@ -158,6 +205,9 @@ printed), `130` interrupted.
 | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | older names, still honoured as fallbacks |
 | `AI_REX_PROFILE` | instruction layers when `--profile` is not given |
 | `AI_REX_MAX_TOKENS` | output token limit of the native Anthropic adapter when `--max-tokens` is not given |
+| `AI_REX_ALLOW_BUFFER` | allow buffer size in paths when `--allow-buffer` is not given (0 = off) |
+| `AI_REX_STATE_DIR` | folder for the allow buffer files (wins over the install folder and the workspace fallback) |
+| `AI_REX_PERMISSIONS__DEFAULTS__READ=ask` | reads ask too (default: reads are allowed); the allow buffer then remembers read approvals |
 | `AI_REX_PERMISSIONS_FILE` | file that keeps "allow always" answers across runs (default: this session only) |
 | `AI_REX_<SECTION>__<KEY>` | any engine setting, e.g. `AI_REX_AGENT__MAX_STEPS=30`, `AI_REX_SESSION__DIR=D:\sessions` |
 

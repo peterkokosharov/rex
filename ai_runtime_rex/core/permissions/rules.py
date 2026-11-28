@@ -16,7 +16,7 @@ fnmatch-style glob. The spec depends on the tool:
 * webfetch   - ``domain:host`` (suffix match) or a URL glob
 * MCP tools  - no spec (``mcp__github__delete_*``)
 
-Precedence: deny > ask > allow > mode default. ALLOW is a whitelist (local
+Precedence: deny > ask > allow > allow buffer (paths, see allow_buffer.py) > mode default. ALLOW is a whitelist (local
 and sandbox mode; in guard mode the container is the boundary and commands run unless a
 deny/ask rule matches): a bash
 command is auto-allowed by an allow rule only if it is a single simple command
@@ -939,7 +939,9 @@ def _subjects(tool: str, args: dict[str, Any], workspace: str) -> list[str]:
     if tool == "bash":
         return split_bash(str(args.get("command", "")))[0]
     if tool == "fileops":
-        return [f"{_fileops_op(args)}:{normalize_path(str(args.get('path') or '.'), workspace)}"]
+        # glob searches below ``root``; every other op works on ``path`` (same target as the allow buffer).
+        raw = args.get("root") if _fileops_op(args) == "glob" and args.get("root") else args.get("path")
+        return [f"{_fileops_op(args)}:{normalize_path(str(raw or '.'), workspace)}"]
     if tool == "edit":
         return [normalize_path(str(args.get("path") or ""), workspace)]
     if tool == "git":
@@ -1032,15 +1034,16 @@ def parse_rule(text: str, decision: PermissionResult | str) -> Rule:
 def mode_default(mode: str, kind: str, defaults: dict[str, Any] | None = None) -> PermissionResult:
     """Default decision of ``mode`` for a tool ``kind`` when no rule matched.
 
-    Read-only tools are allowed everywhere. Network and MCP ask everywhere.
+    Read-only tools are allowed everywhere (unless ``defaults.read`` is ``ask``). Network and MCP ask everywhere.
     Writes/exec: guard -> ``defaults.guard`` (default allow), sandbox ->
     ``defaults.sandbox`` (default ask), local (and unknown modes) -> ask, fixed.
     """
+    defaults = defaults or {}
     if kind == KIND_READ:
-        return ALLOW
+        # ``permissions.defaults.read: ask`` (env AI_REX_PERMISSIONS__DEFAULTS__READ=ask) makes reads ask too.
+        return ASK if str(defaults.get("read", "allow")).lower() == "ask" else ALLOW
     if kind in (KIND_NETWORK, KIND_MCP):
         return ASK
-    defaults = defaults or {}
     if mode == MODE_GUARD:
         return _DECISIONS.get(str(defaults.get("guard", "allow")).lower(), ALLOW)
     if mode == MODE_SANDBOX:
@@ -1062,6 +1065,25 @@ class RuleVerdict:
     source: str
     rule: str | None = None
     reason: str = ""
+
+
+def buffer_target(tool: str, args: dict[str, Any]) -> str | None:
+    """The path an allow-buffer entry is about for this call, or None (not a path call).
+
+    fileops: ``path`` (``root`` for glob, ``.`` when missing); edit: ``path``; bash: the working
+    directory ``cwd`` (``.`` when missing).
+    """
+    if tool == "fileops":
+        op = _fileops_op(args)
+        raw = args.get("root") if op == "glob" else args.get("path")
+        return str(raw) if isinstance(raw, str) and raw.strip() else "."
+    if tool == "edit":
+        raw = args.get("path")
+        return str(raw) if isinstance(raw, str) and raw.strip() else None
+    if tool == "bash":
+        raw = args.get("cwd")
+        return str(raw) if isinstance(raw, str) and raw.strip() else "."
+    return None
 
 
 # ------------------------------------------------------------------- store
@@ -1156,6 +1178,8 @@ class PermissionRules:
         self.ask: list[Rule] = self._parse_list(config.get("ask"), ASK)
         self.deny: list[Rule] = self._parse_list(config.get("deny"), DENY)
         self._persist = persist
+        # Persistent allow buffer (see allow_buffer.py); attached by the gate when configured.
+        self.buffer: Any = None
         self._store = store_path(self.workspace, store_dir)
         self._stored: list[str] = load_store(self._store) if persist else []
         for text in self._stored:
@@ -1190,7 +1214,7 @@ class PermissionRules:
 
     # -- evaluation
     def evaluate(self, tool: str, args: dict[str, Any] | None, mode: str = MODE_LOCAL) -> RuleVerdict:
-        """Decide one tool call. Precedence: deny > ask > allow > mode default."""
+        """Decide one tool call. Precedence: deny > ask > allow > allow buffer > mode default."""
         args = args or {}
         kind = classify(tool, args)
         if tool == "bash":
@@ -1229,6 +1253,12 @@ class PermissionRules:
             child = _ANY_CHILD if root == "." else root.rstrip("/") + "/" + _ANY_CHILD
             strict_subjects = subjects + [f"read:{root}", f"read:{child}"]
 
+        buffer_path = buffer_target(tool, args)
+        if (self.buffer is not None and buffer_path is not None and kind == KIND_WRITE
+                and self.buffer.protects(buffer_path)):
+            return RuleVerdict(DENY, kind, "deny", None,
+                               "Permission denied (the allow buffer folder is protected)")
+
         # Deny and ask see the normalised parts too (wrappers stripped, nested
         # commands); allow only ever sees the parts as written.
         for rule in self.deny:
@@ -1249,6 +1279,13 @@ class PermissionRules:
             return RuleVerdict(ALLOW, kind, "allow", allowed_by.text)
 
         decision = mode_default(mode, kind, self.defaults)
+        if (decision == ASK and self.buffer is not None and buffer_path is not None
+                and kind in (KIND_READ, KIND_WRITE)):
+            # After deny, ask and allow rules, before the mode default: a path the user answered
+            # "allow always" for (or a folder above it), inside the workspace only.
+            hit = self.buffer.covers(kind, buffer_path)
+            if hit is not None:
+                return RuleVerdict(ALLOW, kind, "buffer", None, f"allow buffer: {kind} {hit}")
         if (tool == "bash" and decision == ALLOW and mode == MODE_GUARD
                 and any(r.tool_matches(tool) for r in self.deny + self.ask)
                 and (too_deep or dynamic_command_word(str(args.get("command", "")), strict_subjects))):

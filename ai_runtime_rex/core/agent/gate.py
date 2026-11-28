@@ -18,14 +18,19 @@ A hook "allow" turns an ask into an allow but never overrides a deny rule.
 askers see the arguments.
 
 Asking is pluggable: any object with ``ask(PermissionRequest) -> str`` works.
-The answer is ``allow_once``, ``allow_always`` or ``deny`` (anything else is
-a deny). The default :class:`DenyAsker` denies, which is the right behaviour
+The answer is ``allow_once``, ``allow_always``, ``allow_always_folder`` or
+``deny`` (anything else is a deny). With an allow buffer attached to the rules
+(``permissions.allow_buffer_size`` > 0), "always" for a fileops / edit path
+inside the workspace is remembered in the buffer (``allow_always_folder``: its
+folder); other calls keep the exact allow-always rules. The default :class:`DenyAsker` denies, which is the right behaviour
 for one-shot runs without a UI.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol
@@ -39,10 +44,12 @@ from ..permissions.rules import (
     PermissionRules,
     _host,
 )
+from ..permissions.rules import buffer_target
 from ..tools.base import Tool, default_describe
 
 ALLOW_ONCE = "allow_once"
 ALLOW_ALWAYS = "allow_always"
+ALLOW_ALWAYS_FOLDER = "allow_always_folder"
 DENY = "deny"
 INTERNAL_ARGS = ("_role", "_agent_id")
 MAX_DETAIL_CHARS = 20000
@@ -60,6 +67,10 @@ class PermissionRequest:
     args: dict[str, Any] = field(default_factory=dict)
     rule: Optional[str] = None
     reason: str = ""
+    # Allow buffer: what "always" remembers ("read src/app.py"), and the folder offered for
+    # "always for the folder" ("" = no folder choice).
+    remember: str = ""
+    remember_folder: str = ""
 
 
 class Asker(Protocol):
@@ -93,6 +104,28 @@ def resolve_mode(config: Any) -> str:
         return MODE_LOCAL
     configured = str(config.get("permissions.mode", "") if config is not None else "").lower()
     return MODE_SANDBOX if configured == MODE_SANDBOX else MODE_GUARD
+
+
+def attach_allow_buffer(rules: PermissionRules, config: Any, workspace: str) -> None:
+    """Attach the workspace's allow buffer when ``permissions.allow_buffer_size`` is set (> 0).
+
+    The plain REPL / one-shot set it (default 1024, ``--allow-buffer`` / ``AI_REX_ALLOW_BUFFER``); a config file
+    may set it too. A bad value or an unusable state folder leaves the buffer off (noted in ``rules.errors``).
+    """
+    raw = config.get("permissions.allow_buffer_size") if config is not None else None
+    if raw is None:
+        return
+    from ..permissions.allow_buffer import get_buffer, parse_size
+    try:
+        size = parse_size(raw)
+        rules.buffer = get_buffer(workspace, size)
+    except (ValueError, OSError) as exc:
+        rules.errors.append(f"allow buffer off: {exc}")
+        print(f"ai-rex: allow buffer off: {exc}", file=sys.stderr)
+        return
+    for warning in rules.buffer.warnings:  # a corrupt file: said once, on stderr (never on a protocol stdout)
+        print(f"ai-rex: {warning}", file=sys.stderr)
+    rules.buffer.warnings.clear()
 
 
 class PermissionGate:
@@ -146,6 +179,7 @@ class PermissionGate:
         mode = resolve_mode(config)
         perms = config.get("permissions", {}) if config is not None else {}
         rules = PermissionRules(perms if isinstance(perms, dict) else {}, workspace, persist=persist)
+        attach_allow_buffer(rules, config, workspace)
         hooks_cfg = config.get("hooks", {}) if config is not None else {}
         hooks = CommandHookRunner.from_config(
             hooks_cfg if isinstance(hooks_cfg, dict) else {}, cwd=workspace, session=session, mode=mode
@@ -183,6 +217,7 @@ class PermissionGate:
     def _ask(self, name: str, clean: dict[str, Any], verdict: Any, tool: Optional[Tool],
              hook_decision: Optional[str]) -> GateDecision:
         summary, detail = self._describe(name, clean, tool)
+        remember, folder = self._buffer_offer(name, clean, verdict.kind)
         self._counter += 1
         request = PermissionRequest(
             id=f"{self.id_prefix}:perm-{self._counter}" if self.id_prefix else f"perm-{self._counter}",
@@ -193,17 +228,50 @@ class PermissionGate:
             args=clean,
             rule=verdict.rule,
             reason=verdict.reason if verdict.source != "default" else "",
+            remember=remember,
+            remember_folder=folder,
         )
         try:
             answer = self.asker.ask(request)
         except Exception as exc:  # a broken asker must never allow a call
             return GateDecision(False, f"Permission denied (asker failed: {exc})", "user")
-        if answer == ALLOW_ALWAYS:
-            self.rules.add_allow_always(name, clean)
+        if answer in (ALLOW_ALWAYS, ALLOW_ALWAYS_FOLDER):
+            self._remember(name, clean, verdict.kind, folder if answer == ALLOW_ALWAYS_FOLDER else "")
             return GateDecision(True, "", "user")
         if answer == ALLOW_ONCE:
             return GateDecision(True, "", "user")
         return GateDecision(False, "Permission denied by user", "user")
+
+    def _buffer(self) -> Any:
+        buf = getattr(self.rules, "buffer", None)
+        return buf if buf is not None and getattr(buf, "enabled", False) else None
+
+    def _buffer_offer(self, name: str, clean: dict[str, Any], kind: str) -> tuple[str, str]:
+        """(what "always" stores in the buffer, folder offered) for the prompt; ("", "") when not buffered."""
+        buf = self._buffer()
+        target = buffer_target(name, clean)
+        if buf is None or target is None or name == "bash" or kind not in ("read", "write"):
+            return "", ""
+        resolved = buf.resolve(target)
+        if resolved is None:
+            return "", ""
+        rel = buf.relative(resolved[0])
+        parent = os.path.dirname(resolved[0])
+        folder = buf.relative(parent) if parent != resolved[0] and buf.inside(parent) and rel != "." else ""
+        if folder and os.path.isdir(resolved[0]):
+            folder = ""  # the path is a folder already: "always" covers everything below it
+        return f"{kind} {rel}", folder
+
+    def _remember(self, name: str, clean: dict[str, Any], kind: str, folder: str) -> None:
+        """Store an "always" answer: in the allow buffer for paths inside the workspace, else as exact rules."""
+        buf = self._buffer()
+        target = buffer_target(name, clean)
+        if buf is not None and target is not None and name != "bash" and kind in ("read", "write"):
+            if buf.add(kind, folder or target) is not None:
+                return
+        self.rules.add_allow_always(name, clean)
+        if buf is not None and name == "bash" and target is not None:
+            buf.add("exec", target)  # record where commands were approved (never allows a command)
 
     @staticmethod
     def _describe(name: str, clean: dict[str, Any], tool: Optional[Tool]) -> tuple[str, str]:

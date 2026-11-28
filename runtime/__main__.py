@@ -90,6 +90,11 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shell", choices=("auto", "bash", "powershell", "cmd"), default=None,
                         help="Shell for the bash tool and ! commands (default auto: Git Bash on Windows, else "
                              "PowerShell, else cmd; bash elsewhere; env AI_REX_SHELL, config tools.shell)")
+    parser.add_argument("--allow-buffer", default=None, metavar="N",
+                        help="Size of the allow buffer in paths (0 = off, max 1000000; env AI_REX_ALLOW_BUFFER, "
+                             "config permissions.allow_buffer_size, default 1024)")
+    parser.add_argument("--allow-buffer-list", action="store_true",
+                        help="Print the allow buffer of the workspace (paths, kind, last used) and exit")
     parser.add_argument("--unsafe-local-tools", "--local-tools", action="store_true", dest="unsafe_local_tools", help="DEV ONLY: run tools locally without Docker guard")
     parser.add_argument("prompt", nargs="*", help="Prompt to send to the agent (if omitted, starts interactive mode)")
     return parser
@@ -156,6 +161,13 @@ def main() -> int:
         config.set("liteLLM.max_tokens", args.max_tokens)  # the native adapters' output limit, also in the REPL
     if env_only:
         apply_permission_store(config)
+    try:
+        apply_allow_buffer(config, args.allow_buffer, env_only=env_only)
+    except ValueError as exc:
+        print(f"ai-rex: {exc}", file=sys.stderr)
+        return 2
+    if args.allow_buffer_list:
+        return print_allow_buffer(config)
     config.set("cli.json", bool(args.json))
     config.set("cli.no_stream", bool(args.no_stream))
     config.set("cli.verbose", bool(args.verbose))
@@ -271,6 +283,65 @@ def apply_permission_store(config: Config, environ: Any = None) -> None:
         config.set("permissions.persist", False)
 
 
+def apply_allow_buffer(config: Config, flag: Any = None, env_only: bool = True, environ: Any = None) -> None:
+    """Set ``permissions.allow_buffer_size``: flag > ``AI_REX_ALLOW_BUFFER`` > config > 1024 (env-only mode).
+
+    Outside env-only mode (``--config``, bridges) the buffer is on only when the flag, the variable or the config
+    file sets it. Raises ValueError for a value outside 0..1000000.
+    """
+    from ai_runtime_rex.core.permissions.allow_buffer import DEFAULT_SIZE, ENV_SIZE, parse_size
+    env = os.environ if environ is None else environ
+    if flag is not None:
+        config.set("permissions.allow_buffer_size", parse_size(flag))
+    elif env.get(ENV_SIZE):
+        try:
+            config.set("permissions.allow_buffer_size", parse_size(env[ENV_SIZE]))
+        except ValueError as exc:
+            raise ValueError(f"{ENV_SIZE}: {exc}") from None
+    elif config.get("permissions.allow_buffer_size") is not None:
+        config.set("permissions.allow_buffer_size", parse_size(config.get("permissions.allow_buffer_size")))
+    elif env_only:
+        config.set("permissions.allow_buffer_size", DEFAULT_SIZE)
+
+
+def current_allow_buffer(config: Config) -> Any:
+    """The allow buffer of the running REPL loop, else the workspace's buffer from the config (or None)."""
+    loop = _REPL_LOOP
+    rules = getattr(getattr(loop, "gate", None), "rules", None)
+    if getattr(rules, "buffer", None) is not None:
+        return rules.buffer
+    raw = config.get("permissions.allow_buffer_size")
+    if raw is None:
+        return None
+    from ai_runtime_rex.core.permissions.allow_buffer import get_buffer, parse_size
+    return get_buffer(str(Path.cwd()), parse_size(raw))
+
+
+def print_allow_buffer(config: Config) -> int:
+    """``--allow-buffer-list``: print the workspace's allow buffer and exit."""
+    from ai_runtime_rex.core.permissions.allow_buffer import format_entries
+    buf = current_allow_buffer(config)
+    if buf is None:
+        print("allow buffer: not configured (set --allow-buffer N or AI_REX_ALLOW_BUFFER)")
+        return 0
+    for warning in buf.warnings:
+        print(warning, file=sys.stderr)
+    for line in format_entries(buf):
+        print(line)
+    return 0
+
+
+def run_allow_command(config: Config, text: str) -> int:
+    """``/allow list | remove <path> | clear | size [N]`` with the raw argument text (Windows paths keep their
+    backslashes)."""
+    from ai_runtime_rex.core.permissions.allow_buffer import allow_command
+    code, lines = allow_command(current_allow_buffer(config), text,
+                                set_size=lambda n: config.set("permissions.allow_buffer_size", n))
+    for line in lines:
+        print(line)
+    return code
+
+
 def _llm_factory(config: Config) -> Any:
     """None for the OpenAI-compatible default (the loop builds its own client), else the provider adapter."""
     from ai_runtime_rex.runtime.providers import make_llm
@@ -345,8 +416,16 @@ class TerminalAsker:
             print(_printable(request.detail), file=self._out)
         if request.reason:
             print(f"({_printable(request.reason)})", file=self._out)
+        remember = getattr(request, "remember", "")
+        folder = getattr(request, "remember_folder", "")
+        if remember:
+            print(f"('always' is remembered in the allow buffer: {_printable(remember)})", file=self._out)
+        choices = "Allow? [y] once  [a] always  "
+        if folder:
+            where = "the whole workspace" if folder == "." else _printable(folder) + "/"
+            choices += f"[f] always for {where}  "
         try:
-            answer = self._read("Allow? [y] once  [a] always  [N] deny: ").strip().lower()
+            answer = self._read(choices + "[N] deny: ").strip().lower()
         except EOFError:
             print("", file=self._out)
             return "deny"
@@ -362,6 +441,8 @@ class TerminalAsker:
             return "allow_once"
         if answer in ("a", "always"):
             return "allow_always"
+        if folder and answer in ("f", "folder"):
+            return "allow_always_folder"
         return "deny"
 
 
@@ -525,6 +606,11 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             loop.llm = _llm_factory(config)() or LiteLLMClient.from_config(config)
         print(f"timeout: {seconds:g} s")
         return 0
+
+    @registry.register("allow", "Allow buffer: /allow list | remove <path> | clear | size [N]")
+    def cmd_allow(args: dict[str, Any]) -> int:
+        text = " ".join(str(args[k]) for k in sorted(k for k in args if k.startswith("_")))
+        return run_allow_command(config, text)
 
     @registry.register("help", "Show help for commands")
     def cmd_help(args: dict[str, Any]) -> int:
@@ -871,7 +957,7 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
     if tool_note:
         print(ansi.gray(tool_note))
     print(ansi.gray(shell_banner(config)))
-    print(ansi.gray("Commands: /help /model /models /timeout /context /reset /shell /mcp /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
+    print(ansi.gray("Commands: /help /model /models /timeout /context /reset /shell /mcp /allow /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:
@@ -916,6 +1002,12 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
             parts = line[1:].split(maxsplit=1)
             cmd = parts[0]
             arg_str = parts[1] if len(parts) > 1 else ""
+            if cmd == "allow":  # raw text: the generic parser would eat the backslashes of Windows paths
+                try:
+                    run_allow_command(config, arg_str)
+                except Exception as e:
+                    print(ansi.red(f"Error: {e}"))
+                continue
             try:
                 args = ArgumentParser.parse(arg_str)
                 registry.execute(cmd, args)
