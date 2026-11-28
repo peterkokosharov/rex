@@ -180,10 +180,7 @@ def main() -> int:
     except McpConfigError as exc:
         print(f"ai-rex: {exc}", file=sys.stderr)
         return 2
-    if args.shell:  # flag > env AI_REX_SHELL > config file
-        config.set("tools.shell", args.shell)
-    elif os.environ.get("AI_REX_SHELL"):
-        config.set("tools.shell", os.environ["AI_REX_SHELL"])
+    apply_shell_choice(config, args.shell)
     tool_note = apply_tool_mode(config, flag=bool(args.unsafe_local_tools), env_only=env_only)
     if args.unsafe_local_tools and not (args.jsonl or args.acp):
         print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
@@ -242,6 +239,29 @@ def main() -> int:
         return registry.execute("chat", {"prompt": prompt})
 
     return run_interactive(registry, config, tool_note=tool_note)
+
+
+def apply_shell_choice(config: Config, flag: Optional[str] = None, environ: Any = None, install: Any = "detect",
+                       nt: Optional[bool] = None, isfile: Any = None) -> None:
+    """Shell for the bash tool and ! commands: ``--shell`` > ``AI_REX_SHELL`` > config ``tools.shell`` > (Windows)
+    the shell recorded at install time in ``<install>/ai-rex.json`` > automatic detection."""
+    env = os.environ if environ is None else environ
+    if flag:
+        config.set("tools.shell", flag)
+        return
+    if env.get("AI_REX_SHELL"):
+        config.set("tools.shell", env["AI_REX_SHELL"])
+        return
+    if config.get("tools.shell"):
+        return
+    if not ((os.name == "nt") if nt is None else nt):
+        return  # Linux, macOS, BSD: auto = the login shell (SHELL) first
+    from ai_runtime_rex.runtime.shellsetup import apply_recorded_shell
+    if install == "detect":
+        from ai_runtime_rex.core.permissions.allow_buffer import install_dir
+        install = install_dir()
+    kwargs = {"isfile": isfile} if isfile is not None else {}
+    apply_recorded_shell(config, install, **kwargs)
 
 
 def apply_tool_mode(config: Config, flag: bool, env_only: bool, docker: Optional[bool] = None) -> Optional[str]:
@@ -932,12 +952,16 @@ def mcp_status_lines(config: Config, loop: Any) -> list[str]:
 
 def shell_banner(config: Config) -> str:
     """One line: which shell runs the bash tool and ! commands."""
-    from ai_runtime_rex.core.tools.bash import resolve_shell, shell_choice
+    from ai_runtime_rex.core.tools.bash import config_shell, shell_choice
     choice = shell_choice(config)
-    shell = resolve_shell(choice)
+    shell = config_shell(config)
     if shell is None:
         return f"shell: {choice} - not found"
-    return f"shell: {shell.label} ({shell.path})" + ("" if choice == "auto" else f"  [--shell {choice}]")
+    family = {"sh": "POSIX sh", "bash": "bash", "zsh": "zsh", "ksh": "Korn shell", "fish": "fish, not POSIX",
+              "csh": "C shell, not POSIX", "powershell": "PowerShell", "cmd": "cmd"}.get(shell.kind, shell.kind)
+    source = " [recorded at install]" if config.get("tools.shell_path") else (
+        "" if choice == "auto" else f"  [--shell {choice}]")
+    return f"shell: {shell.label} ({shell.path}; {family} syntax)" + source
 
 
 def run_interactive(registry: CommandRegistry, config: Config, tool_note: Optional[str] = None) -> int:

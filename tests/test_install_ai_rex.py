@@ -115,3 +115,23 @@ def test_uninstall_cmd_refuses_without_marker(tmp_path, name):
     import time
     time.sleep(2)
     assert (dest / "keep.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the shell is recorded on Windows only")
+def test_install_records_shell_and_install_cmd_redoes_it(tmp_path):
+    import json
+    dest = tmp_path / "ai-rex"
+    r = _run(str(dest), "--shell", "cmd")
+    assert r.returncode == 0, r.stderr
+    tools = json.loads((dest / "ai-rex.json").read_text(encoding="utf-8"))["tools"]
+    assert tools["shell"] == "cmd" and tools["shell_path"].lower().endswith("cmd.exe")
+    (dest / "state").mkdir()
+    (dest / "state" / "keep.txt").write_text("x", encoding="utf-8")
+    assert _run(str(dest), "--shell", "powershell").returncode == 0  # update keeps state/ and the file
+    assert (dest / "state" / "keep.txt").exists()
+    assert json.loads((dest / "ai-rex.json").read_text(encoding="utf-8"))["tools"]["shell"] == "powershell"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    r = subprocess.run(["cmd", "/d", "/c", str(dest / "install.cmd"), "--shell", "cmd"], capture_output=True,
+                       text=True, env=env, timeout=60, stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads((dest / "ai-rex.json").read_text(encoding="utf-8"))["tools"]["shell"] == "cmd"

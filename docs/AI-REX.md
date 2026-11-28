@@ -78,7 +78,28 @@ an untrusted repository in local mode.
 
 **Which shell runs commands.** The tool is called `bash`, but `--shell` / `AI_REX_SHELL` / config `tools.shell`
 pick the shell (flag beats environment, environment beats the config file): `auto` (default), `bash`,
-`powershell` or `cmd`. PowerShell gets the command as `-EncodedCommand` with `-NoProfile -NonInteractive`,
+`powershell` or `cmd`. What `auto` means:
+
+- **Windows:** the shell recorded at install time (see below); without a record (a repo checkout) `SHELL` when it
+  points to an existing `bash.exe` (Git Bash sets it), else Git Bash, else PowerShell (`pwsh`, then Windows
+  PowerShell 5.1), else `cmd.exe`.
+- **Linux, macOS, FreeBSD and the other BSDs:** your login shell from `SHELL` first (when it is an absolute path to
+  an executable). Only when `SHELL` is missing or invalid: FreeBSD / BSDs `/bin/sh`; Linux `bash`, else `sh`;
+  macOS `zsh`, else `bash`, else `sh`.
+- The syntax family comes from the shell's name: `sh`/`dash`/`ash` POSIX sh, `bash`, `zsh`, `ksh`/`mksh` Korn
+  shell, `fish` (warned: not POSIX), `tcsh`/`csh` (warned: C shell). The tool description, the system prompt, the
+  REPL banner, `/context` and every tool result name the shell, its path and the syntax, so the model writes the
+  right commands.
+
+**Shell recorded at install (Windows).** `scripts\install_ai_rex.py` looks for Git Bash (PATH, then
+`%LOCALAPPDATA%\Programs\Git\bin\bash.exe`, then `%ProgramFiles%\Git\bin\bash.exe`). Found: it records it with its
+full path without asking. Not found: it asks once, `1) PowerShell` (pwsh if present, else Windows PowerShell 5.1)
+or `2) cmd`. `--shell git-bash|powershell|cmd` answers for a non-interactive install; with nobody to answer it takes
+PowerShell. The choice is written to `<install>\ai-rex.json` (`tools.shell`, `tools.shell_path`); `install.cmd`
+in the install folder redoes just this step (also with `--shell`). At run time the order is `--shell` >
+`AI_REX_SHELL` > config `tools.shell` > the recorded shell > automatic detection. If the recorded shell is gone,
+ai-rex prints one line (`recorded shell C:\...\bash.exe not found; run install again or use --shell`) and uses
+PowerShell for that run, never cmd silently. PowerShell gets the command as `-EncodedCommand` with `-NoProfile -NonInteractive`,
 UTF-8 output and the native program's exit code; `cmd` runs `cmd.exe /d /s /c`. In Git Bash, `cmd /c ...` and
 `cmd.exe /c ...` work (Git Bash would otherwise turn a lone `/c` into `C:/`). `!` commands in the REPL and
 `ai-rex "!..."` use the same shell and runner (not scrubbed: it is your own command). Rules for every command:
@@ -160,7 +181,7 @@ always beats the environment, so `--port 4001` wins over `AI_REX_BASE_URL`.
 | `--temperature X` | sampling temperature | | provider default |
 | `--timeout S` | HTTP timeout in seconds (per read; one agent step through a gateway can take minutes) | `AI_REX_TIMEOUT` | `600` |
 | `--no-tools` | plain chat, the model gets no tools | | tools on |
-| `--shell S` | shell for the `bash` tool and `!` commands: `auto`, `bash`, `powershell`, `cmd`. `auto` = Git Bash on Windows (PATH, then the Git for Windows folders), else PowerShell (`pwsh`, then Windows PowerShell 5.1), else `cmd.exe`; bash/sh on Linux and macOS. The banner, `/context`, the tool description and every result name the shell, so the model writes its syntax | `AI_REX_SHELL`, config `tools.shell` | `auto` |
+| `--shell S` | shell for the `bash` tool and `!` commands: `auto`, `bash`, `powershell`, `cmd`. `auto` = Windows: the shell recorded at install, else Git Bash, PowerShell, `cmd.exe`; Linux/macOS/BSD: the login shell (`SHELL`), else BSD `/bin/sh`, Linux `bash`/`sh`, macOS `zsh`/`bash`/`sh` (see "Which shell runs commands"). The banner, `/context`, the tool description and every result name the shell and its syntax | `AI_REX_SHELL`, config `tools.shell`, then `<install>\ai-rex.json` | `auto` |
 | `--mcp-config PATH` | MCP servers from a JSON file (repeatable), see "MCP: using other tools" | `AI_REX_MCP_CONFIG` (paths, separated by `;` on Windows, `:` elsewhere) | |
 | `--mcp NAME=COMMAND` | one inline MCP server (repeatable) | | |
 | `--no-mcp` | ignore every MCP server, also those from the environment or `--config` | | |

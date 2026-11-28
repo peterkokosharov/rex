@@ -67,8 +67,8 @@ def run_shell(command: str, cwd: Optional[Path] = None, timeout: Optional[float]
     if not command.strip():
         return ShellResult(command=command, stderr="[shell: empty command]", exit_code=1)
     import os
-    from ..tools.bash import resolve_shell, run_tree, shell_choice
-    shell = resolve_shell(shell_choice(config))
+    from ..tools.bash import config_shell, run_tree, shell_choice
+    shell = config_shell(config)
     if shell is None:
         return ShellResult(command, "", f"[shell: no shell found for '{shell_choice(config)}']", 1)
     env = dict(os.environ)  # the user's own command: nothing is scrubbed

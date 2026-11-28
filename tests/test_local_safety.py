@@ -195,6 +195,8 @@ def test_bash_local_uses_bash_not_a_shell(monkeypatch):
         raise OSError("not started in this test")
 
     monkeypatch.setattr(bash_mod, "find_bash", lambda: "C:/Git/bin/bash.exe")
+    monkeypatch.setattr(bash_mod, "posix_default", lambda *a, **k: "C:/Git/bin/bash.exe")
+    monkeypatch.delenv("SHELL", raising=False)  # auto would take the login shell first
     with mock.patch("subprocess.Popen", fake_popen):
         BashTool(LOCAL).execute(command="echo 'a & b'", description="t")
     if os.name == "nt":  # the text travels in the environment, argv is constant

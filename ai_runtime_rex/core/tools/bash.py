@@ -4,7 +4,7 @@
 # AI models: nvidia nemotron ultra, claude-opus-5-5, claude-sonnet-5-5
 # Licensed under MIT License
 
-"""Shell command tool ("bash"): the Docker guard, or locally Git Bash / bash / PowerShell / cmd.exe."""
+"""Shell command tool ("bash"): the Docker guard, or locally the login shell / Git Bash / PowerShell / cmd.exe."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def find_bash() -> str | None:
 
 
 BASH_DESCRIPTION = (
-    "Run one shell command (bash; Git Bash on Windows) in the workspace; returns exit code, stdout, stderr.\n"
+    "Run one shell command (in the shell named above) in the workspace; returns exit code, stdout, stderr.\n"
     "Use it for builds, tests, linters, version checks and quick inspections; read the output before the "
     "next step (errors are usually at the end; pipe long output through tail -n 60).\n"
     "Default timeout 30 s: pass timeout=600 for builds and test runs.\n"
@@ -61,8 +61,12 @@ BASH_DESCRIPTION = (
 #
 # The tool keeps its public name "bash", but the shell that runs the command is chosen explicitly:
 # config tools.shell / env AI_REX_SHELL / flag --shell = auto | bash | powershell | cmd.
-# auto: Windows -> Git Bash, else PowerShell (pwsh, then Windows PowerShell 5.1), else cmd.exe;
-# Linux/macOS -> bash, else sh. The description, the result and the banner name the shell that runs.
+# auto on Windows: the shell recorded at install time (ai-rex.json in the install folder, applied by the CLI),
+#   else SHELL when it is an existing bash.exe (Git Bash sets it), else Git Bash, else PowerShell (pwsh, then
+#   Windows PowerShell 5.1), else cmd.exe.
+# auto on Linux / macOS / BSD: the login shell from SHELL (absolute and executable), else per OS:
+#   FreeBSD and the other BSDs /bin/sh; Linux bash, else sh; macOS zsh, else bash, else sh.
+# The description, the system prompt, the result, the banner and /context name the shell and its syntax family.
 
 SHELL_CHOICES = ("auto", "bash", "powershell", "cmd")
 ENV_SHELL = "AI_REX_SHELL"
@@ -76,8 +80,79 @@ _PS_PRELUDE = ("$ProgressPreference = 'SilentlyContinue'; "
                "$OutputEncoding = [System.Text.Encoding]::UTF8; ")
 
 
+POSIX_KINDS = ("sh", "bash", "zsh", "ksh", "fish", "csh")
+_FAMILY = {"sh": "sh", "dash": "sh", "ash": "sh", "busybox": "sh", "posh": "sh", "bash": "bash", "zsh": "zsh",
+           "ksh": "ksh", "mksh": "ksh", "oksh": "ksh", "pdksh": "ksh", "loksh": "ksh",
+           "fish": "fish", "tcsh": "csh", "csh": "csh"}
+_FAMILY_NOTE = {
+    "sh": "POSIX sh syntax: no bash arrays, [[ ]], 'source' or brace expansion; use [ ], '.' and printf",
+    "bash": "bash syntax",
+    "zsh": "zsh syntax, close to bash; a glob that matches nothing is an error, quote patterns",
+    "ksh": "Korn shell syntax, POSIX compatible",
+    "fish": ("WARNING: fish is not a POSIX shell: use fish syntax (set VAR value, (cmd) instead of $(cmd), "
+             "and/or instead of &&/||); for POSIX scripts run sh -c '...'"),
+    "csh": ("WARNING: C shell syntax, not POSIX (setenv VAR value, >& instead of 2>&1, no functions); for POSIX "
+            "scripts run sh -c '...'"),
+}
+
+
+def shell_family(path: str) -> str:
+    """Syntax family of a POSIX shell from its basename: sh, bash, zsh, ksh, fish or csh (unknown -> sh)."""
+    name = os.path.basename(str(path).replace("\\", "/")).lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    name = re.sub(r"[-\d.]+$", "", name) or name  # bash5.2, ksh93, zsh-5.9
+    return _FAMILY.get(name, "sh")
+
+
+def _executable(path: str) -> bool:
+    return os.access(path, os.X_OK)
+
+
+def login_shell(environ: Mapping[str, str] | None = None, isfile: Any = os.path.isfile,
+                executable: Any = _executable) -> str | None:
+    """``SHELL`` when it is an absolute path to an executable file, else None."""
+    value = (os.environ if environ is None else environ).get("SHELL") or ""
+    if not value.startswith("/") or not isfile(value) or not executable(value):
+        return None
+    return value
+
+
+def posix_default(platform: str | None = None, which: Any = None, isfile: Any = os.path.isfile) -> str | None:
+    """Per-OS default when SHELL is unusable: BSD /bin/sh; Linux bash, sh; macOS zsh, bash, sh."""
+    import sys
+    platform = (platform or sys.platform).lower()
+    which = which or safe_which
+    if any(platform.startswith(b) for b in ("freebsd", "openbsd", "netbsd", "dragonfly")):
+        order = ["sh"]
+    elif platform == "darwin":
+        order = ["zsh", "bash", "sh"]
+    else:
+        order = ["bash", "sh"]
+    for name in order:
+        if name == "sh" and isfile("/bin/sh"):
+            return "/bin/sh"
+        found = which(name)
+        if found:
+            return str(found)
+        if isfile(f"/bin/{name}"):
+            return f"/bin/{name}"
+    return None
+
+
+def _windows_shell_env(environ: Mapping[str, str] | None, isfile: Any) -> str | None:
+    """Git Bash sets SHELL in its own environment: honour it only when it is an existing bash.exe (not WSL)."""
+    value = (os.environ if environ is None else environ).get("SHELL") or ""
+    low = value.lower().replace("\\", "/")
+    if (low.endswith("/bash.exe") and "/system32/" not in low and "/windowsapps/" not in low
+            and isfile(value)):
+        return value
+    return None
+
+
 class Shell:
-    """One shell that runs tool commands: kind (bash, sh, powershell, cmd), executable and a label."""
+    """One shell that runs tool commands: kind (sh, bash, zsh, ksh, fish, csh, powershell, cmd), executable,
+    label."""
 
     def __init__(self, kind: str, path: str, label: str) -> None:
         self.kind, self.path, self.label = kind, path, label
@@ -96,8 +171,8 @@ class Shell:
 
     def command_line(self, command: str, env: dict[str, str]) -> list[str] | str:
         """argv (or, for cmd.exe, the exact Windows command line) that runs ``command``; may add to ``env``."""
-        if self.kind in ("bash", "sh"):
-            if os.name == "nt":
+        if self.kind in POSIX_KINDS:
+            if os.name == "nt" and self.kind == "bash":
                 # Git Bash re-parses the Windows command line (expands `@file`, mangles quotes): the text
                 # travels in the environment and the argv stays constant.
                 env["REX_COMMAND"] = command
@@ -120,10 +195,10 @@ class Shell:
         if self.kind == "cmd":
             return ("Commands run in cmd.exe: use cmd syntax, not bash (dir, type, findstr, %NAME%, "
                     "'&&' between commands).")
-        if os.name == "nt":
-            return (f"Commands run in {self.label} (bash syntax; Windows paths via cygpath -w; "
+        if os.name == "nt" and self.kind == "bash":
+            return (f"Commands run in {self.label} ({self.path}; bash syntax; Windows paths via cygpath -w; "
                     "open a file for the user with: start file.html).")
-        return f"Commands run in {self.label} (POSIX shell syntax)."
+        return f"Commands run in {self.label} ({self.path}; {_FAMILY_NOTE.get(self.kind, _FAMILY_NOTE['sh'])})."
 
 
 def find_powershell(which: Any = None) -> tuple[str, str] | None:
@@ -157,22 +232,39 @@ def shell_choice(config: Any = None, environ: Mapping[str, str] | None = None) -
     return value if value in SHELL_CHOICES else "auto"
 
 
+def _posix_shell(path: str) -> Shell:
+    return Shell(shell_family(path), path, os.path.basename(path))
+
+
 def resolve_shell(choice: str = "auto", nt: bool | None = None, bash: Any = None, powershell: Any = None,
-                  cmd: Any = None) -> Shell | None:
-    """The shell for ``choice``, or None when that shell is not installed (finders injectable for tests)."""
+                  cmd: Any = None, *, path: str | None = None, environ: Mapping[str, str] | None = None,
+                  platform: str | None = None, isfile: Any = os.path.isfile, executable: Any = _executable,
+                  which: Any = None) -> Shell | None:
+    """The shell for ``choice``, or None when that shell is not installed (finders injectable for tests).
+
+    ``path``: an exact executable for ``choice`` (the install-time record); used when it exists.
+    """
     nt = (os.name == "nt") if nt is None else nt
+    injected_bash = bash is not None
     bash = bash or find_bash
     powershell = powershell or find_powershell
     cmd = cmd or find_cmd
 
+    if path and choice in ("bash", "powershell", "cmd") and isfile(path):
+        if choice == "bash":
+            return Shell("bash", path, "Git Bash") if nt else _posix_shell(path)
+        if choice == "powershell":
+            label = "PowerShell 7" if os.path.basename(path).lower().startswith("pwsh") else "Windows PowerShell 5.1"
+            return Shell("powershell", path, label)
+        return Shell("cmd", path, "cmd.exe")
+
     def get_bash() -> Shell | None:
-        path = bash()
-        if not path:
+        found = bash()
+        if not found:
             return None
         if nt:
-            return Shell("bash", path, "Git Bash")
-        return Shell("sh" if os.path.basename(path) in ("sh", "dash") else "bash", path,
-                     os.path.basename(path))
+            return Shell("bash", found, "Git Bash")
+        return _posix_shell(found)
 
     def get_ps() -> Shell | None:
         found = powershell()
@@ -188,14 +280,31 @@ def resolve_shell(choice: str = "auto", nt: bool | None = None, bash: Any = None
         return get_ps()
     if choice == "cmd":
         return get_cmd()
+    # Tests that inject finders but no environment never see the real SHELL.
+    use_env = not (injected_bash and environ is None)
     if nt:
+        env_bash = _windows_shell_env(environ, isfile) if use_env else None
+        if env_bash:
+            return Shell("bash", env_bash, "Git Bash")
         return get_bash() or get_ps() or get_cmd()
-    return get_bash()
+    login = login_shell(environ, isfile, executable) if use_env else None
+    if login:
+        return _posix_shell(login)
+    if injected_bash and which is None and platform is None:
+        return get_bash()  # tests that inject only a bash finder
+    found = posix_default(platform, which, isfile)
+    return _posix_shell(found) if found else None
+
+
+def config_shell(config: Any = None) -> Shell | None:
+    """The shell the configuration selects (``tools.shell`` + the recorded ``tools.shell_path``)."""
+    path = config.get("tools.shell_path") if config is not None else None
+    return resolve_shell(shell_choice(config), path=str(path) if path else None)
 
 
 def describe(shell: Shell | None) -> str:
     """The tool description for ``shell`` (the shell line comes first)."""
-    if shell is None or shell.kind in ("bash", "sh"):
+    if shell is None or shell.kind in POSIX_KINDS:
         body = BASH_DESCRIPTION
     else:
         name = "PowerShell" if shell.kind == "powershell" else "cmd.exe"
@@ -215,7 +324,7 @@ class BashTool(Tool):
     def __init__(self, config: Config | None = None) -> None:
         local = bool(config and config.get("cli.unsafe_local_tools"))
         self.shell_choice = shell_choice(config)
-        self.shell: Shell | None = resolve_shell(self.shell_choice) if local else None
+        self.shell: Shell | None = config_shell(config) if local else None
         self.cancel_event: Any = None  # set by the agent loop: Ctrl+C ends the running command
         schema = ToolSchema(
             name="bash",
@@ -286,7 +395,7 @@ class BashTool(Tool):
                 "stdout": "",
                 "stderr": "[bash: 'git push' is not allowed from the agent; push by hand]",
             }
-        shell = self.shell or resolve_shell(self.shell_choice)
+        shell = self.shell or config_shell(self._config)
         if shell is None:
             if self.shell_choice == "bash" and os.name == "nt":
                 why = NO_BASH_WINDOWS

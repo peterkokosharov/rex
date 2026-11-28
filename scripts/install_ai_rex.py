@@ -4,8 +4,12 @@
 # AI models: claude-sonnet-5-5, claude-opus-5-5
 """Portable install of ai-rex into ONE folder; delete the folder to uninstall. Python standard library only.
 
-    python scripts/install_ai_rex.py DEST               install (or update) into DEST
+    python scripts/install_ai_rex.py DEST [--shell S]   install (or update) into DEST
     python scripts/install_ai_rex.py --uninstall DEST   delete DEST (only if it holds an ai-rex install)
+
+Windows: the install records the shell for commands in DEST/ai-rex.json (tools.shell, tools.shell_path): Git
+Bash when found (no question); otherwise it asks once (1 PowerShell, 2 cmd). --shell git-bash|powershell|cmd
+answers it; without a terminal the answer is PowerShell. DEST/install.cmd redoes only this step.
 
 Nothing outside DEST is touched: no PATH change, no registry, no shortcut, no config file. The install prints
 the full launcher path (DEST\\ai-rex.cmd on Windows, DEST/ai-rex elsewhere). DEST also gets uninstall.cmd and
@@ -56,6 +60,15 @@ exit /b 0
 echo refusing: "%AIREX_DIR%" holds no ai-rex install
 exit /b 1
 """
+INSTALL_CMD = """@echo off
+REM Detects and records again the shell ai-rex uses for commands (DEST\\ai-rex.json). Option: --shell git-bash, powershell or cmd
+setlocal
+set "PYTHONPATH=%~dp0lib"
+set "PY=python"
+where py >nul 2>nul && set "PY=py -3"
+%PY% -P -m ai_runtime_rex.runtime.shellsetup "%~dp0." %*
+exit /b %ERRORLEVEL%
+"""
 UNINSTALL_SH = """#!/bin/sh
 here="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$here/.ai-rex-install" ] || { echo "refusing: $here holds no ai-rex install" >&2; exit 1; }
@@ -77,7 +90,7 @@ def install(dest: Path) -> Path:
     for pkg in PACKAGES:
         shutil.copytree(ROOT / pkg, lib / pkg, ignore=IGNORE)
     shutil.copytree(ROOT / "vendor" / "kikolib", lib / "vendor" / "kikolib", ignore=IGNORE)
-    for name, text in (("ai-rex.cmd", CMD), ("uninstall.cmd", UNINSTALL_CMD)):
+    for name, text in (("ai-rex.cmd", CMD), ("uninstall.cmd", UNINSTALL_CMD), ("install.cmd", INSTALL_CMD)):
         (dest / name).write_bytes(text.replace("\n", "\r\n").encode())
     for name, text in (("ai-rex", SH), ("uninstall.sh", UNINSTALL_SH)):
         path = dest / name
@@ -101,6 +114,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("dest", type=Path)
     ap.add_argument("--uninstall", action="store_true")
+    ap.add_argument("--shell", choices=("git-bash", "powershell", "cmd"), default=None,
+                    help="Windows: record this shell without asking (default: Git Bash if found, else ask; "
+                         "PowerShell when nobody can answer)")
     args = ap.parse_args()
     if args.uninstall:
         uninstall(args.dest)
@@ -108,6 +124,10 @@ def main() -> int:
         return 0
     launcher = install(args.dest)
     print(f"installed into {args.dest.resolve()}")
+    if sys.platform == "win32":
+        sys.path.insert(0, str(ROOT))
+        from ai_runtime_rex.runtime.shellsetup import setup
+        setup(args.dest.resolve(), args.shell)
     print(f"run:       {launcher}")
     print(f"uninstall: delete the folder, or run {args.dest.resolve() / 'uninstall.cmd'}")
     return 0
