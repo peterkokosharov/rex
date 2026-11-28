@@ -109,20 +109,13 @@ class GuardClient:
                 "-v", f"{self.workspace}:/workspace:rw",
             ]
 
-            # Add config volumes
-            config_dir = Path.home() / ".config" / "ai-rex"
-            if config_dir.exists():
-                cmd.extend(["-v", f"{config_dir}:/home/guarduser/.config/ai-rex:ro"])
-
-            kiko_dir = Path.home() / ".kiko"
-            if kiko_dir.exists():
-                cmd.extend(["-v", f"{kiko_dir}:/home/guarduser/.kiko:ro"])
+            # No host config / kiko mounts: ~/.config/ai-rex holds the API key and the guard
+            # (bash/fs/http tool server) needs neither; a prompt-injected command must not read them.
 
             # Environment
             if self.allowed_domains:
                 cmd.extend(["-e", f"GUARD_ALLOWED_DOMAINS={self.allowed_domains}"])
             cmd.extend(["-e", "GUARD_WORKSPACE=/workspace"])
-            cmd.extend(["-e", f"KIKO_DB_PATH=/home/guarduser/.kiko/kiko.db"])
 
             cmd.append(self._resolve_image())
 

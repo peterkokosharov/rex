@@ -24,12 +24,9 @@ services:
       - /var/tmp
     volumes:
       - .:/workspace:rw
-      - ~/.config/ai-rex:/home/guarduser/.config/ai-rex:ro
-      - ~/.kiko:/home/guarduser/.kiko:ro
     environment:
       - GUARD_WORKSPACE=/workspace
       - GUARD_ALLOWED_DOMAINS=api.openai.com,api.anthropic.com,localhost
-      - KIKO_DB_PATH=/home/guarduser/.kiko/kiko.db
     # Security options
     security_opt:
       - no-new-privileges:true
