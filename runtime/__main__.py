@@ -411,9 +411,13 @@ def looks_like_launch_line(line: str) -> bool:
     text = line.strip()
     if text.startswith("--"):
         return True
-    first = text.split()[0].strip("\"'") if text else ""
+    words = text.split()
+    first = words[0].strip("\"'") if words else ""
     name = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name in _LAUNCH_NAMES
+    if name not in _LAUNCH_NAMES:
+        return False
+    # "ai-rex keeps crashing, why?" is a question; a path, an extension, flags or nothing else is a command line.
+    return name != "ai-rex" or "/" in first.replace("\\", "/") or len(words) == 1 or words[1].startswith("-")
 
 
 def step_error_message(exc: BaseException, config: Any) -> str:

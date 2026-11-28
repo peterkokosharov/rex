@@ -25,7 +25,8 @@ SKIP_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", "node_modules", "
 
 DESCRIPTION = """Workspace files. Operations:
 - list: entries of a folder (path, default "."); recursive=true for a whole small tree. Build/cache folders
-  (.git, target, node_modules, __pycache__, .venv, .idea, ...) are skipped. Example: {"operation": "list", "path": "src"}
+  (.git, target, node_modules, __pycache__, .venv, .idea, ...) below the path are skipped; pass such a folder
+  as the path to look inside it. Example: {"operation": "list", "path": "src"}
 - glob: files matching a pattern, e.g. {"operation": "glob", "pattern": "**/*.java"}
 - grep: regex search in file contents, result lines "path:line: text"; narrow with path and include
   (e.g. "*.py"). Example: {"operation": "grep", "pattern": "def main", "include": "*.py"}
@@ -35,15 +36,22 @@ DESCRIPTION = """Workspace files. Operations:
 - write: create or replace a whole file (content). edit: replace old_str with new_str in a file you have read."""
 
 
-def _skipped(rel: Any) -> bool:
-    text = rel.get("path", "") if isinstance(rel, dict) else str(rel)
-    return any(seg in SKIP_DIRS for seg in text.replace("\\", "/").split("/")[:-1]) or \
-        text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] in SKIP_DIRS
+def _norm(p: Any) -> str:
+    text = str(p or ".").replace("\\", "/").strip("/")
+    return "" if text in ("", ".") else (text[2:] if text.startswith("./") else text)
 
 
-def _keep(items: Any) -> Any:
+def _skipped(rel: Any, base: str = "") -> bool:
+    """True when ``rel`` lies in a build/cache folder BELOW ``base`` (a folder the model asked for is never hidden)."""
+    text = _norm(rel.get("path", "") if isinstance(rel, dict) else rel)
+    if base and (text == base or text.startswith(base + "/")):
+        text = text[len(base):].lstrip("/")
+    return any(seg in SKIP_DIRS for seg in text.split("/") if seg)
+
+
+def _keep(items: Any, base: str = "") -> Any:
     if isinstance(items, list):
-        return [i for i in items if not _skipped(i)]
+        return [i for i in items if not _skipped(i, base)]
     return items
 
 
@@ -59,7 +67,7 @@ def number_lines(text: Any, offset: Any = None, limit: Any = None) -> Any:
         count = max(1, int(limit)) if limit not in (None, "") else READ_LIMIT
     except (TypeError, ValueError):
         count = READ_LIMIT
-    lines = text.split("\n")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if lines and lines[-1] == "":
         lines.pop()
     total = len(lines)
@@ -169,11 +177,12 @@ class FileOpsTool(Tool):
         operation = kwargs.pop("operation")
         offset = kwargs.pop("offset", None)
         limit = kwargs.pop("limit", None)
+        base = _norm(kwargs.get("root") if operation == "glob" else kwargs.get("path"))
         result = self._execute(operation, **kwargs)
         if operation == "read":
             return number_lines(result, offset, limit)
         if operation in ("list", "glob", "grep") and isinstance(result, dict):
-            return {k: _keep(v) for k, v in result.items()}
+            return {k: _keep(v, base) for k, v in result.items()}
         return result
 
     def _execute(self, operation: str, **kwargs: Any) -> Any:

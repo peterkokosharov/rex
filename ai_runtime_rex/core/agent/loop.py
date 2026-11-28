@@ -588,7 +588,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             stream=True,
         )
 
-        held: Optional[bool] = True  # None once the text is streaming live
+        guard = StreamGuard()
         for chunk in stream:
             if self._interrupt_event.is_set():
                 self.state.interrupted = True
@@ -601,15 +601,11 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             # Handle content delta
             if chunk.content:
                 full_content += chunk.content
-                # Hold back text that starts like markup ({ or <) until it is clear it is not a tool call
+                # Lines that start like markup ({ or <) are held until it is clear they are not a tool call
                 # written as text: such text must never be shown as the answer.
-                if held is not None:
-                    head = full_content.lstrip()
-                    if head and head[0] not in "{<":
-                        self.on_token(full_content)
-                        held = None
-                else:
-                    self.on_token(chunk.content)
+                out = guard.feed(chunk.content)
+                if out:
+                    self.on_token(out)
 
             # Handle tool call deltas
             if chunk.tool_calls:
@@ -620,8 +616,9 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             if chunk.finish_reason == "tool_calls":
                 pass
 
-        if held is not None and full_content and not leaked_tool_call(full_content):
-            self.on_token(full_content)  # markup-looking text that is not a call (JSON answer, XML snippet)
+        rest = guard.finish(leaked_tool_call(full_content))
+        if rest:
+            self.on_token(rest)  # held markup-looking text that is not a call (JSON answer, XML snippet)
 
         # Build response message
         if tool_calls and not self.state.interrupted:
@@ -799,6 +796,12 @@ def format_tool_result(result: Any) -> str:
     if not getattr(result, "success", False):
         return f"ERROR: {getattr(result, 'error', None) or 'the tool failed'}"
     value = getattr(result, "result", None)
+    if isinstance(value, dict) and "hook_note" in value:
+        # A post-hook note rides along: format the real result, then add the note as its own line.
+        rest = {k: v for k, v in value.items() if k != "hook_note"}
+        inner = rest["result"] if set(rest) == {"result"} else rest
+        body = format_tool_result(type("R", (), {"success": True, "result": inner})())
+        return f"{body}\n[hook note] {value['hook_note']}"
     if value is None:
         return "(no output)"
     if isinstance(value, str):
@@ -827,8 +830,12 @@ def format_tool_result(result: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=1, default=str)
 
 
-# A final answer that is really a tool call written as text (the call was lost on the way).
-_LEAKED_CALL = re.compile(r'\{\s*"tool_calls"|<invoke[\s>]|<function_calls>|<tool_use>|\{\s*"tool_use"')
+# A final answer that is really a tool call written as text (the call was lost on the way): call markup at the
+# start of a line, outside ``` code blocks. Quoting such markup inline or in a code block (reviewing agent code)
+# is not a leak.
+_LEAK_START = re.compile(r'^[ \t]*(?:\{\s*"tool_calls"|\{\s*"tool_use"|<invoke[\s>]|<function_calls>|<tool_use>)',
+                         re.MULTILINE)
+_FENCE_BLOCK = re.compile(r"^[ \t]*```.*?(?:^[ \t]*```[^\n]*$|\Z)", re.MULTILINE | re.DOTALL)
 MAX_NUDGES = 2
 NUDGE_LEAKED = ("Your last reply contained a tool call written as text, so nothing ran. Call the tool through "
                 "the tool interface, or, if you have the evidence, give the final answer as plain text.")
@@ -837,7 +844,60 @@ NUDGE_EMPTY = ("Your last reply was empty. Continue the task: call the next tool
 
 
 def leaked_tool_call(text: str) -> bool:
-    return bool(text) and bool(_LEAKED_CALL.search(text))
+    return bool(text) and bool(_LEAK_START.search(_FENCE_BLOCK.sub("", text)))
+
+
+class StreamGuard:
+    """Streams answer text line by line, holding a line that starts with ``{`` or ``<`` until it is complete.
+
+    A complete line that opens a tool call written as text blocks the rest of the reply; ``finish`` then
+    releases the held text only when the whole reply turned out not to be a leaked call.
+    """
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self.mid_line = False  # part of the current line was already emitted
+        self.blocked = False
+
+    def feed(self, text: str) -> str:
+        self.buf += text
+        out: list[str] = []
+        while self.buf and not self.blocked:
+            nl = self.buf.find("\n")
+            if self.mid_line:
+                if nl < 0:
+                    out.append(self.buf)
+                    self.buf = ""
+                    break
+                out.append(self.buf[:nl + 1])
+                self.buf = self.buf[nl + 1:]
+                self.mid_line = False
+                continue
+            head = self.buf.lstrip(" \t")
+            if not head:
+                break  # only blanks so far
+            if head[0] in "{<":
+                if nl < 0:
+                    break  # wait for the whole line
+                line = self.buf[:nl + 1]
+                if _LEAK_START.match(line):
+                    self.blocked = True
+                    break
+                out.append(line)
+                self.buf = self.buf[nl + 1:]
+                continue
+            if nl < 0:
+                out.append(self.buf)
+                self.buf = ""
+                self.mid_line = True
+                break
+            out.append(self.buf[:nl + 1])
+            self.buf = self.buf[nl + 1:]
+        return "".join(out)
+
+    def finish(self, leaked: bool) -> str:
+        rest, self.buf = self.buf, ""
+        return "" if leaked else rest
 
 
 def create_agent_loop(config: Optional[Config] = None, **kwargs) -> AgentLoop:

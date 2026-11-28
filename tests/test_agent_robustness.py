@@ -180,3 +180,48 @@ def test_profile_line_in_code_fence_ignored_and_last_wins():
 def test_detect_is_case_insensitive_on_every_os(tmp_path):
     (tmp_path / "POM.XML").write_text("<project/>", encoding="utf-8")
     assert build_profile(tmp_path, Config(BASE)).paths[-1] == "programming/java"
+
+
+# --- second review follow-ups --------------------------------------------------------------------------
+
+def test_quoted_markup_in_a_review_is_not_a_leak():
+    assert not leaked_tool_call("The parser looks for `<invoke name=...>` and `{\"tool_calls\"` markers.")
+    assert not leaked_tool_call('Example:\n```\n<invoke name="fileops">\n{"tool_calls": []}\n```\nDone.')
+    assert leaked_tool_call('Let me read it.\n<invoke name="fileops">')
+
+
+def test_leak_after_prose_is_not_printed():
+    tokens = []
+    loop = _loop([[_text("I'll look.\n"), _text('<invoke name="fileops">\n<parameter>x</parameter>')],
+                  [_text("Final.")]], tokens)
+    assert loop.run("go") == "Final."
+    shown = "".join(tokens)
+    assert "I'll look." in shown and "<invoke" not in shown
+
+
+def test_stream_guard_passes_normal_text_and_html_lines():
+    from ai_runtime_rex.core.agent.loop import StreamGuard
+    g = StreamGuard()
+    out = g.feed("Hello wor") + g.feed("ld\n<b>bold</b>\nend") + g.finish(False)
+    assert out == "Hello world\n<b>bold</b>\nend"
+
+
+def test_hook_note_keeps_plain_text():
+    r = ToolResult(tool_name="t", success=True, result={"result": "1\tx = 1", "hook_note": "checked"})
+    assert format_tool_result(r) == "1\tx = 1\n[hook note] checked"
+    g = ToolResult(tool_name="t", success=True, result={"files": ["a", "b"], "hook_note": "n"})
+    assert format_tool_result(g) == "a\nb\n[hook note] n"
+
+
+def test_skip_folder_can_be_inspected_when_asked(tmp_path):
+    (tmp_path / "target" / "generated").mkdir(parents=True)
+    (tmp_path / "target" / "generated" / "X.java").write_text("class X {}\n", encoding="utf-8")
+    tool = FileOpsTool(LOCAL)
+    assert tool.execute(operation="list", path="target/generated")["files"] == ["target/generated/X.java"]
+    assert [m["path"] for m in tool.execute(operation="grep", pattern="class", path="target")["matches"]] == \
+        ["target/generated/X.java"]
+    assert not any("target" in p for p in tool.execute(operation="list", path=".", recursive=True)["files"])
+
+
+def test_crlf_file_reads_without_carriage_returns():
+    assert number_lines("a\r\nb\r\n") == "1\ta\n2\tb"

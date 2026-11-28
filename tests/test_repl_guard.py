@@ -23,6 +23,8 @@ def test_launch_lines_are_recognised():
     assert cli.looks_like_launch_line("--timeout 600")
     assert not cli.looks_like_launch_line("explain what ai-rex does")
     assert not cli.looks_like_launch_line("look at src/ai-rex-notes.md")
+    assert not cli.looks_like_launch_line("ai-rex keeps crashing, why?")
+    assert cli.looks_like_launch_line("ai-rex")
 
 
 def test_step_error_message_for_timeout_and_other_errors():
