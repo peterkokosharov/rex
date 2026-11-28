@@ -529,6 +529,25 @@ def _strip_wrappers(words: list[str]) -> list[str]:
     return out
 
 
+_ASSIGNS = re.compile(r"\s*(?:\w+=\S*\s+)*")
+_DYNAMIC_WORDS = ("eval", "xargs")
+
+
+def dynamic_command_word(command: str) -> bool:
+    """True if some part of ``command`` runs a word built at run time.
+
+    The first word of a part starts with ``$`` / a backtick / a backslash (or a quoted
+    ``$``), or it is ``eval`` / ``xargs``. ``echo $(pwd)`` is not dynamic: only the
+    command word matters, not the arguments."""
+    for part in split_bash(command)[0]:
+        rest = part[_ASSIGNS.match(part).end():]
+        word = rest.split(None, 1)[0] if rest.strip() else ""
+        bare = word.lstrip("\"'")
+        if word.startswith("\\") or bare.startswith(("$", "`")) or _basename(bare) in _DYNAMIC_WORDS:
+            return True
+    return False
+
+
 MAX_BODIES = 32
 MAX_SUBST_DEPTH = 8
 MAX_COMMAND_CHARS = 16 * 1024
@@ -1203,6 +1222,14 @@ class PermissionRules:
             return RuleVerdict(ALLOW, kind, "allow", allowed_by.text)
 
         decision = mode_default(mode, kind, self.defaults)
+        if (tool == "bash" and decision == ALLOW and mode == MODE_GUARD
+                and any(r.tool_matches(tool) for r in self.deny)
+                and dynamic_command_word(str(args.get("command", "")))):
+            # Guard mode has no whitelist, so a deny rule is the only brake. A command whose
+            # words are built at run time (`$(echo rm) -rf /`, backticks, backslash-escaped words, xargs) cannot
+            # be matched against it without a real shell parser: ask instead of allowing.
+            return RuleVerdict(ASK, kind, "unsafe", None,
+                               "Command word built dynamically; cannot be checked against deny rules")
         if unsafe and decision == ALLOW:
             return RuleVerdict(ASK, kind, "unsafe", None, unsafe)
         return RuleVerdict(decision, kind, "default", None, f"{mode} default for {kind}")
