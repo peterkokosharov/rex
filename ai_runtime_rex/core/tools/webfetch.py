@@ -209,7 +209,9 @@ class WebFetchTool(Tool):
         schema = ToolSchema(
             name="webfetch",
             description=("Fetch one http(s) URL with GET and return its content as text (HTML is "
-                         "converted to plain text). Private and local addresses are refused."),
+                         "converted to plain text). Private and local addresses are refused.\n"
+                         "Use it to read documentation pages found with websearch.\n"
+                         'Example: {"url": "https://maven.apache.org/surefire/", "max_chars": 20000}'),
             parameters={
                 "type": "object",
                 "properties": {

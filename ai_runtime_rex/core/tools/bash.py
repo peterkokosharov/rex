@@ -47,13 +47,23 @@ def find_bash() -> str | None:
     return found or shutil.which("sh") or "/bin/sh"
 
 
+BASH_DESCRIPTION = (
+    "Run one shell command (bash; Git Bash on Windows) in the workspace; returns exit code, stdout, stderr.\n"
+    "Use it for builds, tests, linters, version checks and quick inspections; read the output before the "
+    "next step (errors are usually at the end; pipe long output through tail -n 60).\n"
+    "Default timeout 30 s: pass timeout=600 for builds and test runs.\n"
+    "Prefer fileops for listing, reading and searching files.\n"
+    'Example: {"command": "mvn -q -o test", "description": "run the unit tests", "timeout": 600}'
+)
+
+
 class BashTool(Tool):
     """Bash command execution tool."""
 
     def __init__(self, config: Config | None = None) -> None:
         schema = ToolSchema(
             name="bash",
-            description="Execute shell commands in sandboxed environment",
+            description=BASH_DESCRIPTION,
             parameters={
                 "type": "object",
                 "properties": {

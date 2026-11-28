@@ -42,6 +42,9 @@ _PROFILE_LINE = re.compile(r"^[ \t>]*(?:<!--)?[ \t]*ai-rex-profile[ \t]*:[ \t]*(
                            re.IGNORECASE | re.MULTILINE)
 
 
+_FENCED = re.compile(r"^[ \t]*```.*?^[ \t]*```[^\n]*$", re.MULTILINE | re.DOTALL)
+
+
 @dataclass
 class Layer:
     path: str  # "" for the root, else "programming/java" (POSIX, lowercase as on disk)
@@ -187,7 +190,7 @@ def detect(workspace: Path | str, layers: dict[str, Layer]) -> list[str]:
         return []
     hits = []
     for path, layer in sorted(layers.items()):
-        if any(fnmatch.fnmatch(n, pat) for pat in layer.detect for n in names):
+        if any(fnmatch.fnmatchcase(n.lower(), pat.lower()) for pat in layer.detect for n in names):
             hits.append(path)
     return hits
 
@@ -196,7 +199,8 @@ def profile_from_agents_md(*texts: str) -> str:
     """The last ``ai-rex-profile: ...`` line in the given AGENTS.md texts ('' if none)."""
     value = ""
     for text in texts:
-        for m in _PROFILE_LINE.finditer(text or ""):
+        text = _FENCED.sub("", text or "")  # examples inside ``` blocks do not count
+        for m in _PROFILE_LINE.finditer(text):
             value = m.group(1).strip()
     return value
 

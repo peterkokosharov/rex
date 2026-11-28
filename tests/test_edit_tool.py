@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Tests for the edit tool (read-before-edit, ambiguity refusal, diff)."""
@@ -137,7 +137,7 @@ def test_write_counts_as_read(ws):
 def test_crlf_preserved(ws):
     (ws / "w.txt").write_bytes(b"one\r\ntwo\r\nthree\r\n")
     fo, et, _ = local_tools()
-    assert fo.execute(operation="read", path="w.txt") == "one\ntwo\nthree\n"
+    assert fo.execute(operation="read", path="w.txt") == "1\tone\n2\ttwo\n3\tthree"
     et.execute(path="w.txt", old_string="two\nthree", new_string="2\n3")
     assert (ws / "w.txt").read_bytes() == b"one\r\n2\r\n3\r\n"
 
@@ -203,7 +203,7 @@ def test_guard_path_edit_and_hash_check():
     fo, et, _ = guard_tools(guard)
     with pytest.raises(EditError, match="not been read"):
         et.execute(path="src/a.py", old_string="a = 1", new_string="a = 9")
-    assert fo.execute(operation="read", path="src/a.py") == "a = 1\nb = 2\n"
+    assert fo.execute(operation="read", path="src/a.py") == "1\ta = 1\n2\tb = 2"
     guard.files["src/a.py"] = "a = 1\nb = 3\n"  # changed behind our back
     with pytest.raises(EditError, match="changed since"):
         et.execute(path="src/a.py", old_string="a = 1", new_string="a = 9")

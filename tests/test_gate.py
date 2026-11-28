@@ -24,6 +24,14 @@ from runtimelib.permissions.rules import PermissionRules
 from runtimelib.tools.base import Tool, ToolSchema
 
 
+def _tool_msg(text):
+    """Plain-text tool message -> {"success", "result", "error"} (failures start with "ERROR: ")."""
+    if text.startswith("ERROR: "):
+        return {"success": False, "result": None, "error": text[len("ERROR: "):]}
+    return {"success": True, "result": text, "error": None}
+
+
+
 class FakeTool(Tool):
     def __init__(self, name: str) -> None:
         super().__init__(name, "fake", ToolSchema(name, "fake", {"type": "object", "properties": {}}))
@@ -212,7 +220,7 @@ class LoopGate(GateBase):
         ended = []
         loop.on_tool_end = ended.append
         loop._execute_tool_calls([tc])
-        return ended[0], json.loads(loop.state.messages[-1].content)
+        return ended[0], _tool_msg(loop.state.messages[-1].content)
 
     def test_denied_call_never_executes(self):
         tool = FakeTool("bash")

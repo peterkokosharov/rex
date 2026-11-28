@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import re
 import signal
 import sys
 import threading
@@ -276,7 +277,8 @@ class AgentLoop:
                     desc = info.get("description", "")
                     required = name in schema.parameters.get("required", [])
                     param_descs.append(f"  {name}{' (required)' if required else ''}: {desc}")
-                tool_descs.append(f"{tool.name}: {tool.description}\n" + "\n".join(param_descs))
+                # The schema text carries the usage rules and example; tool.description is a short label.
+                tool_descs.append(f"{tool.name}: {schema.description or tool.description}\n" + "\n".join(param_descs))
 
             skills_block = ""
             if "load_skill" in self.tools:
@@ -309,7 +311,10 @@ You have access to the following tools:
 {chr(10).join(tool_descs)}
 
 Tool use:
-- If you need a tool, call it; you can chain several tool calls in one response.
+- A reply without a tool call ends the task, so give the final answer only when you have the evidence.
+  If you need a tool, call it; do not describe what you would do.
+- Put a 1-3 line plan or progress note in the reply text together with every tool call.
+- Batch independent calls (for example several reads) in one reply.
 - Read a file before editing it; the edit tool refuses files that were not read in this session.
 {diagram_block}- Maximum steps: {self.state.max_steps}
 {skills_block}
@@ -386,6 +391,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         # Record user message in session
         self.session_manager.append("user_message", {"prompt": prompt, "agent_id": self.agent_id})
 
+        ran_tools = False
+        nudges = 0
         while self.state.step < self.state.max_steps and not self.state.interrupted:
             self.state.step += 1
 
@@ -407,7 +414,17 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             # Check for tool calls
             if response.tool_calls:
                 self._execute_tool_calls(response.tool_calls)
+                ran_tools = True
                 continue
+
+            # Safety net: a tool call written as text, or silence right after tool results, is not an answer.
+            leaked = leaked_tool_call(response.content or "")
+            if (leaked or (not response.content and ran_tools)) and nudges < MAX_NUDGES:
+                nudges += 1
+                self.state.messages.append(ChatMessage(role="user", content=NUDGE_LEAKED if leaked else NUDGE_EMPTY))
+                continue
+            if leaked:
+                raise RuntimeError("the model kept writing tool calls as text instead of calling the tools")
 
             # Regular text response
             if response.content:
@@ -569,6 +586,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             stream=True,
         )
 
+        held: Optional[bool] = True  # None once the text is streaming live
         for chunk in stream:
             if self._interrupt_event.is_set():
                 self.state.interrupted = True
@@ -581,7 +599,15 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             # Handle content delta
             if chunk.content:
                 full_content += chunk.content
-                self.on_token(chunk.content)
+                # Hold back text that starts like markup ({ or <) until it is clear it is not a tool call
+                # written as text: such text must never be shown as the answer.
+                if held is not None:
+                    head = full_content.lstrip()
+                    if head and head[0] not in "{<":
+                        self.on_token(full_content)
+                        held = None
+                else:
+                    self.on_token(chunk.content)
 
             # Handle tool call deltas
             if chunk.tool_calls:
@@ -591,6 +617,9 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             # Handle finish reason
             if chunk.finish_reason == "tool_calls":
                 pass
+
+        if held is not None and full_content and not leaked_tool_call(full_content):
+            self.on_token(full_content)  # markup-looking text that is not a call (JSON answer, XML snippet)
 
         # Build response message
         if tool_calls and not self.state.interrupted:
@@ -746,10 +775,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             })
 
             # Add tool result to messages
-            result_content = json.dumps(
-                {"success": result.success, "result": result.result, "error": result.error},
-                ensure_ascii=False
-            )
+            result_content = format_tool_result(result)
             self.state.messages.append(ChatMessage(
                 role="tool",
                 content=result_content,
@@ -763,6 +789,53 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
 class _Cancelled(Exception):
     """Internal: the user stopped the request while the gate was deciding."""
+
+
+def format_tool_result(result: Any) -> str:
+    """Tool result as plain text for the model: raw strings stay raw (a source file keeps its lines),
+    failures read ``ERROR: ...``, known shapes (shell, list, grep) become lines, anything else indented JSON."""
+    if not getattr(result, "success", False):
+        return f"ERROR: {getattr(result, 'error', None) or 'the tool failed'}"
+    value = getattr(result, "result", None)
+    if value is None:
+        return "(no output)"
+    if isinstance(value, str):
+        return value if value else "(empty output)"
+    if isinstance(value, dict) and {"stdout", "stderr"} <= set(value) and "exit_code" in value:
+        parts = [f"exit code: {value.get('exit_code')}"]
+        for key in ("stdout", "stderr"):
+            text = value.get(key) or ""
+            if text:
+                parts.append(f"{key}:\n{text.rstrip()}")
+        return "\n".join(parts)
+    if isinstance(value, dict) and len(value) == 1:
+        (key, items), = value.items()
+        if key in ("files", "matches") and isinstance(items, list):
+            if not items:
+                return f"(no {key})"
+            lines = []
+            for item in items:
+                if isinstance(item, dict) and "path" in item and "line" in item:
+                    lines.append(f"{item['path']}:{item['line']}: {item.get('text', '')}")
+                elif isinstance(item, dict):
+                    lines.append(json.dumps(item, ensure_ascii=False, default=str))
+                else:
+                    lines.append(str(item))
+            return "\n".join(lines)
+    return json.dumps(value, ensure_ascii=False, indent=1, default=str)
+
+
+# A final answer that is really a tool call written as text (the call was lost on the way).
+_LEAKED_CALL = re.compile(r'\{\s*"tool_calls"|<invoke[\s>]|<function_calls>|<tool_use>|\{\s*"tool_use"')
+MAX_NUDGES = 2
+NUDGE_LEAKED = ("Your last reply contained a tool call written as text, so nothing ran. Call the tool through "
+                "the tool interface, or, if you have the evidence, give the final answer as plain text.")
+NUDGE_EMPTY = ("Your last reply was empty. Continue the task: call the next tool you need, or give the "
+               "complete final answer based on the tool results above.")
+
+
+def leaked_tool_call(text: str) -> bool:
+    return bool(text) and bool(_LEAKED_CALL.search(text))
 
 
 def create_agent_loop(config: Optional[Config] = None, **kwargs) -> AgentLoop:

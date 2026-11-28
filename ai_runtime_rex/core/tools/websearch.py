@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: Nemotron 3 Ultra, claude-sonnet-5-5
+# LLM: Nemotron 3 Ultra, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """WebSearchTool - multi-engine web search tool for ai-rex.
@@ -70,7 +70,9 @@ class WebSearchTool(Tool):
         schema = ToolSchema(
             name="websearch",
             description="Search the web across multiple engines (Brave, Bing, DuckDuckGo), "
-                        "deduplicate and rank the results.",
+                        "deduplicate and rank the results.\n"
+                        "Only for facts the workspace cannot answer (library docs, error messages, versions).\n"
+                        'Example: {"query": "maven surefire skip single test", "max_results": 5}',
             parameters={
                 "type": "object",
                 "properties": {

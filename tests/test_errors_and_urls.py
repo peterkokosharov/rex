@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """base_url /v1 normalisation, HTTP errors and empty answers are loud."""
@@ -120,4 +120,4 @@ def test_empty_answer_after_a_tool_step_is_not_an_error():
 
     loop.llm = Llm()
     assert loop.run("hi") == ""
-    assert n["i"] == 2
+    assert n["i"] == 4  # the first answer plus two "your reply was empty, continue" nudges, then a silent finish

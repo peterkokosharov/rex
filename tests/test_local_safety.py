@@ -35,6 +35,14 @@ from runtimelib.tools.bash import BashTool, blocks_git_push, scrubbed_env
 from runtimelib.tools.fileops import FileOpsTool
 from runtimelib.tools.git import GitTool
 
+
+def _tool_msg(text):
+    """Plain-text tool message -> {"success", "result", "error"} (failures start with "ERROR: ")."""
+    if text.startswith("ERROR: "):
+        return {"success": False, "result": None, "error": text[len("ERROR: "):]}
+    return {"success": True, "result": text, "error": None}
+
+
 LOCAL = Config({"cli": {"unsafe_local_tools": True}})
 
 
@@ -54,7 +62,7 @@ def workspace(tmp_path, monkeypatch):
 
 def test_fileops_reads_inside_workspace(workspace):
     tool = FileOpsTool(LOCAL)
-    assert tool.execute(operation="read", path="src/a.py") == "print('a')\n"
+    assert tool.execute(operation="read", path="src/a.py") == "1\tprint('a')"
     tool.execute(operation="write", path="new/dir/x.txt", content="hi")
     assert (workspace / "new" / "dir" / "x.txt").read_text(encoding="utf-8") == "hi"
 
@@ -427,7 +435,7 @@ def test_unknown_tool_returns_error_result():
     assert loop.run("go") == "fine"
     tool_msgs = [m for m in loop.state.messages if m.role == "tool"]
     assert len(tool_msgs) == 1 and tool_msgs[0].tool_call_id == "c1"
-    payload = json.loads(tool_msgs[0].content)
+    payload = _tool_msg(tool_msgs[0].content)
     assert payload["success"] is False and "Unknown tool" in payload["error"]
 
 

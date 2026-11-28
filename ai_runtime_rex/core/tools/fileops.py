@@ -16,6 +16,75 @@ from .edit import READ_TRACKER, GuardFile, LocalFile, ReadTracker, apply_edit, s
 from ..guard import get_guard_client
 from ..config import Config
 
+READ_LIMIT = 2000  # lines per read unless the model asks for fewer
+LINE_CAP = 2000  # characters per line in read output
+READ_CHAR_CAP = 200 * 1024  # characters per read result
+# Folders that are build output, caches or tool data: list/glob/grep leave them out.
+SKIP_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", "target", ".gradle",
+                       ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", ".svn", ".hg"})
+
+DESCRIPTION = """Workspace files. Operations:
+- list: entries of a folder (path, default "."); recursive=true for a whole small tree. Build/cache folders
+  (.git, target, node_modules, __pycache__, .venv, .idea, ...) are skipped. Example: {"operation": "list", "path": "src"}
+- glob: files matching a pattern, e.g. {"operation": "glob", "pattern": "**/*.java"}
+- grep: regex search in file contents, result lines "path:line: text"; narrow with path and include
+  (e.g. "*.py"). Example: {"operation": "grep", "pattern": "def main", "include": "*.py"}
+- read: file with numbered lines ("  12\\tcode"); offset = first line (1-based), limit = number of lines
+  (default 2000). A longer file ends with a note giving the next offset. Cite path:line from these numbers;
+  never copy the number prefix into an edit. Example: {"operation": "read", "path": "src/app.py", "offset": 200, "limit": 100}
+- write: create or replace a whole file (content). edit: replace old_str with new_str in a file you have read."""
+
+
+def _skipped(rel: Any) -> bool:
+    text = rel.get("path", "") if isinstance(rel, dict) else str(rel)
+    return any(seg in SKIP_DIRS for seg in text.replace("\\", "/").split("/")[:-1]) or \
+        text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] in SKIP_DIRS
+
+
+def _keep(items: Any) -> Any:
+    if isinstance(items, list):
+        return [i for i in items if not _skipped(i)]
+    return items
+
+
+def number_lines(text: Any, offset: Any = None, limit: Any = None) -> Any:
+    """``cat -n`` style view of ``text`` from line ``offset`` (1-based), at most ``limit`` lines, size capped."""
+    if not isinstance(text, str):
+        return text
+    try:
+        start = max(1, int(offset)) if offset not in (None, "") else 1
+    except (TypeError, ValueError):
+        start = 1
+    try:
+        count = max(1, int(limit)) if limit not in (None, "") else READ_LIMIT
+    except (TypeError, ValueError):
+        count = READ_LIMIT
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    total = len(lines)
+    if total == 0:
+        return "(empty file)"
+    if start > total:
+        return f"(offset {start} is past the end: the file has {total} lines)"
+    out: list[str] = []
+    size = 0
+    end = start - 1
+    width = len(str(min(total, start + count - 1)))
+    for n in range(start, min(total, start + count - 1) + 1):
+        line = lines[n - 1]
+        if len(line) > LINE_CAP:
+            line = line[:LINE_CAP] + " [... line cut]"
+        row = f"{n:>{width}}\t{line}"
+        if size + len(row) > READ_CHAR_CAP and out:
+            break
+        out.append(row)
+        size += len(row) + 1
+        end = n
+    if end < total:
+        out.append(f"[... truncated: lines {end + 1}-{total} not shown; read again with offset={end + 1}]")
+    return "\n".join(out)
+
 
 class FileOpsTool(Tool):
     """File operations tool (read, write, edit, list, glob, grep)."""
@@ -23,7 +92,7 @@ class FileOpsTool(Tool):
     def __init__(self, config: Config | None = None, tracker: ReadTracker | None = None) -> None:
         schema = ToolSchema(
             name="fileops",
-            description="File operations: read, write, edit, list, glob, grep",
+            description=DESCRIPTION,
             parameters={
                 "type": "object",
                 "properties": {
@@ -70,6 +139,18 @@ class FileOpsTool(Tool):
                         "type": "string",
                         "description": "Exclude pattern for grep",
                     },
+                    "root": {
+                        "type": "string",
+                        "description": "glob: folder to search in (default .)",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "read: first line to show (1-based)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "read: number of lines to show (default 2000)",
+                    },
                 },
                 "required": ["operation"],
             },
@@ -86,6 +167,16 @@ class FileOpsTool(Tool):
 
     def execute(self, **kwargs: Any) -> Any:
         operation = kwargs.pop("operation")
+        offset = kwargs.pop("offset", None)
+        limit = kwargs.pop("limit", None)
+        result = self._execute(operation, **kwargs)
+        if operation == "read":
+            return number_lines(result, offset, limit)
+        if operation in ("list", "glob", "grep") and isinstance(result, dict):
+            return {k: _keep(v) for k, v in result.items()}
+        return result
+
+    def _execute(self, operation: str, **kwargs: Any) -> Any:
         if self._config and self._config.get("cli.unsafe_local_tools"):
             return self._exec_local(operation, **kwargs)
         guard = self._get_guard()
@@ -190,7 +281,8 @@ class FileOpsTool(Tool):
             exclude = kwargs.get("exclude")
             rx = re.compile(pattern)
             matches = []
-            for dirpath, _, fnames in os.walk(base):
+            for dirpath, dirnames, fnames in os.walk(base):
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
                 for fn in fnames:
                     if include and not fnmatch.fnmatch(fn, include):
                         continue

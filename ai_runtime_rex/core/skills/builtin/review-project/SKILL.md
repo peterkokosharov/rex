@@ -3,7 +3,7 @@ name: review-project
 description: Assess a whole unfamiliar project or repository - structure, quality, problems, suggestions. Use for "look at this project and tell me how it is", onboarding or audit requests.
 ---
 
-Systematic review of a repository you do not know yet. Work through the steps; do not answer before step 5.
+Systematic review of a repository you do not know yet. Work through the steps; do not answer before step 6.
 
 1. **Map the root.** `fileops list .`, then read the build files (pom.xml, build.gradle*, pyproject.toml,
    setup.py, requirements*.txt, package.json, go.mod, Cargo.toml, Makefile), README, AGENTS.md and CI config

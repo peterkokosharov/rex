@@ -143,6 +143,14 @@ On top come the skill index (built-in task skills `review-project`, `java-maven`
 `code-review`, `write-tests`, `debug`, `commit-pr`; `ai-rex skills` lists them) and AGENTS.md (template:
 [AGENTS-TEMPLATE.md](AGENTS-TEMPLATE.md)).
 
+What the model sees from tools: plain text, not JSON. `fileops read` returns numbered lines (`  12<TAB>code`),
+2000 lines per call, `offset`/`limit` for ranges and a "read again with offset=N" note on longer files; a failed
+call reads `ERROR: ...`; shell results show the exit code, stdout and stderr. `list`, `glob` and `grep` skip build
+and cache folders (`.git`, `target`, `build`, `dist`, `node_modules`, `__pycache__`, `.venv`, `.idea`, ...).
+Safety net: a reply that is a tool call written as text (`{"tool_calls"...`, `<invoke ...>`), or an empty reply
+right after tool results, is not taken as the answer; the agent is told to continue (at most twice), and such
+text is never printed as the answer.
+
 ## MCP: using other tools
 
 ai-rex speaks the Model Context Protocol (MCP) as a client, so it can use tools that other people wrote: a Jira

@@ -22,6 +22,14 @@ from runtimelib.llm import ToolCall
 from runtimelib.permissions.rules import classify
 from runtimelib.tools.mcp_tool import mcp_tool_name
 
+
+def _tool_msg(text):
+    """Plain-text tool message -> {"success", "result", "error"} (failures start with "ERROR: ")."""
+    if text.startswith("ERROR: "):
+        return {"success": False, "result": None, "error": text[len("ERROR: "):]}
+    return {"success": True, "result": text, "error": None}
+
+
 FIXTURE = str(Path(__file__).parent / "fixtures" / "mcp_echo_server.py")
 BASE = {"liteLLM": {"base_url": "http://x", "api_key": "k", "model": "m"}}
 
@@ -54,7 +62,7 @@ def make_loop(extra=None, asker=None):
 def call(loop, name, args):
     tc = ToolCall(id="c1", type="function", function={"name": name, "arguments": json.dumps(args)})
     loop._execute_tool_calls([tc])
-    return json.loads(loop.state.messages[-1].content)
+    return _tool_msg(loop.state.messages[-1].content)
 
 
 class DefaultTools(unittest.TestCase):

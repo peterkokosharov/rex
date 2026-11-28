@@ -22,7 +22,12 @@ class GitTool(Tool):
     def __init__(self, config: Config | None = None) -> None:
         schema = ToolSchema(
             name="git",
-            description="Git operations: status, diff, add, commit, log, branch, checkout",
+            description=(
+                "Repository state and history: status, diff (files, staged), log (max_count, oneline), branch.\n"
+                "Use log and diff to learn what changed recently and why.\n"
+                "add, commit and checkout change the repository: only when the user asked for it.\n"
+                'Example: {"operation": "log", "max_count": 15, "oneline": true}'
+            ),
             parameters={
                 "type": "object",
                 "properties": {

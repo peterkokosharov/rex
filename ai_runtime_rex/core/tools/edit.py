@@ -243,7 +243,10 @@ class EditTool(Tool):
             description=(
                 "Replace exact text in an existing file. The file must have been read with fileops read "
                 "in this session and not changed since. old_string must match exactly once (or set "
-                "replace_all). Returns a unified diff. Use fileops write to create new files."
+                "replace_all). Returns a unified diff. Use fileops write to create new files.\n"
+                "Copy old_string from the file text without the line-number prefix of the read output, "
+                "with enough context to be unique.\n"
+                'Example: {"path": "src/app.py", "old_string": "retries = 3", "new_string": "retries = 5"}'
             ),
             parameters={
                 "type": "object",
