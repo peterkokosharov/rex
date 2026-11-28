@@ -37,3 +37,20 @@ def entry():
 def test_network_policy(entry, monkeypatch, domains, url, ok):
     monkeypatch.setenv("GUARD_ALLOWED_DOMAINS", domains)
     assert entry._check_network_policy(url) is ok
+
+
+def test_bash_exec_does_not_inherit_stdin(entry, tmp_path):
+    server = entry.create_server(tmp_path)
+    handler = server._methods["bash.exec"]
+    # A child that reads stdin must see EOF at once, not the guard's JSON-RPC stream.
+    res = handler(command=f'"{sys.executable}" -c "import sys; print(len(sys.stdin.read()))"', timeout=20)
+    assert res["stdout"].strip() == "0"
+
+
+def test_every_guard_subprocess_closes_stdin():
+    text = ENTRY.read_text(encoding="utf-8")
+    import re
+    calls = re.findall(r"subprocess\.run\((.*?)\n\s*\)|subprocess\.run\(([^\n]*)\)", text, re.S)
+    assert calls
+    for a, b in calls:
+        assert "stdin=subprocess.DEVNULL" in (a or b), (a or b)[:80]

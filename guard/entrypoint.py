@@ -146,7 +146,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         run_env = {**os.environ, **(env or {})}
         try:
             proc = subprocess.run(
-                command, shell=True, cwd=work_dir, env=run_env,
+                command, shell=True, cwd=work_dir, env=run_env, stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=timeout
             )
             return {
@@ -283,7 +283,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         try:
             proc = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=work_dir,
-                capture_output=True, text=True, timeout=10
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10
             )
             return {
                 "exit_code": proc.returncode,
@@ -303,7 +303,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         if files:
             cmd.extend(["--"] + files)
         try:
-            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(cmd, cwd=work_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout,
@@ -318,7 +318,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         work_dir = _safe_path(workspace, cwd)
         cmd = ["git", "add"] + files
         try:
-            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(cmd, cwd=work_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout,
@@ -335,7 +335,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         if author:
             cmd.extend(["--author", author])
         try:
-            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(cmd, cwd=work_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout,
@@ -353,7 +353,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
             cmd.append("--oneline")
         cmd.extend(["-n", str(max_count)])
         try:
-            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(cmd, cwd=work_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout,
@@ -370,7 +370,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
         if all_branches:
             cmd.append("-a")
         try:
-            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(cmd, cwd=work_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout,
@@ -388,7 +388,7 @@ def create_server(workspace: Path) -> JSONRPCServer:
             cmd.append("-b")
         cmd.append(branch)
         try:
-            proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(cmd, cwd=work_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout,
