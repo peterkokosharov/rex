@@ -1,6 +1,6 @@
 <!--
 Author: Peter Kokosharov <peter.kokosharov@gmail.com>
-AI models: claude-opus-5-5
+AI models: claude-opus-5-5, claude-sonnet-5-5
 Licensed under MIT License
 -->
 
@@ -8,6 +8,52 @@ Licensed under MIT License
 
 Date: 2026-11-28. Status: **design for review; no code has moved.** Owner's target architecture (2026-11-28) is
 authoritative; this document maps today's code onto it and plans the way there in small green steps.
+
+## Owner decisions 2026-11-28 (override the naming below)
+
+Made by the owner on 2026-11-28 after reading this design. The command names below are final; the rest of the
+document is adjusted to them.
+
+**Final naming (one consistent family)**
+
+| Name | What it is |
+|---|---|
+| `ai-rex` | the **CORE / engine command**: fast, thin shell client for unix pipes (`cmd1 \| ai-rex -i "..." \| grep xx`, also `ai-rex -i "how are you" -m nemotron-ultra --port 4000`), server/proxy mode (`--port`, `--jsonl`, `--acp`), embedded as a process in Layka, IntelliJ and VS Code. Configuration from **environment variables only**; it never writes or edits configuration files. Python: thin app `ai_runtime_rex.core` over `lib_runtime_rex` |
+| `rex` | the **CLI app**: py_tvision TUI to work with the whole rex system in a terminal (IDE terminals too): panels and dialogs for all settings, including the full kiko control (what the kiko tray does today; the tray becomes optional), status line with context % and a kiko health indicator (green = ok, orange = degraded, red = down). Models via kiko or LiteLLM. Python: `ai_runtime_rex.cli` (formerly Strelka) |
+| `rex-desktop` | the **GUI** (`ai_runtime_rex.ui`); reserved, empty for now. Sisi stays a separate C++/Qt repo |
+| `rex-web` | the **web server** (Lassie, `ai_runtime_rex.web`) |
+
+Rationale: the product face (what a person types and uses) gets the short brand name, like `claude` or `gemini`; the
+engine gets a stable, script-safe name that pipelines and embedding hosts can depend on; the four names read as one
+family.
+
+**kiko bundled, one folder.** kiko (gateway + kikolib) is BUNDLED inside `rex` (the TUI app). The whole app installs
+into ONE folder; deleting the folder uninstalls it completely (code, settings, sessions, logs). Settings written by
+`rex` live in that folder, not in `~/.config` or AppData. `ai-rex` reads the environment only, so `rex` passes its
+settings to the `ai-rex` processes it starts as environment variables.
+
+**Decided answers to the open questions (section 8.2)**
+
+| Question | Decision |
+|---|---|
+| Strelka home | becomes the `rex` CLI inside the rex repo (`ai_runtime_rex.cli`); py_tvision copied in unchanged |
+| Lassie home | web server `rex-web` inside the rex repo (`ai_runtime_rex.web`) |
+| Sisi / `ui` package | Sisi stays a separate C++/Qt repo; `ai_runtime_rex.ui` (`rex-desktop`) stays empty for now |
+| Orchestrator and `REX` facade | go to `ai_runtime_rex.extras` |
+| Layka | stays private and separate (process boundary, section 5) |
+| Debian name clash | Debian's Perl `rex` package also installs `/usr/bin/rex`. Our Debian package for the TUI is named e.g. `rex-tui`; the command conflict is handled at packaging time (alternatives or diversion). The portable one-folder install is unaffected |
+| First real embedding | decided, see "Embedding order" below (the independent review in `docs/design/2026-11-28-rex-positioning.md` had recommended the Odoo copilot first; the owner chose another order) |
+
+**Embedding order (owner, 2026-11-28).** 1) Layka runs `ai-rex` as a shell/child process (stdio JSONL bridge);
+2) the IntelliJ plug-in, also through the `ai-rex` process (used for testing); 3) the Odoo copilot uses
+`lib_runtime_rex` directly, in-process, as a library: "it makes no sense to call a shell process from a Python
+script". So the stdio bridges (JSONL, ACP) come first in the migration, the HTTP bridge later, and the in-process
+public API (`Agent` etc., section 3) must be solid by the Odoo step.
+
+Consequence: the engine commands of sections 3-8 keep the name `ai-rex` as written; the TUI (formerly "Strelka") is
+`rex`. The Windows zip and the Debian packages ship both commands.
+
+---
 
 Target in one picture:
 
@@ -126,13 +172,16 @@ three front-ends; `process-globals.md` already lists every process-wide global w
 - **Library:** top-level package `lib_runtime_rex` (the owner's name), distribution `lib-runtime-rex`. Top-level so
   that an embedder writes `import lib_runtime_rex` and installs one wheel without any app code.
 - **Apps:** stay in the existing umbrella `ai_runtime_rex` (the branch's investment is kept): `ai_runtime_rex.core`,
-  `.cli`, `.web`, `.ui`, `.extras`; distribution `ai-rex`, command `ai-rex`.
+  `.cli`, `.web`, `.ui`, `.extras`; distribution `ai-rex`, commands `ai-rex` (core/engine) and `rex` (TUI) - see "Owner
+  decisions 2026-11-28".
 - The name clash is real: today `ai_runtime_rex.core` *is* the engine; in the target it is the thin app. The plan
   (section 7) moves the engine out first, leaves alias shims for the old engine paths, and only then puts app
   modules under `ai_runtime_rex.core`. App module names (`main`, `repl`, `oneshot`, `serve`, `commands`) never
   collide with engine sub-package names (`agent`, `llm`, `tools`, ...); `core.cli` is emptied before reuse.
-- Rejected: a third namespace (`ai_rex`, `rex`). `rex` collides with other `rex` packages (the reason for the
-  `ai-rex` rename); `ai_rex` would be the fourth Python name for the same project.
+- Rejected: a third Python namespace (`ai_rex`, `rex`); `ai_rex` would be the fourth Python name for the same
+  project. (Owner decision 2026-11-28: the Python/distribution names stay `ai_runtime_rex` / `ai-rex`; the *commands*
+  are `ai-rex` for the engine and `rex` for the TUI. The Debian clash on `rex` is handled at packaging time, see the
+  decisions section.)
 
 ### 2.2 Layout
 
@@ -274,7 +323,9 @@ float, bool, list, dict, `Optional`, `Literal`); anything else must use a `Tool`
 ## 4. Bridge protocol B (module `lib_runtime_rex.bridge`)
 
 One internal event model (`Event` from section 3), three transports. Every transport drives `api.Agent`, so a
-feature added to the library reaches all clients at once.
+feature added to the library reaches all clients at once. All transports are served by the **`ai-rex`** command
+(owner decision 2026-11-28; this is the original naming, now final: `ai-rex --jsonl`, `ai-rex --acp`,
+`ai-rex --port`, `ai-rex -i`). `ai-rex` takes its settings from environment variables only.
 
 ### 4.1 Messages (shared by all transports)
 
@@ -332,10 +383,12 @@ encoder) - nothing new to write at the HTTP level, and no third-party server.
   non-loopback bind requires an explicit `--host` and a token file; WebSocket `Origin` checked (kikolib supports an
   origin list).
 
-### 4.5 One-shot (`ai-rex -i "how are you" -m nemotron-ultra`)
+### 4.5 One-shot and pipes (`ai-rex -i "how are you" -m nemotron-ultra`)
 
 Not a protocol but the same path: `core.oneshot` builds one `Agent`, prints `final` as plain text to stdout,
-notices to stderr, exits 0 / non-zero. Today the prompt is positional (`runtime/__main__.py:48`); `-i/--input` is
+notices to stderr, exits 0 / non-zero. Pipe use (`cmd1 | ai-rex -i "..." | grep xx`): piped stdin is passed to the
+model as context for the `-i` instruction; startup must stay fast (lazy imports; no TUI, no kiko control code
+loaded). Settings come from environment variables only; `ai-rex` never writes configuration files. Today the prompt is positional (`runtime/__main__.py:48`); `-i/--input` is
 added as an alias and `-m` as a short form of `--model`. `--port` with `-i` is meaningless and rejected.
 
 ---
@@ -344,8 +397,8 @@ added as an alias and `-m` as a short form of `--model`. `--port` with `-i` is m
 
 | Front-end | Today (checked) | Goes to | Why |
 |---|---|---|---|
-| **rex/core** | `runtime/__main__.py` readline REPL + one-shot + `--jsonl` + `--acp` | `ai_runtime_rex.core` | the thin headless app; the plain line REPL stays here (no py_tvision needed, works over SSH and in a dumb terminal) |
-| **Strelka** (rex/cli) | `~/py-vision (the py-vision repo)`: `src/py_tvision` toolkit (~17k lines in the repo), `src/strelka` = only `config.py`; agent front-end not started | `ai_runtime_rex.cli`; `py_tvision` vendored unmodified, pinned (same rule as kikolib) | the owner's layout puts the TUI in rex; py_tvision stays a generic toolkit in its own repo. In-process by default (`api.Agent` on a worker thread), `--connect` to a running `ai-rex --port` as an option |
+| **rex/core** (command `ai-rex`) | `runtime/__main__.py` readline REPL + one-shot + `--jsonl` + `--acp` | `ai_runtime_rex.core` | the thin headless app and pipe client; the plain line REPL stays here (no py_tvision needed, works over SSH and in a dumb terminal); env-only configuration |
+| **Strelka -> `rex` CLI** (rex/cli) | `~/py-vision (the py-vision repo)`: `src/py_tvision` toolkit (~17k lines in the repo), `src/strelka` = only `config.py`; agent front-end not started | `ai_runtime_rex.cli`, command `rex`; `py_tvision` copied in unchanged (decided 2026-11-28), pinned | the TUI for the whole rex system: settings panels, full kiko control, status line with context % and kiko health (green/orange/red). kiko is bundled; one install folder. In-process by default (`api.Agent` on a worker thread), `--connect` to a running `rex --port` as an option |
 | **Lassie** (rex/web) | `~/lassie`: stdlib Python (1 414 lines) + plain HTML/JS/CSS; spawns one `python -m runtime --jsonl` per page, SSE to the browser | `ai_runtime_rex.web` | same stack as rex (stdlib + plain JS), MIT, same author. Its server becomes a thin layer over `bridge/http.py`; keep one process per page until C7 is fixed, then in-process sessions |
 | **Sisi** (Qt GUI) | `~/sisi`: C++/Qt 6, CMake, spawns `python -m runtime --model M --jsonl --local-tools` (`src/rexbridge.cpp:42`) | **stays its own repo**, client of bridge B (JSONL, later WebSocket) | C++ with its own build, packaging and Qt licence questions; a Python Qt GUI would need PySide (not stdlib, breaks the owner's rule). `ai_runtime_rex.ui` stays an empty slot unless the owner wants a stdlib `tkinter` GUI |
 | **Layka** (C++ TUI) | `~/layka`: C++ Turbo Vision, spawns `python -P -m runtime --model M --jsonl` (`src/main.cpp:995`) | **stays a separate private repo** | see below |
@@ -354,7 +407,7 @@ added as an alias and `-m` as a short form of `--model`. `--port` with `-i` is m
 
 **Why Layka stays out (process boundary).** Layka embeds rex only as a child process speaking JSONL over stdio.
 Nothing is linked or imported across that line: rex needs no Layka file, Layka needs only the `ai-rex` command and
-the protocol document. So the public MIT repo never contains, references or builds Layka, and Layka can change,
+the protocol document (today `python -m runtime`, later the `ai-rex` command). So the public MIT repo never contains, references or builds Layka, and Layka can change,
 stay private or carry another licence without touching rex. The protocol `protocol` number in `ready` is the
 only contract; rex keeps old message types working within a protocol major. Two notes from the read: Layka's
 `LICENSE` file says MIT although the repo is meant to be private (harmless while unpublished; owner to decide), and
@@ -369,12 +422,18 @@ deleted so py_tvision has one source, as with kikolib.
   (copied unchanged at build time, as today), no dependencies, no entry points, package data = built-in skills and
   the guard container entrypoint. This is what Odoo / an IDE plug-in host / a surveillance service installs.
 - **Wheel 2: `ai-rex`** built from the root `pyproject.toml`: `ai_runtime_rex` apps + vendored `py_tvision` (for
-  `cli`), depends on `lib-runtime-rex==<same version>`. Entry points, all thin:
-  `ai-rex = ai_runtime_rex.core.main:main` (one-shot, REPL, `--jsonl`, `--acp`, `--port`),
-  `ai-rex-tui = ai_runtime_rex.cli.main:main`, `ai-rex-web = ai_runtime_rex.web.main:main`.
+  `cli`), depends on `lib-runtime-rex==<same version>`. Entry points, all thin (owner decision 2026-11-28):
+  `ai-rex = ai_runtime_rex.core.main:main` (one-shot, pipes, REPL, `--jsonl`, `--acp`, `--port`; env-only config),
+  `rex = ai_runtime_rex.cli.main:main` (the py_tvision TUI), `rex-web = ai_runtime_rex.web.main:main` (Lassie web
+  server), `rex-desktop` reserved for the GUI (`ai_runtime_rex.ui`, empty for now).
   The back-compat shims (`runtime`, `runtimelib`, `rex_runtime_lib`) ship in this wheel until removed.
-- **Debian package and Windows zip** (existing `packaging/`): one bundle containing both wheels' code, as today;
-  portable folder, delete = gone. No change for users.
+- **kiko is bundled in `rex` (the TUI app).** The TUI distribution carries the kiko gateway next to the vendored `kikolib`
+  and installs into ONE folder (code, settings, sessions, logs); deleting the folder removes everything. The
+  `ai-rex` engine command alone (library + thin app) stays usable without the kiko gateway (any OpenAI-compatible endpoint).
+- **Debian package and Windows zip** (existing `packaging/`): one bundle, portable folder, delete = gone; both
+  commands `ai-rex` and `rex` inside. Debian's Perl `rex` package also installs `/usr/bin/rex`: our Debian package
+  for the TUI is named e.g. `rex-tui` and the command conflict is handled at packaging time; the portable
+  one-folder install is unaffected.
 - **Versioning:** one version for both wheels (lockstep), single source in `lib_runtime_rex/__init__.py`, read by
   both `pyproject.toml` files (`dynamic = ["version"]`) and by the consistency test; the other three strings (C21)
   become imports of it. SemVer: `0.x` until the public API (section 3) has one real external embedder; then `1.0`.
@@ -449,25 +508,39 @@ same commit).
 15. `ai_runtime_rex/core/` becomes the app: `runtime/__main__.py` and `runtime/commands.py` move to
     `ai_runtime_rex/core/main.py`, `repl.py`, `commands.py`; `core/cli/{ansi,render,readline,parser,registry,shell}`
     move with them; `runtime/__main__.py` stays as a 5-line shim (`-m runtime` keeps working). Add `-i/--input`,
-    `-m`. Entry point `ai-rex` repointed.
+    `-m`, piped-stdin handling. Entry point `ai-rex` (the engine command) repointed here. Its configuration is read from
+    environment variables only: the config-file writing paths are removed from `core` (they move to the `rex`
+    TUI in step 19). The new `rex` entry point appears only with the TUI (step 19).
 16. Library defaults flip: no SIGINT handler and no atexit in `AgentLoop` (apps already install them since step 7);
     the layering allow-list should now be empty for rules 1 and 3.
-17. `bridge/http.py` + `bridge/openai_facade.py` on kikolib `server`/`websocket`/`sse`; `ai-rex --port`. New tests
+17. (LATER: after the Odoo embedding, see the embedding order above) `bridge/http.py` + `bridge/openai_facade.py` on kikolib `server`/`websocket`/`sse`; `ai-rex --port`. New tests
     with an in-process server and a fake LLM.
 18. ACP: `session/request_permission` mapping; then `session/load` via `SessionStore`; then in-process sessions
     (needs steps 9-10 and 16). Each a separate commit with its own tests.
-19. `ai_runtime_rex.cli` (Strelka) and `ai_runtime_rex.web` (Lassie) brought in, each from its own repo with
-    history if wanted (owner decision, section 8), each on the public API only. `orchestrator/` and `core/rex.py`
-    move to `ai_runtime_rex/extras/` (or are removed, owner decision).
+19. `ai_runtime_rex.cli` (the `rex` TUI, formerly Strelka) and `ai_runtime_rex.web` (Lassie) brought in, each
+    from its own repo with history if wanted, each on the public API only (decided 2026-11-28). `py_tvision` is
+    copied in unchanged. The TUI gets the settings panels and dialogs, the full kiko control (replacing the tray as
+    the main control; the tray becomes optional), the status line (context %, kiko health green/orange/red), and
+    the bundled kiko gateway with the one-folder install; it starts `ai-rex` processes with settings passed as
+    environment variables. `orchestrator/` and `core/rex.py` move to `ai_runtime_rex/extras/` (decided).
 
 **Phase 4 - packaging and shim removal**
 
-20. Two `pyproject.toml` files, single version source, Python `>=3.12`, deb/zip scripts updated; a test builds both
-    wheels and imports `lib_runtime_rex` from wheel 1 alone (proves the library has no app dependency).
+20. Two `pyproject.toml` files, single version source, Python `>=3.12`, deb/zip scripts updated (one install
+    folder for `rex` with kiko bundled; Debian package for the TUI e.g. `rex-tui`, decided here); a test builds
+    both wheels and imports `lib_runtime_rex` from wheel 1 alone (proves the library has no app dependency).
 21. After Layka, Sisi and Lassie start `ai-rex --jsonl` instead of `-m runtime` (one-line change in each repo,
     owner's timing): remove `runtimelib/`, `rex_runtime_lib/`, the `ai_runtime_rex.core.<engine>` aliases and,
     last, `runtime/`. This is the only step that can break an outside caller, so it goes into a minor release
     with a note.
+
+**Owner's embedding order (2026-11-28) applied to the steps.** Priority order: (a) steps 1-2, 13 and 15 first
+(JSONL bridge hardened and the `ai-rex` command stable: Layka, step 21 later); (b) step 18 first half next
+(ACP `session/request_permission`, then `session/load`) for the IntelliJ plug-in through the `ai-rex` process;
+(c) steps 3-11 and 14 (clean, no-side-effect, workspace-explicit in-process `Agent`) must be finished and covered
+by the public API snapshot test before the Odoo copilot starts, since Odoo imports the library with no process in
+between; (d) step 17 (HTTP + WebSocket bridge, `ai-rex --port`) is moved later, after the Odoo step, and is no
+longer a precondition for anything. Step 18's in-process sessions part still waits for steps 9, 10, 16.
 
 Order matters only where stated: 3-11 are independent of each other and can be done in any order; 12 needs 4;
 13 needs 12 for `cli`; 14 needs 12; 15 needs 13 and 14; 16 needs 7 and 15; 18 needs 9, 10, 16.
@@ -490,19 +563,28 @@ Order matters only where stated: 3-11 are independent of each other and can be d
 
 ### 8.2 Open questions for the owner (ownership, scope, priorities only)
 
-1. **Strelka home.** Move the Strelka app from `~/py-vision (the py-vision repo)` into rex as `ai_runtime_rex.cli` (py_tvision
+**Status 2026-11-28: questions 1-5 and 7 are decided (see "Owner decisions 2026-11-28" at the top); only question 6
+remains open.** The original wording is kept below for the record.
+
+1. **Strelka home. DECIDED: moves into rex as the `rex` CLI, py_tvision copied in unchanged.** Move the Strelka app from `~/py-vision (the py-vision repo)` into rex as `ai_runtime_rex.cli` (py_tvision
    stays in py-vision and is vendored), or keep Strelka in py-vision as an outside client? Recommendation: move.
-2. **Lassie home.** Move Lassie into rex as `ai_runtime_rex.web`, or keep it a separate repo using the HTTP bridge?
+2. **Lassie home. DECIDED: web inside rex.** Move Lassie into rex as `ai_runtime_rex.web`, or keep it a separate repo using the HTTP bridge?
    Recommendation: move (same stack, same licence).
-3. **`ai_runtime_rex.ui`.** Leave empty (Sisi stays C++/Qt in its own repo), or build a small stdlib `tkinter` GUI
+3. **`ai_runtime_rex.ui`. DECIDED: empty for now; Sisi stays a separate C++/Qt repo.** Leave empty (Sisi stays C++/Qt in its own repo), or build a small stdlib `tkinter` GUI
    there? Recommendation: leave empty.
-4. **Orchestrator and the `REX` facade.** Keep as `ai_runtime_rex.extras`, or drop? (Pending since `RENAME-MAP.md`.)
-5. **Command name.** The command is `ai-rex` (Debian/Homebrew clash with Perl Rex). Is `ai-rex -i ... -m ...
-   --port 4000` fine, or should the Windows zip also ship a `rex.cmd` alias?
-6. **Priority.** Phase 1 alone already makes the library embeddable in-process for one workspace. Is an Odoo copilot
-   or an IDE plug-in the first real embedder? That decides whether ACP (step 18) or the HTTP bridge (step 17) comes
-   first.
-7. **Layka licence file** says MIT while the repo is private: keep as is (unpublished), or change?
+4. **Orchestrator and the `REX` facade. DECIDED: go to extras.** Keep as `ai_runtime_rex.extras`, or drop? (Pending since `RENAME-MAP.md`.)
+5. **Command name. DECIDED: `ai-rex` is the engine command, `rex` the TUI app (`rex-desktop` GUI, `rex-web`
+   web server); Debian package for the TUI e.g. `rex-tui` (Debian's Perl `rex` also installs `/usr/bin/rex`).**
+   Original question: the command is `ai-rex` (Debian/Homebrew clash with Perl Rex). Is `ai-rex -i ... -m ... --port 4000` fine, or should the Windows
+   zip also ship a `rex.cmd` alias?
+6. **Priority / first embedding. DECIDED (owner, 2026-11-28): order of embedding = 1) Layka runs `ai-rex` as a
+   child process (stdio JSONL bridge); 2) the IntelliJ plug-in, also through the `ai-rex` process (used for
+   testing); 3) the Odoo copilot uses `lib_runtime_rex` DIRECTLY in-process as a library (no shell process from
+   Python).** Consequence for the plan: the stdio bridges (JSONL, ACP) come first, the HTTP bridge later, and the
+   in-process public API (`Agent` etc.) must be solid by the Odoo step. The independent review
+   (`docs/design/2026-11-28-rex-positioning.md`) recommended the Odoo copilot as first; the owner chose this order.
+   Original question: is an Odoo copilot or an IDE plug-in the first real embedder?
+7. **Layka licence file** (Layka itself stays private and separate - decided) says MIT while the repo is private: keep as is (unpublished), or change?
 
 ---
 
@@ -536,4 +618,7 @@ Sources: rex working tree `C:\private\rex`, branch `refactor/ai-runtime-rex`, co
 repos read-only on 2026-11-28: `~/lassie` (README, `lassie/rexproc.py`),
 `~/sisi` (README, `src/rexbridge.cpp`), `~/layka` (README, `src/main.cpp`,
 `py_port/`, `LICENSE`), `~/py-vision (the py-vision repo)` (README, `pyproject.toml`, `src/`, last commit `96f432b`),
-`~/kiko-src` (`gateway/`, `embedded/README.md`). ACP details: from memory, not re-checked.
+`~/kiko-src` (`gateway/`, `embedded/README.md`). ACP details: from memory, not re-checked. Owner decisions
+(commands `ai-rex` / `rex`, bundled kiko, one-folder install, answers to open questions, Debian `rex` package
+clash): owner, 2026-11-28; Debian package name clash noted from the owner's statement, not re-checked against the
+Debian archive.
