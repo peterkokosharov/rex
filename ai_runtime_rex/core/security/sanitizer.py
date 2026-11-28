@@ -109,7 +109,7 @@ class InputValidator:
     # Control characters that could corrupt parsing
     CONTROL_CHARS = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
     # Zero-width characters used for obfuscation
-    ZERO_WIDTH = re.compile(r'[​-‍﻿]')
+    ZERO_WIDTH = re.compile(r'[\u200b-\u200d\ufeff]')
 
     @classmethod
     def validate_user_input(cls, text: str, max_len: int = 10000) -> str:
