@@ -116,22 +116,25 @@ class JSONRPCServer:
 
 def _safe_path(base: Path, path: str) -> Path:
     """Resolve path relative to base, ensure it's within base."""
-    target = (base / path).resolve()
-    if not str(target).startswith(str(base.resolve())):
-        raise GuardError(-32001, f"Path traversal attempt: {path}")
+    root = base.resolve()
+    target = (root / path).resolve()
+    try:
+        target.relative_to(root)  # component-wise: /workspace2 is NOT inside /workspace
+    except ValueError:
+        raise GuardError(-32001, f"Path traversal attempt: {path}") from None
     return target
 
 
 def _check_network_policy(url: str) -> bool:
     """Check if network access is allowed for URL."""
-    # TODO: implement policy check
-    allowed_domains = [d.strip().lstrip("*.").lstrip(".").lower()
+    # "*.x.org" / ".x.org" / "x.org." all mean x.org and its subdomains; FQDN trailing dots are dropped
+    allowed_domains = [d.strip().lstrip("*.").rstrip(".").lower()
                        for d in os.environ.get("GUARD_ALLOWED_DOMAINS", "").split(",")]
     allowed_domains = [d for d in allowed_domains if d]  # an empty entry must never match
     if not allowed_domains:
         return False
     from urllib.parse import urlparse
-    host = (urlparse(url).hostname or "").lower()
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
     # exact host or a real subdomain (dot boundary): evilexample.com must not match example.com
     return any(host == d or host.endswith("." + d) for d in allowed_domains)
 

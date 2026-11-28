@@ -33,6 +33,18 @@ def entry():
     (" example.com , api.x.org ", "https://api.x.org/x", True),  # whitespace tolerated
     ("Example.COM", "https://EXAMPLE.com/x", True),             # case-insensitive
     ("", "https://example.com", False),
+    ("example.com", "https://example.com./x", True),             # FQDN trailing dot = same host
+    ("example.com.", "https://api.example.com/x", True),         # trailing dot in the entry
+    ("example.com", "https://evilexample.com./x", False),
+    ("*.example.com", "https://a.example.com/x", True),
+    ("*", "https://anything.org/x", False),                      # a bare wildcard is not "allow all"
+    ("example.com", "https://example.com:8443/x", True),         # ports are not restricted
+    ("example.com", "https://example.com@evil.org/x", False),    # userinfo is not the host
+    ("example.com", "https://evil.org．example.com/x", False),  # fullwidth dot is not a label dot
+    ("example.com", "https://example.com。evil.org/x", False),
+    ("localhost", "http://127.0.0.1/x", False),                  # names never match IP literals
+    ("127.0.0.1", "http://127.0.0.1:8080/x", True),
+    ("example.com", "file:///etc/passwd", False),
 ])
 def test_network_policy(entry, monkeypatch, domains, url, ok):
     monkeypatch.setenv("GUARD_ALLOWED_DOMAINS", domains)
