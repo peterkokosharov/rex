@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,16 @@ from typing import Any, Optional
 
 from . import GuardClient, get_guard_client
 from ..config import Config
+
+
+_SAFE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+
+
+def _check_id(value: str, what: str = "id") -> str:
+    """An agent/session id becomes a directory name and a git branch: one safe path component."""
+    if not isinstance(value, str) or not _SAFE_ID.fullmatch(value) or ".." in value:
+        raise ValueError(f"invalid {what}: {value!r}")
+    return value
 
 
 @dataclass
@@ -200,6 +212,7 @@ class SandboxManager:
 
     def create_worktree(self, agent_id: str, base_branch: str = "main") -> WorktreeHandle:
         """Create isolated git worktree for agent."""
+        _check_id(agent_id, "agent_id")
         worktree_path = self.worktrees_dir / agent_id
 
         # Create worktree if it doesn't exist
@@ -227,6 +240,8 @@ class SandboxManager:
         Solution: Pre-create the agent worktree directory, then bind mount
         the specific absolute path (not a glob).
         """
+        _check_id(agent_id, "agent_id")
+        _check_id(session_id, "session_id")
         worktree_path = self.worktrees_dir / agent_id
         worktree_path.mkdir(parents=True, exist_ok=True)
 
@@ -254,6 +269,7 @@ class SandboxManager:
 
     def commit_and_merge(self, agent_id: str, message: str) -> dict:
         """Serialize all merges to main via cross-process/distributed lock."""
+        _check_id(agent_id, "agent_id")
         with self._merge_lock.acquire(timeout=30.0) as lock:
             # 1. Commit in worktree
             self._git_commit_in_worktree(agent_id, message)
@@ -292,13 +308,15 @@ class SandboxManager:
 def get_sandbox_manager(config: Config | None = None, project_root: Path | None = None, redis_url: str | None = None) -> SandboxManager:
     """Factory function to get or create sandbox manager."""
     global _sandbox_manager
-    if _sandbox_manager is None:
-        _sandbox_manager = SandboxManager(
-            project_root=project_root or Path.cwd(),
-            config=config,
-            redis_url=redis_url
-        )
-    return _sandbox_manager
+    with _sandbox_manager_lock:
+        if _sandbox_manager is None:
+            _sandbox_manager = SandboxManager(
+                project_root=project_root or Path.cwd(),
+                config=config,
+                redis_url=redis_url
+            )
+        return _sandbox_manager
 
 
 _sandbox_manager: SandboxManager | None = None
+_sandbox_manager_lock = threading.Lock()
