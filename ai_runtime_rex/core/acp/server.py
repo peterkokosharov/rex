@@ -272,8 +272,10 @@ class ACPServer:
 
         env = dict(os.environ)
         root = str(REX_ROOT)
-        pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = root + (os.pathsep + pythonpath if pythonpath else "")
+        # -P keeps the cwd off sys.path, but an empty or relative PYTHONPATH entry would put the
+        # (untrusted) project directory back: keep only absolute inherited entries.
+        inherited = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p and os.path.isabs(p)]
+        env["PYTHONPATH"] = os.pathsep.join([root, *inherited])
 
         proc = subprocess.Popen(
             cmd,
