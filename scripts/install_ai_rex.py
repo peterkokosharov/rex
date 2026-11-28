@@ -26,7 +26,11 @@ IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.egg-info")
 CMD = """@echo off
 REM ai-rex launcher (portable install). Uses "py -3" if present, else "python". No PATH change needed.
 setlocal
-set "PYTHONPATH=%~dp0lib;%PYTHONPATH%"
+REM No trailing ";": an empty PYTHONPATH entry would put the current directory on sys.path.
+set "AIREX_PP=%~dp0lib"
+if defined PYTHONPATH set "AIREX_PP=%AIREX_PP%;%PYTHONPATH%"
+set "PYTHONPATH=%AIREX_PP%"
+set "AIREX_PP="
 set "PY=python"
 where py >nul 2>nul && set "PY=py -3"
 %PY% -P -m runtime %*
@@ -39,11 +43,18 @@ PYTHONPATH="$here/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -P -m runtime "$@
 """
 UNINSTALL_CMD = """@echo off
 REM Removes this ai-rex install: deletes the folder this file is in.
-setlocal
-set "D=%~dp0"
-if not exist "%D%.ai-rex-install" (echo refusing: %D% holds no ai-rex install & exit /b 1)
-echo Deleting %D%
-start "" /b cmd /c "ping -n 2 127.0.0.1 >nul & rd /s /q "%D%""
+REM No ( ) blocks and the path only ever inside quotes: a folder name with ) & %% ^ ! must not break it.
+REM The child cmd expands %%AIREX_DIR%% itself (one pass, inside quotes), so the path is never re-parsed.
+setlocal DisableDelayedExpansion
+set "AIREX_DIR=%~dp0"
+if not exist "%AIREX_DIR%.ai-rex-install" goto refuse
+echo Deleting "%AIREX_DIR%"
+cd /d "%AIREX_DIR%.."
+start "" /b cmd /d /v:off /c "ping -n 2 127.0.0.1 >nul & rd /s /q "%%AIREX_DIR%%""
+exit /b 0
+:refuse
+echo refusing: "%AIREX_DIR%" holds no ai-rex install
+exit /b 1
 """
 UNINSTALL_SH = """#!/bin/sh
 here="$(cd "$(dirname "$0")" && pwd)"

@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install_ai_rex.py"
 
@@ -60,3 +62,56 @@ def test_gitattributes_keep_launcher_line_ends():
     out = subprocess.run(["git", "check-attr", "eol", "ai-rex", "deploy.sh", "ai-rex.cmd"], cwd=ROOT,
                          capture_output=True, text=True).stdout
     assert "ai-rex: eol: lf" in out and "deploy.sh: eol: lf" in out and "ai-rex.cmd: eol: crlf" in out
+
+
+def _uninstall_cmd_text():
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        import install_ai_rex
+    finally:
+        sys.path.pop(0)
+    return install_ai_rex.UNINSTALL_CMD.replace("\n", "\r\n")
+
+
+def _wait_gone(path, seconds=20):
+    import time
+    end = time.monotonic() + seconds
+    while path.exists() and time.monotonic() < end:
+        time.sleep(0.2)
+    return not path.exists()
+
+
+RUN_UNINSTALL = ["cmd", "/d", "/c", ".\\uninstall.cmd"]  # cwd = the install folder
+
+# Folder names that broke the old script: ")" closed its parenthesised block, "&" split commands,
+# "%" was expanded again by the child cmd.
+ODD_NAMES = ["a (x86) b", "a&b", "100%PATH%x", "x&echo INJECTED&rem x", "c^d!e"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe only")
+@pytest.mark.parametrize("name", ODD_NAMES)
+def test_uninstall_cmd_handles_odd_paths(tmp_path, name):
+    dest = tmp_path / name
+    dest.mkdir()
+    (dest / ".ai-rex-install").write_text("x")
+    (dest / "lib").mkdir()
+    (dest / "uninstall.cmd").write_bytes(_uninstall_cmd_text().encode())
+    r = subprocess.run(RUN_UNINSTALL, cwd=dest, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert "INJECTED" not in r.stdout.replace(name, "")
+    assert _wait_gone(dest), (r.stdout, r.stderr)
+    assert tmp_path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe only")
+@pytest.mark.parametrize("name", ["plain", "a (x86) b", "a&b"])
+def test_uninstall_cmd_refuses_without_marker(tmp_path, name):
+    dest = tmp_path / name
+    dest.mkdir()
+    (dest / "keep.txt").write_text("x")
+    (dest / "uninstall.cmd").write_bytes(_uninstall_cmd_text().encode())
+    r = subprocess.run(RUN_UNINSTALL, cwd=dest, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and "refusing" in r.stdout, (r.stdout, r.stderr)
+    import time
+    time.sleep(2)
+    assert (dest / "keep.txt").exists()
