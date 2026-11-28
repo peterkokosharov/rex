@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Author: Peter Kokosharov
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 """Guard entrypoint: network allow-list matching and stdin isolation of child processes."""
 
 import importlib.util
@@ -40,8 +40,8 @@ def entry():
     ("*", "https://anything.org/x", False),                      # a bare wildcard is not "allow all"
     ("example.com", "https://example.com:8443/x", True),         # ports are not restricted
     ("example.com", "https://example.com@evil.org/x", False),    # userinfo is not the host
-    ("example.com", "https://evil.org．example.com/x", False),  # fullwidth dot is not a label dot
-    ("example.com", "https://example.com。evil.org/x", False),
+    ("example.com", "https://evil.org\uff0eexample.com/x", False),  # fullwidth dot is not a label dot
+    ("example.com", "https://example.com\u3002evil.org/x", False),
     ("localhost", "http://127.0.0.1/x", False),                  # names never match IP literals
     ("127.0.0.1", "http://127.0.0.1:8080/x", True),
     ("example.com", "file:///etc/passwd", False),
