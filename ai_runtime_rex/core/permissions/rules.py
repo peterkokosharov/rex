@@ -529,21 +529,31 @@ def _strip_wrappers(words: list[str]) -> list[str]:
     return out
 
 
-_ASSIGNS = re.compile(r"\s*(?:\w+=\S*\s+)*")
 _DYNAMIC_WORDS = ("eval", "xargs")
+_REDIRECT_WORD = re.compile(r"^\d*[<>]|^&>")
 
 
-def dynamic_command_word(command: str) -> bool:
-    """True if some part of ``command`` runs a word built at run time.
+def dynamic_command_word(command: str, subjects: list[str] | None = None) -> bool:
+    """True if some command in ``command`` runs a word that is not known before run time.
 
-    The first word of a part starts with ``$`` / a backtick / a backslash (or a quoted
-    ``$``), or it is ``eval`` / ``xargs``. ``echo $(pwd)`` is not dynamic: only the
-    command word matters, not the arguments."""
-    for part in split_bash(command)[0]:
-        rest = part[_ASSIGNS.match(part).end():]
-        word = rest.split(None, 1)[0] if rest.strip() else ""
-        bare = word.lstrip("\"'")
-        if word.startswith("\\") or bare.startswith(("$", "`")) or _basename(bare) in _DYNAMIC_WORDS:
+    Heuristic over :func:`deny_subjects` (wrappers, reserved words, grouping, ``sh -c``
+    bodies and substitution bodies already unpacked): the command word of a subject
+    contains ``$`` or a backtick, a glob character (``* ? [``), starts with a redirection
+    (``>f cmd`` hides ``cmd``), or is ``eval`` / ``xargs``. ``echo $(pwd)`` is not dynamic:
+    only the command word matters, not the arguments. Too deep nesting counts as dynamic."""
+    too_deep = False
+    if subjects is None:
+        subjects, too_deep = deny_subjects(command)
+    if too_deep:
+        return True
+    for subject in subjects:
+        raw = _words(subject)
+        if raw and _REDIRECT_WORD.match(raw[0]):
+            return True
+        words = _strip_wrappers(raw)
+        word = words[0] if words else ""
+        if word and (any(c in word for c in "$`*?[") or _REDIRECT_WORD.match(word)
+                     or _basename(word) in _DYNAMIC_WORDS):
             return True
     return False
 
@@ -1223,11 +1233,12 @@ class PermissionRules:
 
         decision = mode_default(mode, kind, self.defaults)
         if (tool == "bash" and decision == ALLOW and mode == MODE_GUARD
-                and any(r.tool_matches(tool) for r in self.deny)
-                and dynamic_command_word(str(args.get("command", "")))):
-            # Guard mode has no whitelist, so a deny rule is the only brake. A command whose
-            # words are built at run time (`$(echo rm) -rf /`, backticks, backslash-escaped words, xargs) cannot
-            # be matched against it without a real shell parser: ask instead of allowing.
+                and any(r.tool_matches(tool) for r in self.deny + self.ask)
+                and (too_deep or dynamic_command_word(str(args.get("command", "")), strict_subjects))):
+            # Guard mode has no whitelist, so deny/ask rules are the only brake. A command whose
+            # word is built at run time (`$(echo rm) -rf /`, backticks, globs, xargs, also behind
+            # sudo/env/time/`(`/`if`...) cannot be matched against them without a real shell
+            # parser: ask instead of allowing. Heuristic; the container is the real boundary.
             return RuleVerdict(ASK, kind, "unsafe", None,
                                "Command word built dynamically; cannot be checked against deny rules")
         if unsafe and decision == ALLOW:
