@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,13 +38,36 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version="%(prog)s " + runtimelib.__version__)
     parser.add_argument("--config", type=Path, default=None, help="Path to config file")
     parser.add_argument("--env-file", type=Path, default=None, help="Path to .env file")
-    parser.add_argument("--model", default=None, help="Model alias/id to use")
+    parser.add_argument("-m", "--model", default=None, help="Model alias/id (env AI_REX_MODEL, default sonnet)")
+    parser.add_argument("-i", "--input", default=None, dest="input_text", metavar="TEXT",
+                        help="One-shot: prompt text (piped stdin / -f content is attached to it)")
+    parser.add_argument("-f", "--input-file", default=None, metavar="PATH",
+                        help="One-shot: read the prompt from PATH ('-' = stdin)")
+    parser.add_argument("-o", "--output", default="-", metavar="PATH", help="Write the answer to PATH ('-' = stdout, default)")
+    parser.add_argument("--append", action="store_true", help="Append to the --output file instead of overwriting")
+    parser.add_argument("-p", "--port", type=int, default=None, help="Local gateway port (env AI_REX_PORT, default 4000)")
+    parser.add_argument("--base-url", default=None, help="Gateway base URL, wins over --port (env AI_REX_BASE_URL)")
+    parser.add_argument("--provider", choices=("auto", "openai", "anthropic", "gemini"), default=None,
+                        help="API dialect (env AI_REX_PROVIDER, default auto = OpenAI-compatible)")
+    parser.add_argument("--api-key-env", default=None, metavar="NAME",
+                        help="Name of the environment variable that holds the API key (the key itself is never an argument)")
+    parser.add_argument("--system", default=None, metavar="TEXT|@FILE", help="Extra system instructions")
+    parser.add_argument("--max-tokens", type=int, default=None, help="Maximum answer tokens")
+    parser.add_argument("--temperature", type=float, default=None, help="Sampling temperature")
+    parser.add_argument("--timeout", type=float, default=None, help="HTTP timeout in seconds (env AI_REX_TIMEOUT, default 60)")
+    parser.add_argument("--no-tools", action="store_true", help="One-shot without any tools (plain chat)")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="Never ask: a tool call that would need permission is denied (exit 3)")
+    parser.add_argument("--cwd", "--workspace", default=None, dest="cwd", metavar="DIR", help="Run in DIR (the workspace)")
+    parser.add_argument("--stream", action="store_true", help="Print the answer as it arrives (default)")
+    parser.add_argument("--log-file", default=None, metavar="PATH", help="Write log lines to PATH instead of stderr")
+    parser.add_argument("--log-format", choices=("text", "json"), default="text", help="Log line format")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--jsonl", "--ui-jsonl", action="store_true", dest="jsonl", help="JSON-lines stdio bridge for external UIs (e.g. Layka)")
     parser.add_argument("--acp", action="store_true", help="Agent Client Protocol server for editors (JetBrains AI Assistant, VS Code ACP clients)")
-    parser.add_argument("--no-stream", action="store_true", help="Disable token streaming")
-    parser.add_argument("--verbose", action="store_true", help="Show verbose tool output")
-    parser.add_argument("--quiet", action="store_true", help="Reduce non-essential output")
+    parser.add_argument("--no-stream", action="store_true", help="Print the answer only when complete")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="More logging (-v tools, -vv debug)")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Errors only")
     parser.add_argument("--unsafe-local-tools", "--local-tools", action="store_true", dest="unsafe_local_tools", help="DEV ONLY: run tools locally without Docker guard")
     parser.add_argument("prompt", nargs="*", help="Prompt to send to the agent (if omitted, starts interactive mode)")
     return parser
@@ -56,7 +80,10 @@ def main() -> int:
     argv = sys.argv[1:]
     protocol_mode = bool(argv) and (argv[0] == "acp" or any(a in ("--jsonl", "--ui-jsonl", "--acp") for a in argv))
     set_quiet(protocol_mode)  # deprecation notes only in REPL / one-shot mode
-    migrate_legacy_config()  # one-time copy ~/.config/runtime -> ~/.config/ai-rex (old dir is kept)
+    env_only = not (protocol_mode or any(a in ("--config", "--env-file") for a in argv)
+                    or (argv and argv[0] in ("acp", "skills")))
+    if not env_only:
+        migrate_legacy_config()  # one-time copy ~/.config/runtime -> ~/.config/ai-rex (old dir is kept)
     # `ai-rex acp ...` is the form used in editor configs. Keep the old flat CLI
     # intact; this only takes over when "acp" is the very first argument.
     if argv and argv[0] == "acp":
@@ -70,15 +97,32 @@ def main() -> int:
 
     parser = create_parser()
     args = parser.parse_args(argv)
+    if args.cwd:
+        try:
+            os.chdir(args.cwd)
+        except OSError as exc:
+            print(f"ai-rex: cannot use --cwd: {exc}", file=sys.stderr)
+            return 2
 
-    # Load config
+    # Load config. Plain REPL / one-shot use the environment only (no file read or written, see
+    # runtime.envconfig); --config/--env-file and the bridge modes (--jsonl, --acp) keep the file config.
     if args.config or args.env_file:
         config = Config.load(args.config, args.env_file)
+    elif env_only:
+        from ai_runtime_rex.runtime.envconfig import env_config
+        try:
+            config = env_config(model=args.model, port=args.port, base_url=args.base_url,
+                                provider=args.provider, api_key_env=args.api_key_env, timeout=args.timeout)
+        except ValueError as exc:
+            print(f"ai-rex: {exc}", file=sys.stderr)
+            return 2
     else:
         config = get_config()
 
     if args.model:
         config.set("liteLLM.model", args.model)
+    if (args.port or args.base_url) and not env_only:
+        config.set("liteLLM.base_url", args.base_url or f"http://127.0.0.1:{args.port}")
     config.set("cli.json", bool(args.json))
     config.set("cli.no_stream", bool(args.no_stream))
     config.set("cli.verbose", bool(args.verbose))
@@ -100,6 +144,18 @@ def main() -> int:
     if args.jsonl:
         from runtimelib.cli import run_jsonl
         return run_jsonl(config)
+
+    one_shot = (args.input_text is not None or args.input_file is not None
+                or (not args.prompt and not _isatty(sys.stdin)))
+    if one_shot:
+        from runtime.oneshot import Options, run_oneshot
+        asker = None if args.non_interactive else one_shot_asker(False)
+        opts = Options(text=args.input_text, input_file=args.input_file, output=args.output, append=args.append,
+                       system=args.system, as_json=bool(args.json), buffered=bool(args.no_stream),
+                       max_tokens=args.max_tokens, temperature=args.temperature, no_tools=args.no_tools, asker=asker,
+                       verbosity=-1 if args.quiet else args.verbose, log_file=args.log_file,
+                       log_format=args.log_format)
+        return run_oneshot(config, opts, llm_factory=_llm_factory(config))
 
     # Register commands
     registry = CommandRegistry()
@@ -129,6 +185,12 @@ def main() -> int:
         return registry.execute("chat", {"prompt": prompt})
 
     return run_interactive(registry, config)
+
+
+def _llm_factory(config: Config) -> Any:
+    """None for the OpenAI-compatible default (the loop builds its own client), else the provider adapter."""
+    from ai_runtime_rex.runtime.providers import make_llm
+    return lambda: make_llm(config)
 
 
 # Bidi controls and zero-width characters can reorder or hide text on screen.

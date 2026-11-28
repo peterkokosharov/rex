@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Author: Peter Kokosharov <peter.kokosharov@gmail.com>
+# AI models: claude-sonnet-5-5
+# ai-rex from a git checkout (no install). Works from any directory.
+here="$(cd "$(dirname "$0")" && pwd)"
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec python3 -P -m runtime "$@"

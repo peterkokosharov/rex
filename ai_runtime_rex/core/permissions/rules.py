@@ -4,7 +4,7 @@
 # LLM: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
-"""Configurable permission rules (allow / ask / deny) for tool calls.
+r"""Configurable permission rules (allow / ask / deny) for tool calls.
 
 Rule grammar: ``Tool(spec)`` or a bare ``Tool``. ``Tool`` is a tool name or an
 fnmatch-style glob. The spec depends on the tool:

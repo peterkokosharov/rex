@@ -111,8 +111,12 @@ class AgentLoop:
         depth: int = 0,
         tool_names: Optional[list[str]] = None,
         read_tracker: Optional[ReadTracker] = None,
+        install_signal_handler: bool = True,
+        quiet: bool = False,
     ) -> None:
         self.config = config
+        # Embedders pass quiet=True (no stderr notes) and install_signal_handler=False (host owns Ctrl+C).
+        self._quiet = quiet
         # Own read tracker per loop, shared by edit and fileops: a read in one agent
         # must not unlock an edit in another.
         self.read_tracker = ReadTracker() if read_tracker is None else read_tracker
@@ -168,7 +172,7 @@ class AgentLoop:
         # raises ValueError off the main thread.
         self._interrupt_event = threading.Event()
         top_level = depth == 0
-        if top_level and threading.current_thread() is threading.main_thread():
+        if install_signal_handler and top_level and threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGINT, self._handle_interrupt)
 
         if top_level:
@@ -178,10 +182,13 @@ class AgentLoop:
 
     def _rebuild_prompts(self) -> None:
         """(Re)build both system prompts; re-reads AGENTS.md files."""
-        self._instructions = load_instructions(
-            extra_file=str(self.config.get("instructions.file", "") or ""),
-            trusted=trust_workspace(self.config),
-        )
+        import contextlib
+        import io
+        with (contextlib.redirect_stderr(io.StringIO()) if self._quiet else contextlib.nullcontext()):
+            self._instructions = load_instructions(
+                extra_file=str(self.config.get("instructions.file", "") or ""),
+                trusted=trust_workspace(self.config),
+            )
         self.instruction_paths = list(self._instructions.paths)
         self.system_prompt = self._build_system_prompt(include_tools=True)
         self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
@@ -507,10 +514,11 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         if changed:
             self.state.messages = compacted
             self._ctx_warned = False
-            print(
-                f"[Context compacted: {context_tokens(compacted)} tokens, threshold {threshold}]",
-                file=sys.stderr,
-            )
+            if not self._quiet:
+                print(
+                    f"[Context compacted: {context_tokens(compacted)} tokens, threshold {threshold}]",
+                    file=sys.stderr,
+                )
 
     def _get_llm_response(self) -> ChatMessage:
         """Get response from LLM with streaming."""
