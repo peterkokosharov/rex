@@ -82,6 +82,10 @@ Order of precedence everywhere: flag > environment variable > default.
 | `--max-tokens N`, `--temperature X` | sampling limits | | provider default |
 | `--timeout S` | HTTP timeout in seconds | `AI_REX_TIMEOUT` | `60` |
 | `--no-tools` | plain chat, the model gets no tools | | tools on |
+| `--mcp-config PATH` | MCP servers from a JSON file (repeatable), see "MCP: using other tools" | `AI_REX_MCP_CONFIG` (paths, separated by `;` on Windows, `:` elsewhere) | |
+| `--mcp NAME=COMMAND` | one inline MCP server (repeatable) | | |
+| `--no-mcp` | ignore every MCP server, also those from the environment or `--config` | | |
+| `--mcp-allow PATTERN` | run these MCP tools without asking (repeatable) | | ask |
 | `--non-interactive` | never ask; a call that needs permission is denied | | asks if a terminal is attached |
 | `--session ID` | one-shot: keep the conversation in session `ID` (created if new; letters, digits, `-`, `_`) | | |
 | `--continue` | one-shot: continue the latest session started in this folder (new one if none) | | |
@@ -121,6 +125,67 @@ printed), `130` interrupted.
 | `AI_REX_<SECTION>__<KEY>` | any engine setting, e.g. `AI_REX_AGENT__MAX_STEPS=30`, `AI_REX_SESSION__DIR=D:\sessions` |
 
 Keys are read only from the environment and are never printed or logged. Local kiko needs no key.
+
+## MCP: using other tools
+
+ai-rex speaks the Model Context Protocol (MCP) as a client, so it can use tools that other people wrote: a Jira
+connector, a database reader, a company tool. A server is any program that talks MCP over stdin/stdout, or an
+HTTP(S) endpoint (streamable HTTP). You never need Node; use whatever command the tool's author gives you.
+
+**A config file** in the common `mcpServers` format (the same shape Claude Code and other clients use):
+
+```
+{"mcpServers": {
+  "tickets": {"command": "python", "args": ["C:/tools/tickets_mcp.py"], "env": {"TICKET_URL": "https://t.example"}},
+  "wiki":    {"type": "http", "url": "https://wiki.example/mcp", "headers": {"Authorization": "Bearer ${WIKI_TOKEN}"}}
+}}
+```
+
+```
+ai-rex --mcp-config C:\work\mcp.json -i "which tickets are open for me?"
+ai-rex --mcp-config a.json --mcp-config b.json            # several files, later ones win per server name
+```
+
+`"type": "stdio"` is accepted (it is the default), `"type": "http"` or a plain `"url"` selects streamable HTTP.
+`"disabled": true` skips a server. `${VAR}` and `${VAR:-default}` inside strings are filled from the environment
+(keep tokens there, not in the file). Optional per server: `"timeout"` (seconds per request, default 60) and
+`"startupTimeout"` (seconds for the handshake, default 5, or set `AI_REX_MCP_STARTUP_TIMEOUT` for all). SSE and
+WebSocket transports are not supported and give a clear error.
+
+**Inline**, no file: `--mcp NAME=COMMAND [ARGS...]` as one quoted word; it is split like a shell would but run
+without a shell (no pipes, no `;`, no expansion):
+
+```
+ai-rex --mcp "tickets=python C:/tools/tickets_mcp.py --readonly" -i "list my tickets"
+ai-rex --mcp "wiki=https://wiki.example/mcp" -i "find the deployment page"
+```
+
+**Environment:** `AI_REX_MCP_CONFIG` holds one or more config paths (separated by `;` on Windows, `:` elsewhere).
+Order, later wins per server name: servers from `--config`, the environment, `--mcp-config`, `--mcp`.
+`--no-mcp` ignores all of them. A wrong `--mcp-config` path or a malformed `--mcp` is a usage error (exit 2); a bad
+path in the environment variable only prints a warning.
+
+**Names.** A tool `ping` of server `tickets` is called `mcp__tickets__ping`. Server names use letters, digits, `-`
+and single `_`.
+
+**Permissions.** MCP tools go through the same gate as the built-in ones. Without a rule every MCP call asks
+(denied under `--non-interactive`), except tools the server itself marks `readOnlyHint` (they run without asking; a
+`deny` rule still wins). Allow more with `--mcp-allow`: `--mcp-allow tickets` (all tools of the server),
+`--mcp-allow tickets__create_*` (a glob) or a full name. Rules in a `--config` file work as well, for example
+`permissions.deny: ["mcp__tickets__delete_*"]`. The `readOnlyHint` is the server's own claim: only use servers you
+trust. Output of an MCP tool is treated as untrusted data: control and bidi characters are removed and it is cut at
+100,000 characters; it is never executed.
+
+**Lifecycle.** Servers start when the agent starts working (not while flags are parsed), one after the other, and
+are stopped at exit (the whole process tree on Windows). A server that is missing, slow or crashing prints one line
+to stderr, for example `ai-rex: MCP server 'wiki' skipped: ... timed out after 5s`, and the session goes on without
+it. `--no-tools` removes the built-in tools only; MCP servers you named explicitly stay available.
+
+**REPL.** `/mcp` lists the configured servers, whether they are connected, and their tools (`[read-only]` marks
+the server-annotated ones). Before the first message the servers are not started yet.
+
+Not supported: MCP resources and prompts (tools only), SSE/WebSocket transports, OAuth login to remote servers
+(pass a token in `headers` instead).
 
 ## Providers
 

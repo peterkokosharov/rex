@@ -24,6 +24,7 @@ from ..llm.models import get_registry
 from ..tools import FileOpsTool, BashTool, TaskSpawnTool, GitTool, DiagramTool, WebSearchTool
 from ..tools.edit import EditTool, ReadTracker
 from ..tools.mcp_tool import load_mcp_tools
+from ..permissions.rules import ALLOW, parse_rule
 from ..tools.webfetch import WebFetchTool
 from ..tools.skills import LoadSkillTool, ReadSkillFileTool
 from ..skills import discover_skills, skill_index
@@ -158,6 +159,8 @@ class AgentLoop:
         )
         if gate is not None and asker is not None:
             self.gate.set_asker(asker)
+        if gate is None:
+            self._allow_readonly_mcp()
         # webfetch re-checks a redirect to another host against the rules.
         check_redirect = getattr(self.gate, "check_redirect", None)
         for tool in self.tools.values():
@@ -236,6 +239,15 @@ class AgentLoop:
                 self.tools[tool.name] = tool
         if self._mcp_manager is not None:
             atexit.register(self.close_mcp)
+
+    def _allow_readonly_mcp(self) -> None:
+        """MCP tools the server itself annotates ``readOnlyHint`` run without asking (deny rules still win)."""
+        rules = getattr(self.gate, "rules", None)
+        if rules is None or not hasattr(rules, "allow"):
+            return
+        for tool in self.tools.values():
+            if getattr(tool, "read_only", False) and tool.name.startswith("mcp__"):
+                rules.allow.append(parse_rule(tool.name, ALLOW))
 
     def close_mcp(self) -> None:
         """Disconnect the MCP servers (also runs at interpreter exit). Idempotent."""

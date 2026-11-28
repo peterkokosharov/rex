@@ -73,6 +73,14 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-stream", action="store_true", help="Print the answer only when complete")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="More logging (-v tools, -vv debug)")
     parser.add_argument("-q", "--quiet", action="store_true", help="Errors only")
+    parser.add_argument("--mcp-config", action="append", default=[], metavar="PATH",
+                        help='MCP servers from a JSON file {"mcpServers": {...}} (repeatable; env AI_REX_MCP_CONFIG, '
+                             'a list separated by the path separator)')
+    parser.add_argument("--mcp", action="append", default=[], metavar="NAME=COMMAND",
+                        help='Inline MCP server, e.g. --mcp "demo=python server.py --flag" or NAME=https://host/mcp (repeatable)')
+    parser.add_argument("--no-mcp", action="store_true", help="Ignore all MCP servers (also those from env or --config)")
+    parser.add_argument("--mcp-allow", action="append", default=[], metavar="PATTERN",
+                        help="Allow MCP tools without asking: SERVER, SERVER__TOOL or a glob such as 'demo__read_*' (repeatable)")
     parser.add_argument("--unsafe-local-tools", "--local-tools", action="store_true", dest="unsafe_local_tools", help="DEV ONLY: run tools locally without Docker guard")
     parser.add_argument("prompt", nargs="*", help="Prompt to send to the agent (if omitted, starts interactive mode)")
     return parser
@@ -132,6 +140,13 @@ def main() -> int:
     config.set("cli.no_stream", bool(args.no_stream))
     config.set("cli.verbose", bool(args.verbose))
     config.set("cli.quiet", bool(args.quiet))
+    try:
+        from ai_runtime_rex.core.mcp.cliconfig import McpConfigError, apply as apply_mcp
+        apply_mcp(config, args.mcp_config, args.mcp, args.no_mcp, args.mcp_allow,
+                  warn=lambda m: print(m, file=sys.stderr))
+    except McpConfigError as exc:
+        print(f"ai-rex: {exc}", file=sys.stderr)
+        return 2
     tool_note = apply_tool_mode(config, flag=bool(args.unsafe_local_tools), env_only=env_only)
     if args.unsafe_local_tools and not (args.jsonl or args.acp):
         print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
@@ -514,6 +529,12 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         )
         return 0
 
+    @registry.register("mcp", "List the MCP servers and their tools")
+    def cmd_mcp(args: dict[str, Any]) -> int:
+        for line in mcp_status_lines(config, _REPL_LOOP):
+            print(line)
+        return 0
+
     @registry.register("shell", "Run a local shell command (same as ! <command>)")
     def cmd_shell(args: dict[str, Any]) -> int:
         command = args.get("command", "") or " ".join(
@@ -660,6 +681,29 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         return 0
 
 
+def mcp_status_lines(config: Config, loop: Any) -> list[str]:
+    """Lines for ``/mcp``: configured servers, and per connected server its tools (before the first message the
+    servers are not started yet)."""
+    servers = config.get("mcp.servers", {})
+    names = [n for n, r in servers.items() if not (isinstance(r, dict) and r.get("enabled") is False)]         if isinstance(servers, dict) else []
+    if not names:
+        return ["No MCP servers configured (use --mcp-config PATH, --mcp NAME=COMMAND or AI_REX_MCP_CONFIG)."]
+    tools = getattr(loop, "tools", None)
+    if loop is None or getattr(loop, "_mcp_manager", None) is None or tools is None:
+        return [f"MCP servers configured: {', '.join(names)} (they start with the first message)"]
+    lines = []
+    for name in names:
+        mine = [t for t in tools.values() if getattr(t, "server", None) == name]
+        if getattr(loop._mcp_manager, "get_client", lambda n: None)(name) is None:
+            lines.append(f"{name}: not connected (failed to start, see the message at startup)")
+            continue
+        lines.append(f"{name}: connected, {len(mine)} tool(s)")
+        for t in mine:
+            mark = " [read-only]" if getattr(t, "read_only", False) else ""
+            lines.append(f"  {t.name}{mark} - {str(t.description).splitlines()[0][:80] if t.description else ''}")
+    return lines
+
+
 def run_interactive(registry: CommandRegistry, config: Config, tool_note: Optional[str] = None) -> int:
     """Run interactive REPL with readline support."""
     from runtimelib.cli import ansi
@@ -676,7 +720,7 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
     print(ansi.bold("ai-rex") + ansi.gray(f"  model={model}  endpoint={base}"))
     if tool_note:
         print(ansi.gray(tool_note))
-    print(ansi.gray("Commands: /help /model /models /context /reset /shell /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
+    print(ansi.gray("Commands: /help /model /models /context /reset /shell /mcp /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:

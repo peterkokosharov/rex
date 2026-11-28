@@ -33,6 +33,7 @@ class MCPServerConfig:
     transport: str = "stdio"  # "stdio", "sse", "websocket"
     url: str = ""  # For SSE/WS transports
     timeout: float = 60.0  # per-request timeout in seconds
+    headers: dict[str, str] = field(default_factory=dict)  # HTTP transport only
     init_timeout: float = 5.0  # initialize handshake timeout in seconds
 
 
@@ -42,6 +43,7 @@ class MCPTool:
     name: str
     description: str
     input_schema: dict[str, Any]
+    read_only: bool = False  # annotations.readOnlyHint, as the server claims it
 
 
 @dataclass
@@ -235,7 +237,7 @@ class StdioTransport(MCPTransport):
         msg = "MCP server exited"
         return f"{msg}; stderr: {tail}" if tail else msg
 
-    def close(self) -> None:
+    def close(self, grace: float = 5.0) -> None:
         proc = self._proc
         try:
             if proc.stdin:
@@ -243,7 +245,7 @@ class StdioTransport(MCPTransport):
         except (OSError, ValueError):
             pass
         try:
-            proc.wait(timeout=5)  # a well-behaved server exits when its stdin closes
+            proc.wait(timeout=grace)  # a well-behaved server exits when its stdin closes
         except subprocess.TimeoutExpired:
             procutil.kill_tree(proc)
             try:
@@ -251,6 +253,103 @@ class StdioTransport(MCPTransport):
             except subprocess.TimeoutExpired:
                 pass
         self._fail_all()
+
+
+class HttpTransport(MCPTransport):
+    """Streamable HTTP transport: every message is a POST; the reply is JSON or a short SSE stream.
+
+    Blocking (urllib, stdlib), one request at a time. Keeps the ``Mcp-Session-Id`` the server hands out and
+    ends the session with DELETE on close. Only http(s) URLs are accepted.
+    """
+
+    def __init__(self, url: str, headers: dict[str, str] | None = None, timeout: float = 30.0) -> None:
+        if not url.lower().startswith(("http://", "https://")):
+            raise ValueError(f"MCP http url must start with http:// or https://: {url}")
+        self._url = url
+        self._headers = {str(k): str(v) for k, v in (headers or {}).items()}
+        self._timeout = timeout
+        self._session: str | None = None
+        self._request_id = 0
+        self._lock = threading.Lock()
+
+    alive = True
+
+    def stderr_tail(self) -> str:
+        return ""
+
+    def _post(self, message: dict[str, Any], timeout: float) -> list[dict[str, Any]]:
+        import urllib.error
+        import urllib.request
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   **self._headers}
+        if self._session:
+            headers["Mcp-Session-Id"] = self._session
+        req = urllib.request.Request(self._url, data=json.dumps(message).encode("utf-8"),
+                                     headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - user-configured URL
+                self._session = resp.headers.get("Mcp-Session-Id") or self._session
+                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                body = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"MCP http error {exc.code}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            if "timed out" in str(exc):
+                raise TimeoutError(f"MCP request {message.get('method')} timed out after {timeout:g}s") from exc
+            raise RuntimeError(f"MCP server is gone: {exc}") from exc
+        out: list[dict[str, Any]] = []
+        if ctype == "text/event-stream":
+            for line in body.splitlines():
+                if line.startswith("data:"):
+                    try:
+                        out.append(json.loads(line[5:].strip()))
+                    except json.JSONDecodeError:
+                        pass
+        elif body.strip():
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                return out
+            out = parsed if isinstance(parsed, list) else [parsed]
+        return [m for m in out if isinstance(m, dict)]
+
+    def send(self, message: dict[str, Any]) -> None:
+        self._post(message, self._timeout)
+
+    def receive(self) -> Optional[dict[str, Any]]:
+        return None
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        with self._lock:
+            self._post(msg, self._timeout)
+
+    def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> Any:
+        with self._lock:
+            self._request_id += 1
+            rid = self._request_id
+            replies = self._post({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}, timeout)
+        for msg in replies:
+            if msg.get("id") == rid and "method" not in msg:
+                if "error" in msg:
+                    err = msg["error"]
+                    raise RuntimeError(f"MCP error: {err.get('message', err) if isinstance(err, dict) else err}")
+                return msg.get("result")
+        raise RuntimeError(f"MCP server sent no answer to {method}")
+
+    def close(self) -> None:
+        if not self._session:
+            return
+        import urllib.request
+        req = urllib.request.Request(self._url, headers={**self._headers, "Mcp-Session-Id": self._session},
+                                     method="DELETE")
+        try:
+            urllib.request.urlopen(req, timeout=3).close()  # noqa: S310
+        except Exception:
+            pass
+        self._session = None
 
 
 class _Pending:
@@ -304,6 +403,7 @@ class MCPClient:
                     name=t["name"],
                     description=t.get("description", ""),
                     input_schema=t.get("inputSchema", {}),
+                    read_only=bool((t.get("annotations") or {}).get("readOnlyHint")),
                 ))
             cursor = result.get("nextCursor")
             if not cursor:
@@ -380,16 +480,21 @@ class MCPClientManager:
         if not config:
             raise ValueError(f"MCP server not configured: {name}")
 
-        if config.transport != "stdio":
-            raise NotImplementedError(f"Transport {config.transport} not supported (stdio only)")
-
-        transport = StdioTransport(config.command + config.args, config.env, cwd=cwd)
+        if config.transport == "http":
+            transport: MCPTransport = HttpTransport(config.url, config.headers, timeout=config.init_timeout)
+        elif config.transport == "stdio":
+            transport = StdioTransport(config.command + config.args, config.env, cwd=cwd)
+        else:
+            raise NotImplementedError(f"Transport {config.transport} not supported (stdio and http only)")
         client = MCPClient(transport, timeout=config.timeout, init_timeout=config.init_timeout)
         try:
             client.initialize()
         except Exception as exc:
-            tail = transport.stderr_tail()
-            client.close()
+            tail = transport.stderr_tail() if hasattr(transport, "stderr_tail") else ""
+            if isinstance(transport, StdioTransport):
+                transport.close(grace=0.5)  # it never answered: do not wait long for a polite exit
+            else:
+                client.close()
             detail = "\n" + tail if tail and tail not in str(exc) else ""
             raise RuntimeError(f"MCP server '{name}' failed to start: {exc}{detail}") from exc
         self._clients[name] = client

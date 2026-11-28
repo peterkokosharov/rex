@@ -231,7 +231,9 @@ def run_oneshot(config: Any, opts: Options, *, llm_factory: Any = None, stdin: A
     response = ""
     error: Optional[str] = None
     try:
-        kw: dict[str, Any] = {"tool_names": []} if opts.no_tools else {}
+        # --no-tools drops the built-in tools; MCP servers the user named explicitly stay (mcp__* only).
+        mcp_on = bool(config.get("mcp.servers"))
+        kw: dict[str, Any] = {"tool_names": ["mcp__*"] if mcp_on else []} if opts.no_tools else {}
         llm = llm_factory() if llm_factory else None
         if opts.temperature is not None or opts.max_tokens is not None:
             from runtimelib.llm import LiteLLMClient
@@ -256,6 +258,10 @@ def run_oneshot(config: Any, opts: Options, *, llm_factory: Any = None, stdin: A
         error = str(exc)
         LOG.error("%s", exc)
         code = EXIT_ERROR
+    finally:
+        close = getattr(locals().get("loop"), "close_mcp", None)
+        if callable(close):
+            close()  # MCP server processes end with the run
     text = "".join(written) or response
     try:
         if opts.as_json:
