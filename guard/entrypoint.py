@@ -125,12 +125,15 @@ def _safe_path(base: Path, path: str) -> Path:
 def _check_network_policy(url: str) -> bool:
     """Check if network access is allowed for URL."""
     # TODO: implement policy check
-    allowed_domains = os.environ.get("GUARD_ALLOWED_DOMAINS", "").split(",")
-    if not allowed_domains or allowed_domains == [""]:
+    allowed_domains = [d.strip().lstrip("*.").lstrip(".").lower()
+                       for d in os.environ.get("GUARD_ALLOWED_DOMAINS", "").split(",")]
+    allowed_domains = [d for d in allowed_domains if d]  # an empty entry must never match
+    if not allowed_domains:
         return False
     from urllib.parse import urlparse
-    host = urlparse(url).hostname
-    return any(host and host.endswith(domain) for domain in allowed_domains)
+    host = (urlparse(url).hostname or "").lower()
+    # exact host or a real subdomain (dot boundary): evilexample.com must not match example.com
+    return any(host == d or host.endswith("." + d) for d in allowed_domains)
 
 
 def create_server(workspace: Path) -> JSONRPCServer:
