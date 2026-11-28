@@ -137,14 +137,37 @@ class GuardClient:
             self._started = True
 
     def _wait_ready(self, timeout: float = 10.0) -> None:
-        """Wait for READY notification from guard."""
-        start = time.monotonic()
-        while time.monotonic() - start < timeout:
-            if self._proc and self._proc.poll() is not None:
-                stderr = self._proc.stderr.read() if self._proc.stderr else ""
-                raise RuntimeError(f"Guard container exited: {stderr}")
-            time.sleep(0.1)
-        # If we get here, assume it's ready (guard sends READY=1 via sd_notify, not stdout)
+        """Return as soon as the guard answers a probe request (any answer, even an error).
+
+        The guard sends READY=1 via sd_notify, not on stdout, so a cheap ``fs.list`` is the
+        readiness signal. If it is silent for ``timeout`` seconds we proceed anyway (the real
+        request then reports the failure); an exited container is an immediate error.
+        """
+        proc = self._proc
+        if not proc or not proc.stdin:
+            return
+        probe_id = "ready-probe"
+        event = threading.Event()
+        with self._pending_lock:
+            self._responses[probe_id] = event
+        try:
+            try:
+                proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": probe_id, "method": "fs.list",
+                                             "params": {"path": ".", "recursive": False}}) + "\n")
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                pass  # exited container is reported by the poll below
+            start = time.monotonic()
+            while time.monotonic() - start < timeout:
+                if proc.poll() is not None:
+                    stderr = proc.stderr.read() if proc.stderr else ""
+                    raise RuntimeError(f"Guard container exited: {stderr}")
+                if event.wait(0.05):
+                    return
+        finally:
+            with self._pending_lock:
+                self._responses.pop(probe_id, None)
+                self._results.pop(probe_id, None)
 
     def _read_loop(self) -> None:
         """Read responses from guard stdout."""
