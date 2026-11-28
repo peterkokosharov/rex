@@ -235,7 +235,7 @@ class REX:
 
     def commit_and_merge(self, worktree: WorktreeHandle, message: str) -> dict:
         """Commit worktree changes and merge to main (orchestrator-only)."""
-        return self.sandbox_manager.commit_and_merge(worktree, message)
+        return self.sandbox_manager.commit_and_merge(worktree.agent_id, message)
 
     def subscribe_hooks(
         self,
