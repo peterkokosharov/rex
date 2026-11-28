@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-opus-5-5
+# AI models: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Git tool using guard client."""
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolSchema
 from ..guard import get_guard_client
 from ..config import Config
+from ..procutil import safe_which
 
 
 class GitTool(Tool):
@@ -126,13 +129,28 @@ class GitTool(Tool):
         cwd = resolve_in_workspace(kwargs.pop("cwd", ".") or ".", root)
 
         def run(args: list[str]) -> dict[str, Any]:
-            p = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+            # Called only after the arguments were checked. Never a git.exe planted in the workspace.
+            git = safe_which("git", exclude=(cwd,))
+            if git is None:
+                return {"exit_code": 127, "stdout": "", "stderr": "git not found on PATH"}
+            read_only = operation in READ_OPS
+            pairs = list(ALWAYS_CONFIG)
+            if read_only:
+                pairs += READ_CONFIG
+            env = git_env(pairs, read_only=read_only)
+            if read_only:  # the repository's own filter drivers would run on status / diff
+                env = git_env(pairs + repo_filter_overrides(git, cwd, env), read_only=True)
+            try:
+                p = subprocess.run(args, executable=git, cwd=cwd, env=env, capture_output=True, text=True,
+                                   errors="replace", timeout=GIT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                return {"exit_code": 124, "stdout": "", "stderr": f"git {operation} timed out after {GIT_TIMEOUT:g}s"}
             return {"exit_code": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
 
         if operation == "status":
-            return run(["git", "status", "--porcelain=v1", "-b"])
+            return run(["git", "status", "--porcelain=v1", "-b", "--ignore-submodules=all"])
         if operation == "diff":
-            args = ["git", "diff"]
+            args = ["git", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]
             if kwargs.get("staged"):
                 args.append("--staged")
             files = _safe_files(kwargs.get("files"))
@@ -151,7 +169,7 @@ class GitTool(Tool):
                 args += ["--author", author]
             return run(args)
         if operation == "log":
-            args = ["git", "log", f"-n{int(kwargs.get('max_count', 10))}"]
+            args = ["git", "log", f"-n{int(kwargs.get('max_count', 10))}", "--no-show-signature"]
             if kwargs.get("oneline", True):
                 args.append("--oneline")
             return run(args)
@@ -170,6 +188,69 @@ class GitTool(Tool):
             args.append(branch)
             return run(args)
         raise ValueError(f"Unknown git operation: {operation}")
+
+
+GIT_TIMEOUT = 120.0
+READ_OPS = frozenset({"status", "diff", "log", "branch"})
+# Every git call: no fsmonitor hook (core.fsmonitor can name any command).
+ALWAYS_CONFIG: tuple[tuple[str, str], ...] = (("core.fsmonitor", "false"),)
+# Read operations are auto-allowed: nothing they do may run a command configured by the repository.
+READ_CONFIG: tuple[tuple[str, str], ...] = (
+    ("core.hooksPath", "/dev/null"),
+    ("diff.external", ""),
+    ("log.showSignature", "false"),
+    ("core.pager", "cat"),
+)
+_FILTER_KEY = re.compile(r"^filter\.(.+)\.(clean|smudge|process)$", re.IGNORECASE)
+_REPO_SCOPES = ("local", "worktree")
+
+
+def git_env(pairs: Any, read_only: bool = False, base: Any = None) -> dict[str, str]:
+    """Environment for one git call: ``pairs`` appended as GIT_CONFIG_KEY_n/VALUE_n (they beat every config
+    file, like ``-c``). Read operations also take no optional locks and never page."""
+    env = dict(os.environ if base is None else base)
+    try:
+        n = max(0, int(env.get("GIT_CONFIG_COUNT", "0")))
+    except ValueError:
+        n = 0
+    for key, value in pairs:
+        env[f"GIT_CONFIG_KEY_{n}"] = key
+        env[f"GIT_CONFIG_VALUE_{n}"] = value
+        n += 1
+    env["GIT_CONFIG_COUNT"] = str(n)
+    if read_only:
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        env["GIT_PAGER"] = "cat"
+    return env
+
+
+def repo_filter_overrides(git: str, cwd: Any, env: dict[str, str]) -> list[tuple[str, str]]:
+    """``(key, "")`` for every filter driver command set in the repository's own config (local / worktree).
+
+    An empty command switches the driver off. Drivers from the user's global or the system config (git-lfs)
+    stay: they are the user's own. Without ``--show-scope`` (git < 2.26) every filter driver is switched off.
+    """
+    import subprocess
+    scoped = True
+    try:
+        p = subprocess.run([git, "config", "--list", "--show-scope", "-z"], executable=git, cwd=cwd, env=env,
+                           capture_output=True, timeout=30)
+        if p.returncode != 0:
+            scoped = False
+            p = subprocess.run([git, "config", "--list", "-z"], executable=git, cwd=cwd, env=env,
+                               capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    raw = p.stdout if isinstance(p.stdout, bytes) else str(p.stdout or "").encode()
+    tokens = raw.decode("utf-8", errors="replace").split("\0")
+    out: list[tuple[str, str]] = []
+    step = 2 if scoped else 1
+    for i in range(0, len(tokens) - step + 1, step):
+        scope = tokens[i] if scoped else "local"
+        key = tokens[i + step - 1].split("\n", 1)[0]
+        if scope in _REPO_SCOPES and _FILTER_KEY.match(key) and (key, "") not in out:
+            out.append((key, ""))
+    return out
 
 
 def _safe_branch(branch: Any) -> str:
