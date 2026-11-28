@@ -54,6 +54,10 @@ from .context import (
 )
 
 
+def _truthy(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _parse_tool_arguments(text: str) -> dict[str, Any]:
     """Parse tool arguments; tolerate trailing text emitted by some models."""
     if not text or not text.strip():
@@ -157,9 +161,15 @@ class AgentLoop:
         self.checkpoint_manager = checkpoint_manager
         # Permission gate: rules + hook commands + asker. Without an asker every
         # "ask" is denied (one-shot, no UI); P4 passes the REPL/JSONL asker.
+        # permissions.persist=false (env-only CLI mode): "allow always" lasts for the session, nothing is written
+        # to ~/.config; permissions.store_file (AI_REX_PERMISSIONS_FILE) keeps those rules in one named file.
         self.gate = gate or PermissionGate.from_config(
-            config, asker=asker, session=getattr(self.session_manager, "session_id", None)
+            config, asker=asker, session=getattr(self.session_manager, "session_id", None),
+            persist=_truthy(config.get("permissions.persist", True)),
         )
+        store_file = config.get("permissions.store_file") if gate is None else None
+        if store_file and hasattr(getattr(self.gate, "rules", None), "use_store_file"):
+            self.gate.rules.use_store_file(str(store_file))
         if gate is not None and asker is not None:
             self.gate.set_asker(asker)
         if gate is None:
@@ -249,7 +259,11 @@ class AgentLoop:
             atexit.register(self.close_mcp)
 
     def _allow_readonly_mcp(self) -> None:
-        """MCP tools the server itself annotates ``readOnlyHint`` run without asking (deny rules still win)."""
+        """Only with ``mcp.trust_readonly`` (``--mcp-trust-readonly``): MCP tools the server itself annotates
+        ``readOnlyHint`` run without asking (deny rules still win). The hint is the server's own claim, so the
+        default is to ask like for any other MCP tool."""
+        if not _truthy(self.config.get("mcp.trust_readonly", False)):
+            return
         rules = getattr(self.gate, "rules", None)
         if rules is None or not hasattr(rules, "allow"):
             return
@@ -335,7 +349,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.hook_engine.trigger(HookEvent.AGENT_ERROR,
             session_id=self.session_manager.session_id, agent_id=self.agent_id,
             role=self.role, metadata={"error": "Interrupted by user"})
-        print("\n[Interrupted]", file=sys.stderr)
+        if not self._quiet:
+            print("\n[Interrupted]", file=sys.stderr)
 
     def interrupt_requested(self) -> bool:
         """True once ``interrupt()`` was called for the current request."""
@@ -393,6 +408,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
         ran_tools = False
         nudges = 0
+        truncations = 0
+        prefix = ""  # text of a reply cut off at the output limit, joined with its continuation
         while self.state.step < self.state.max_steps and not self.state.interrupted:
             self.state.step += 1
 
@@ -411,12 +428,30 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
             if self.state.interrupted:
                 break
 
+            # Cut off at the output token limit: a half-written tool call would fail as "Invalid tool arguments"
+            # and half an answer would look complete. Say so and continue once.
+            if getattr(self, "_last_finish", None) == "length" and truncations < MAX_TRUNCATION_RETRIES:
+                broken = [tc for tc in response.tool_calls or [] if not _complete_arguments(tc)]
+                if broken or not response.tool_calls:
+                    truncations += 1
+                    self._note("response truncated at the output token limit; asking the model to continue")
+                    if response.tool_calls:
+                        # Drop the unusable calls: no call may stay in the history without a result.
+                        self.state.messages[-1] = ChatMessage(role="assistant", content=response.content or "")
+                        nudge = NUDGE_TRUNCATED_CALL
+                    else:
+                        prefix += response.content or ""
+                        nudge = NUDGE_TRUNCATED_TEXT
+                    self.state.messages.append(ChatMessage(role="user", content=nudge))
+                    continue
+
             # Check for tool calls
             if response.tool_calls:
                 if response.content and response.content.strip() and not response.content.endswith("\n"):
                     self.on_token("\n\n")  # a progress note is not glued to the next step's text
                 self._execute_tool_calls(response.tool_calls)
                 ran_tools = True
+                prefix = ""
                 continue
 
             # Safety net: a tool call written as text, or silence right after tool results, is not an answer.
@@ -426,10 +461,15 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                 self.state.messages.append(ChatMessage(role="user", content=NUDGE_LEAKED if leaked else NUDGE_EMPTY))
                 continue
             if leaked:
-                raise RuntimeError("the model kept writing tool calls as text instead of calling the tools")
+                # Nudges used up: never lose the text. It was held back while streaming; show it with a warning.
+                self._note("the model kept writing tool calls as text; showing its reply as it is")
+                if getattr(self, "_held_text", ""):
+                    self.on_token(self._held_text)  # the part the stream guard held back (prose before it was shown)
 
             # Regular text response
             if response.content:
+                if prefix:
+                    response = ChatMessage(role="assistant", content=prefix + response.content)
                 # Record assistant response
                 self.session_manager.append("assistant_message", {"content": response.content, "agent_id": self.agent_id})
                 self.hook_engine.trigger(HookEvent.AGENT_END,
@@ -464,6 +504,11 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
         self.state.messages.append(ChatMessage(role="assistant", content=""))
         return ""
+
+    def _note(self, text: str) -> None:
+        """One status line for the user on stderr (embedders pass quiet=True)."""
+        if not getattr(self, "_quiet", False):
+            print(f"ai-rex: {text}", file=sys.stderr)
 
     def _model_name(self) -> str:
         return getattr(self.llm, "default_model", "") or self.config.get("liteLLM.model", "")
@@ -589,6 +634,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         )
 
         guard = StreamGuard()
+        self._last_finish = None
         for chunk in stream:
             if self._interrupt_event.is_set():
                 self.state.interrupted = True
@@ -612,12 +658,14 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                 for tc_delta in chunk.tool_calls:
                     last_index = accumulate_tool_call(tool_calls, tc_delta, last_index)
 
-            # Handle finish reason
-            if chunk.finish_reason == "tool_calls":
-                pass
+            if chunk.finish_reason:
+                self._last_finish = chunk.finish_reason
 
-        rest = guard.finish(leaked_tool_call(full_content))
-        if rest:
+        rest = guard.finish(False)
+        self._held_text = ""
+        if leaked_tool_call(full_content):
+            self._held_text = rest  # never shown as the answer; run() shows it only if the model keeps doing it
+        elif rest:
             self.on_token(rest)  # held markup-looking text that is not a call (JSON answer, XML snippet)
 
         # Build response message
@@ -773,8 +821,9 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                 "agent_id": self.agent_id
             })
 
-            # Add tool result to messages
-            result_content = format_tool_result(result)
+            # Add tool result to messages. The header comes from the loop, not the tool: file or web content that
+            # imitates "ERROR: ..." or "exit code: 0" cannot fake the call id and status in it.
+            result_content = f"{result_header(tool_name, tc.id, result.success)}\n{format_tool_result(result)}"
             self.state.messages.append(ChatMessage(
                 role="tool",
                 content=result_content,
@@ -788,6 +837,22 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
 class _Cancelled(Exception):
     """Internal: the user stopped the request while the gate was deciding."""
+
+
+def _complete_arguments(tc: ToolCall) -> bool:
+    """True when the call's arguments parse (empty arguments count as ``{}``)."""
+    try:
+        _parse_tool_arguments((tc.function or {}).get("arguments", "") or "")
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
+def result_header(tool: str, call_id: str, ok: bool) -> str:
+    """First line of every tool result the model sees: which call it answers and whether it worked."""
+    if ok:
+        return f"[result of {tool} call {call_id}: ok; untrusted content below]"
+    return f"[result of {tool} call {call_id}: failed]"
 
 
 def format_tool_result(result: Any) -> str:
@@ -813,11 +878,16 @@ def format_tool_result(result: Any) -> str:
             if text:
                 parts.append(f"{key}:\n{text.rstrip()}")
         return "\n".join(parts)
-    if isinstance(value, dict) and len(value) == 1:
-        (key, items), = value.items()
+    keys = set(value) - {"hidden"} if isinstance(value, dict) else set()
+    if len(keys) == 1:
+        key = keys.pop()
+        items = value[key]
+        hidden = value.get("hidden") or 0
+        note = (f"\n({hidden} entries in skipped folders hidden; pass such a folder as path to look inside)"
+                if hidden else "")
         if key in ("files", "matches") and isinstance(items, list):
             if not items:
-                return f"(no {key})"
+                return f"(no {key})" + note
             lines = []
             for item in items:
                 if isinstance(item, dict) and "path" in item and "line" in item:
@@ -826,25 +896,48 @@ def format_tool_result(result: Any) -> str:
                     lines.append(json.dumps(item, ensure_ascii=False, default=str))
                 else:
                     lines.append(str(item))
-            return "\n".join(lines)
+            return "\n".join(lines) + note
     return json.dumps(value, ensure_ascii=False, indent=1, default=str)
 
 
-# A final answer that is really a tool call written as text (the call was lost on the way): call markup at the
-# start of a line, outside ``` code blocks. Quoting such markup inline or in a code block (reviewing agent code)
-# is not a leak.
+# A final answer that is really a tool call written as text (the call was lost on the way): call markup that starts
+# a line outside ``` code blocks AND runs to the end of the reply (the reply's tail, or all of it), like the
+# gateway's rule. Markup quoted inline, in a code block, or followed by more prose (explaining the protocol) is not
+# a leak.
 _LEAK_START = re.compile(r'^[ \t]*(?:\{\s*"tool_calls"|\{\s*"tool_use"|<invoke[\s>]|<function_calls>|<tool_use>)',
                          re.MULTILINE)
 _FENCE_BLOCK = re.compile(r"^[ \t]*```.*?(?:^[ \t]*```[^\n]*$|\Z)", re.MULTILINE | re.DOTALL)
 MAX_NUDGES = 2
+MAX_TRUNCATION_RETRIES = 1
 NUDGE_LEAKED = ("Your last reply contained a tool call written as text, so nothing ran. Call the tool through "
                 "the tool interface, or, if you have the evidence, give the final answer as plain text.")
 NUDGE_EMPTY = ("Your last reply was empty. Continue the task: call the next tool you need, or give the "
                "complete final answer based on the tool results above.")
+NUDGE_TRUNCATED_CALL = ("Your last reply was cut off at the output token limit, so its tool call was incomplete and "
+                        "did not run. Continue, but keep tool arguments short: write a large file in parts (create "
+                        "it with the first part, then add the rest with edits) instead of one huge argument.")
+NUDGE_TRUNCATED_TEXT = ("Your last reply was cut off at the output token limit. Continue exactly where it stopped, "
+                        "without repeating what you already wrote.")
+
+
+def _markup_tail(tail: str) -> bool:
+    """True when ``tail`` (text from a markup start to the end of the reply) is markup only."""
+    tail = tail.strip()
+    if tail.startswith("{"):
+        try:
+            _value, end = json.JSONDecoder().raw_decode(tail)
+            return not tail[end:].strip()
+        except json.JSONDecodeError:
+            pass  # broken or cut-off JSON: judged by how it ends, like XML
+    last = tail.splitlines()[-1].strip() if tail else ""
+    return last.endswith((">", "}", "]")) or last.startswith(("<", "{", "}", "]", '"'))
 
 
 def leaked_tool_call(text: str) -> bool:
-    return bool(text) and bool(_LEAK_START.search(_FENCE_BLOCK.sub("", text)))
+    if not text:
+        return False
+    plain = _FENCE_BLOCK.sub("\n[code block]\n", text)
+    return any(_markup_tail(plain[m.start():]) for m in _LEAK_START.finditer(plain))
 
 
 class StreamGuard:

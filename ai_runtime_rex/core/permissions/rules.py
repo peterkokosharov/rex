@@ -1164,6 +1164,19 @@ class PermissionRules:
             except RuleParseError as exc:
                 self.errors.append(str(exc))
 
+    def use_store_file(self, path: str | os.PathLike[str]) -> None:
+        """Keep allow-always rules in ``path`` (one file for every workspace) instead of the per-workspace store."""
+        self._store = Path(path).expanduser()
+        self._persist = True
+        for text in load_store(self._store):
+            if text in self._stored:
+                continue
+            self._stored.append(text)
+            try:
+                self.allow.append(parse_rule(text, ALLOW))
+            except RuleParseError as exc:
+                self.errors.append(str(exc))
+
     def _parse_list(self, items: Any, decision: PermissionResult) -> list[Rule]:
         out: list[Rule] = []
         if isinstance(items, str):

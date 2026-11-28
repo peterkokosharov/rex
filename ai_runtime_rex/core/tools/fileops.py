@@ -19,14 +19,20 @@ from ..config import Config
 READ_LIMIT = 2000  # lines per read unless the model asks for fewer
 LINE_CAP = 2000  # characters per line in read output
 READ_CHAR_CAP = 200 * 1024  # characters per read result
-# Folders that are build output, caches or tool data: list/glob/grep leave them out.
-SKIP_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", "target", ".gradle",
-                       ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", ".svn", ".hg"})
+READ_BYTES_CAP = 16 * 1024 * 1024  # bytes read from one file (a read result is cut to READ_CHAR_CAP anyway)
+# Caches and tool data: list/glob/grep leave them out at any depth.
+CACHE_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".gradle", ".mypy_cache",
+                        ".pytest_cache", ".ruff_cache", ".tox", ".svn", ".hg"})
+# Build output: left out only at the workspace root or next to a build file (src/build/ may be real source).
+BUILD_DIRS = frozenset({"target", "dist", "build"})
+BUILD_FILES = ("pom.xml", "build.gradle", "build.gradle.kts", "package.json", "pyproject.toml", "setup.py")
+SKIP_DIRS = CACHE_DIRS | BUILD_DIRS  # all names that may be skipped (kept for callers of the old name)
 
 DESCRIPTION = """Workspace files. Operations:
-- list: entries of a folder (path, default "."); recursive=true for a whole small tree. Build/cache folders
-  (.git, target, node_modules, __pycache__, .venv, .idea, ...) below the path are skipped; pass such a folder
-  as the path to look inside it. Example: {"operation": "list", "path": "src"}
+- list: entries of a folder (path, default "."); recursive=true for a whole small tree. Cache folders (.git,
+  node_modules, __pycache__, .venv, .idea, ...) and build output (target, build, dist at the root or next to
+  pom.xml / package.json / ...) below the path are skipped and counted; pass such a folder as the path to look
+  inside it. Example: {"operation": "list", "path": "src"}
 - glob: files matching a pattern, e.g. {"operation": "glob", "pattern": "**/*.java"}
 - grep: regex search in file contents, result lines "path:line: text"; narrow with path and include
   (e.g. "*.py"). Example: {"operation": "grep", "pattern": "def main", "include": "*.py"}
@@ -41,18 +47,38 @@ def _norm(p: Any) -> str:
     return "" if text in ("", ".") else (text[2:] if text.startswith("./") else text)
 
 
-def _skipped(rel: Any, base: str = "") -> bool:
-    """True when ``rel`` lies in a build/cache folder BELOW ``base`` (a folder the model asked for is never hidden)."""
+def _build_output(parent: str, root: Path | None = None) -> bool:
+    """A build folder inside ``parent`` (workspace-relative, "" = root) is build output: at the root, or when
+    ``parent`` holds a build file."""
+    if not parent:
+        return True
+    folder = (root or Path.cwd()) / parent
+    return any((folder / name).is_file() for name in BUILD_FILES)
+
+
+def _skipped(rel: Any, base: str = "", root: Path | None = None) -> bool:
+    """True when ``rel`` lies in a cache or build folder BELOW ``base`` (a folder the model asked for is never
+    hidden)."""
     text = _norm(rel.get("path", "") if isinstance(rel, dict) else rel)
+    parts = [seg for seg in text.split("/") if seg]
+    start = 0
     if base and (text == base or text.startswith(base + "/")):
-        text = text[len(base):].lstrip("/")
-    return any(seg in SKIP_DIRS for seg in text.split("/") if seg)
+        start = len([seg for seg in base.split("/") if seg])
+    for i in range(start, len(parts)):
+        seg = parts[i]
+        if seg in CACHE_DIRS:
+            return True
+        if seg in BUILD_DIRS and _build_output("/".join(parts[:i]), root):
+            return True
+    return False
 
 
-def _keep(items: Any, base: str = "") -> Any:
-    if isinstance(items, list):
-        return [i for i in items if not _skipped(i, base)]
-    return items
+def _keep(items: Any, base: str = "") -> tuple[Any, int]:
+    """(items outside skipped folders, number left out)."""
+    if not isinstance(items, list):
+        return items, 0
+    kept = [i for i in items if not _skipped(i, base)]
+    return kept, len(items) - len(kept)
 
 
 def number_lines(text: Any, offset: Any = None, limit: Any = None) -> Any:
@@ -178,11 +204,22 @@ class FileOpsTool(Tool):
         offset = kwargs.pop("offset", None)
         limit = kwargs.pop("limit", None)
         base = _norm(kwargs.get("root") if operation == "glob" else kwargs.get("path"))
+        self._read_note = ""
         result = self._execute(operation, **kwargs)
         if operation == "read":
-            return number_lines(result, offset, limit)
+            text = number_lines(result, offset, limit)
+            return f"{text}\n{self._read_note}" if self._read_note and isinstance(text, str) else text
         if operation in ("list", "glob", "grep") and isinstance(result, dict):
-            return {k: _keep(v, base) for k, v in result.items()}
+            out: dict[str, Any] = {}
+            hidden = int(result.get("hidden") or 0)
+            for key, value in result.items():
+                if key == "hidden":
+                    continue
+                out[key], dropped = _keep(value, base)
+                hidden += dropped
+            if hidden:
+                out["hidden"] = hidden
+            return out
         return result
 
     def _execute(self, operation: str, **kwargs: Any) -> Any:
@@ -245,8 +282,14 @@ class FileOpsTool(Tool):
 
         if operation == "read":
             path = resolve_in_workspace(kwargs["path"], root)
-            data = path.read_bytes()
-            self._tracker.record(LocalFile(kwargs["path"], path).key, sha256_bytes(data))
+            size = path.stat().st_size
+            with open(path, "rb") as fh:
+                data = fh.read(READ_BYTES_CAP)
+            if size > READ_BYTES_CAP:
+                # Part of a file: not recorded as read, so an edit of it is refused.
+                self._read_note = (f"[... file is {size} bytes; only the first {READ_BYTES_CAP} bytes were read]")
+            else:
+                self._tracker.record(LocalFile(kwargs["path"], path).key, sha256_bytes(data))
             text = data.decode("utf-8", errors="replace")
             return text.replace("\r\n", "\n").replace("\r", "\n")
         if operation == "write":
@@ -269,8 +312,13 @@ class FileOpsTool(Tool):
         if operation == "list":
             p = resolve_in_workspace(kwargs.get("path", "."), root)
             recursive = kwargs.get("recursive", False)
-            items = p.rglob("*") if recursive else p.iterdir()
-            return {"files": sorted(_inside(items, root))}
+            if not recursive:
+                return {"files": sorted(_inside(p.iterdir(), root))}
+            items, hidden = _walk(p, root)
+            out: dict[str, Any] = {"files": sorted(_inside(items, root))}
+            if hidden:
+                out["hidden"] = hidden
+            return out
         if operation == "glob":
             pattern = kwargs["pattern"]
             _check_pattern(pattern)
@@ -290,8 +338,11 @@ class FileOpsTool(Tool):
             exclude = kwargs.get("exclude")
             rx = re.compile(pattern)
             matches = []
-            for dirpath, dirnames, fnames in os.walk(base):
-                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            if base.is_file():
+                walk = [(str(base.parent), [], [base.name])]
+            else:
+                walk = _pruned_walk(base, root)
+            for dirpath, _dirs, fnames in walk:
                 for fn in fnames:
                     if include and not fnmatch.fnmatch(fn, include):
                         continue
@@ -336,6 +387,35 @@ def resolve_in_workspace(raw: Any, root: Path) -> Path:
     if not resolved.is_relative_to(root):
         raise PermissionError(f"path is outside the workspace: {raw}")
     return resolved
+
+
+def _pruned_walk(top: Path, root: Path, hidden: list[int] | None = None):
+    """``os.walk`` that never descends into a skipped folder below ``top`` (counted in ``hidden[0]``)."""
+    import os
+    asked = _norm(_relative_inside(top, root) or "")
+    for dirpath, dirnames, fnames in os.walk(top):
+        rel = _relative_inside(dirpath, root)
+        keep = []
+        for d in dirnames:
+            child = f"{rel}/{d}" if rel and rel != "." else d
+            if _skipped(child, asked, root):
+                if hidden is not None:
+                    hidden[0] += 1
+            else:
+                keep.append(d)
+        dirnames[:] = keep
+        yield dirpath, dirnames, fnames
+
+
+def _walk(top: Path, root: Path) -> tuple[list[Path], int]:
+    """Every file and folder below ``top`` outside skipped folders, and how many folders were skipped."""
+    hidden = [0]
+    items: list[Path] = []
+    for dirpath, dirnames, fnames in _pruned_walk(top, root, hidden):
+        base = Path(dirpath)
+        items.extend(base / d for d in dirnames)
+        items.extend(base / f for f in fnames)
+    return items, hidden[0]
 
 
 def _check_pattern(pattern: Any) -> None:

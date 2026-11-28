@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """``--mcp-config`` / ``--mcp`` / ``--no-mcp`` / ``--mcp-allow``: parsing, gate, cleanup, timeout, /mcp, end to end."""
 from __future__ import annotations
@@ -169,15 +169,26 @@ def test_startup_timeout_env_and_allow_rules(tmp_path):
 
 # ---------------------------------------------------- real server: gate etc.
 
-def test_tools_gate_readonly_allowed_others_ask_and_noninteractive_denies(tmp_path):
+def test_readonly_hint_asks_unless_trusted(tmp_path):
     c = cfg()
+    apply(c, [tiny_file(tmp_path)], environ={})
+    loop = make_loop(c)
+    try:
+        loop.gate.rules._persist = False
+        assert not loop.gate.check("mcp__tiny__greet", {"name": "x"}).allowed  # the hint alone is not trusted
+    finally:
+        loop.close_mcp()
+
+
+def test_tools_gate_readonly_allowed_others_ask_and_noninteractive_denies(tmp_path):
+    c = cfg(mcp={"trust_readonly": True})
     apply(c, [tiny_file(tmp_path)], environ={})
     loop = make_loop(c)
     try:
         assert {"mcp__tiny__greet", "mcp__tiny__save", "mcp__tiny__dirty"} <= set(loop.tools)
         assert "bash" not in loop.tools
         loop.gate.rules._persist = False
-        assert loop.gate.check("mcp__tiny__greet", {"name": "x"}).allowed  # server says readOnlyHint
+        assert loop.gate.check("mcp__tiny__greet", {"name": "x"}).allowed  # readOnlyHint + mcp.trust_readonly
         denied = loop.gate.check("mcp__tiny__save", {"note": "n"})  # no asker -> ask is denied
         assert not denied.allowed
         out = loop.tools["mcp__tiny__greet"].execute(name="Ann")
@@ -418,7 +429,10 @@ def cli(args, port, cwd, extra_env=None):
 
 def test_cli_oneshot_no_tools_still_uses_mcp_config(model, tmp_path):
     port, bodies = model
-    r = cli(["-i", "greet Ann", "--no-tools", "--non-interactive", "--mcp-config", tiny_file(tmp_path)], port, tmp_path)
+    args = ["-i", "greet Ann", "--no-tools", "--non-interactive", "--mcp-config", tiny_file(tmp_path)]
+    assert cli(args, port, tmp_path).returncode == 3  # readOnlyHint alone is not trusted: denied
+    bodies.clear()
+    r = cli(args, port, tmp_path, {"AI_REX_MCP__TRUST_READONLY": "true"})
     assert r.returncode == 0, r.stderr
     assert r.stdout.startswith("The tool said:") and "hello Ann" in r.stdout
     assert [t["function"]["name"] for t in bodies[0]["tools"]] == ["mcp__tiny__greet", "mcp__tiny__save",
@@ -450,7 +464,7 @@ def test_cli_no_mcp_wins_over_env_and_flags(model, tmp_path):
 def test_cli_env_config_and_bad_flag(model, tmp_path):
     port, bodies = model
     r = cli(["-i", "greet", "--no-tools", "--non-interactive"], port, tmp_path,
-            {"AI_REX_MCP_CONFIG": tiny_file(tmp_path)})
+            {"AI_REX_MCP_CONFIG": tiny_file(tmp_path), "AI_REX_MCP__TRUST_READONLY": "true"})
     assert r.returncode == 0 and "hello Ann" in r.stdout, r.stderr
     r = cli(["-i", "x", "--mcp-config", str(tmp_path / "nope.json")], port, tmp_path)
     assert r.returncode == 2 and r.stderr.startswith("ai-rex: cannot read MCP config")
@@ -462,7 +476,7 @@ def test_cli_no_orphan_after_oneshot(model, tmp_path):
     port, _ = model
     pidfile = tmp_path / "pid"
     r = cli(["-i", "greet", "--no-tools", "--non-interactive", "--mcp-config",
-             tiny_file(tmp_path, env={"MCP_TINY_PIDFILE": str(pidfile)})], port, tmp_path)
+             tiny_file(tmp_path, env={"MCP_TINY_PIDFILE": str(pidfile)})], port, tmp_path, {"AI_REX_MCP__TRUST_READONLY": "true"})
     assert r.returncode == 0, r.stderr
     pid = int(pidfile.read_text())
     deadline = time.time() + 5

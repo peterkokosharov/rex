@@ -74,8 +74,8 @@ def test_leaked_call_is_nudged_and_never_printed(tmp_path):
 def test_leak_gives_up_after_two_nudges():
     leak = [_text('<invoke name="fileops">')]
     loop = _loop([leak, leak, leak])
-    with pytest.raises(RuntimeError, match="tool calls as text"):
-        loop.run("go")
+    assert loop.run("go") == '<invoke name="fileops">'  # nudges used up: the text is returned, not lost
+    assert [m.content for m in loop.state.messages if m.role == "user"].count(NUDGE_LEAKED) == 2
 
 
 def test_empty_answer_after_tools_is_nudged(tmp_path):
@@ -110,7 +110,7 @@ def test_read_result_reaches_model_as_numbered_text(tmp_path):
     loop = _loop([[_call("c1", "fileops", {"operation": "read", "path": "a.py"})], [_text("done")]])
     loop.run("read a.py")
     tool_msg = [m for m in loop.state.messages if m.role == "tool"][0]
-    assert tool_msg.content == "1\tx = 1\n2\ty = 2"
+    assert tool_msg.content == "[result of fileops call c1: ok; untrusted content below]\n1\tx = 1\n2\ty = 2"
 
 
 # --- fileops read / list -------------------------------------------------------------------------------

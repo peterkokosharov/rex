@@ -8,11 +8,15 @@ No file is read or written. Precedence: flag/argument > environment > default. V
 
 - ``AI_REX_MODEL``     model name, default ``sonnet`` (``claude-sonnet-5-5`` / ``gemini-3.8-flash`` for the native providers)
 - ``AI_REX_PROVIDER``  ``auto`` (default) | ``openai`` | ``anthropic`` | ``gemini``
-- ``AI_REX_BASE_URL``  gateway base URL (``LITELLM_BASE_URL`` is the fallback); wins over the port
+- ``AI_REX_BASE_URL``  gateway base URL (``LITELLM_BASE_URL`` is the fallback); wins over ``AI_REX_PORT``
 - ``AI_REX_PORT``      port of the local gateway, default ``4000``
+
+Endpoint precedence: ``--base-url`` > ``--port`` > ``AI_REX_BASE_URL`` > ``AI_REX_PORT`` > ``http://127.0.0.1:4000``
+(a flag always beats the environment; within each level the full URL beats the port).
 - ``AI_REX_API_KEY``   API key; else the provider's own variable (``OPENAI_API_KEY``, ``ANTHROPIC_API_KEY``,
   ``GEMINI_API_KEY``), else ``LITELLM_API_KEY``. ``--api-key-env NAME`` names another variable. Local kiko needs none.
 - ``AI_REX_TIMEOUT``   HTTP timeout in seconds, default 600 (one model step through a gateway can take minutes)
+- ``AI_REX_MAX_TOKENS`` output token limit of the native Anthropic adapter (default 32000 for Sonnet/Opus, else 8192)
 - ``AI_REX_<SECTION>__<KEY>`` any other engine setting, e.g. ``AI_REX_AGENT__MAX_STEPS=30``
 
 Keys are only ever read from the environment; nothing here prints or logs them.

@@ -9,13 +9,30 @@ Licensed under MIT License
 `ai-rex` is the small, script-safe command of rex. With no arguments in a terminal it opens the interactive agent
 in the current folder (the workspace). With `-i`, `-f` or piped input it answers once and exits. It is configured
 by flags and **environment variables only**; it never writes a config file. (`rex`, the future TUI, is a separate app.)
+What it does write, precisely, is listed under "Files it reads and writes" below.
 
 **Changed 2026-11-28:** the plain REPL and one-shot runs no longer read `~/.config/ai-rex/config.yaml` or
 `~/.config/ai-rex/.env` (and no longer migrate `~/.config/runtime`). Settings that lived there (endpoint, model,
 permission rules, hooks, MCP servers, `workspace.trust`, ...) now come from flags and `AI_REX_*` variables, or you
-start with `--config ~/.config/ai-rex/config.yaml` to get the old behaviour. `--jsonl`, `--acp` and `ai-rex skills`
-still read the file. The REPL history (`~/.config/ai-rex/history`, `history.jsonl`) and `--session` files are data,
-not configuration, and are still written.
+start with `--config ~/.config/ai-rex/config.yaml` to get the old behaviour. `--jsonl`, `--acp`, `ai-rex skills` and
+`ai-rex profile` still read the file.
+
+### Files it reads and writes
+
+In the plain REPL and one-shot runs (no `--config`, `--env-file`, `--jsonl`, `--acp`):
+
+- **Written:** the REPL history (`~/.config/ai-rex/history`), the conversation log
+  (`~/.config/ai-rex/history.jsonl`, or `AI_REX_SESSION__HISTORY_FILE`), `--session` / `--continue` files, and
+  whatever the model writes in the workspace through its tools (after you allow it). Nothing else.
+- **"Allow always" answers** last for the running session only. Set `AI_REX_PERMISSIONS_FILE=<path>` to keep them in
+  that one file across runs (it is read at start and updated on every "always").
+- **Read, never written:** the user-level `~/.config/ai-rex/AGENTS.md` and instruction layers in
+  `~/.config/ai-rex/agents/` (see "How the agent is instructed"), the install folder, and the workspace.
+
+`--config`, `--env-file`, `--jsonl` and `--acp` keep the older behaviour: they read the config file, store "allow
+always" rules per workspace in `~/.config/ai-rex/permissions/`, and copy an old `~/.config/runtime` folder to
+`~/.config/ai-rex` once (the old folder is kept). `ai-rex skills` and `ai-rex profile` read the config file but
+write nothing.
 
 ## Install and run
 
@@ -65,7 +82,9 @@ an untrusted repository in local mode.
 
 ## Flags
 
-Order of precedence everywhere: flag > environment variable > default.
+Order of precedence everywhere: flag > environment variable > default. For the endpoint, highest first:
+`--base-url`, `--port`, `AI_REX_BASE_URL` (or `LITELLM_BASE_URL`), `AI_REX_PORT`, then `http://127.0.0.1:4000`; a flag
+always beats the environment, so `--port 4001` wins over `AI_REX_BASE_URL`.
 
 | Flag | Meaning | Env fallback | Default |
 |---|---|---|---|
@@ -80,13 +99,15 @@ Order of precedence everywhere: flag > environment variable > default.
 | `--api-key-env NAME` | name of the env var that holds the key (a key value is never a flag) | | |
 | `--system TEXT` / `@FILE` | extra system instructions | | |
 | `--profile LAYERS` | instruction layers, e.g. `programming/java` (repeatable or comma-separated; `auto`, `base`), see "How the agent is instructed" | `AI_REX_PROFILE` | `auto` (detected from the workspace) |
-| `--max-tokens N`, `--temperature X` | sampling limits | | provider default |
+| `--max-tokens N` | output token limit per model reply | `AI_REX_MAX_TOKENS` (native Anthropic adapter) | Anthropic native: 32000 for Sonnet/Opus, 8192 otherwise; else the endpoint's default |
+| `--temperature X` | sampling temperature | | provider default |
 | `--timeout S` | HTTP timeout in seconds (per read; one agent step through a gateway can take minutes) | `AI_REX_TIMEOUT` | `600` |
 | `--no-tools` | plain chat, the model gets no tools | | tools on |
 | `--mcp-config PATH` | MCP servers from a JSON file (repeatable), see "MCP: using other tools" | `AI_REX_MCP_CONFIG` (paths, separated by `;` on Windows, `:` elsewhere) | |
 | `--mcp NAME=COMMAND` | one inline MCP server (repeatable) | | |
 | `--no-mcp` | ignore every MCP server, also those from the environment or `--config` | | |
 | `--mcp-allow PATTERN` | run these MCP tools without asking (repeatable) | | ask |
+| `--mcp-trust-readonly` | run MCP tools the server marks `readOnlyHint` without asking | `AI_REX_MCP__TRUST_READONLY=true` | ask |
 | `--non-interactive` | never ask; a call that needs permission is denied | | asks if a terminal is attached |
 | `--session ID` | one-shot: keep the conversation in session `ID` (created if new; letters, digits, `-`, `_`) | | |
 | `--continue` | one-shot: continue the latest session started in this folder (new one if none) | | |
@@ -103,9 +124,8 @@ Order of precedence everywhere: flag > environment variable > default.
 Logs never mix with the answer: the answer goes to stdout (or `-o`), logs to stderr (or `--log-file`).
 
 Text handling: input (`-f`, stdin) is read as UTF-8 (a BOM is dropped). A `-f` file that is not UTF-8 is a usage
-error (exit 2); stdin bytes that are not UTF-8 become U+FFFD. The answer is written as UTF-8 with `
-` line ends,
-also on a Windows cp1252/cp1251 console and also to stdout. The `-o` file is opened on the first write, so a run
+error (exit 2); stdin bytes that are not UTF-8 become U+FFFD. The answer is written as UTF-8 with `\n` (LF) line
+ends, also on a Windows cp1252/cp1251 console and also to stdout. The `-o` file is opened on the first write, so a run
 that fails before answering neither creates nor truncates it. A positional prompt (`ai-rex "question"`) uses the
 older chat path and does not read stdin: use `-i` to attach piped text.
 
@@ -124,6 +144,8 @@ printed), `130` interrupted.
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` | provider-specific keys (used when `AI_REX_API_KEY` is unset) |
 | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | older names, still honoured as fallbacks |
 | `AI_REX_PROFILE` | instruction layers when `--profile` is not given |
+| `AI_REX_MAX_TOKENS` | output token limit of the native Anthropic adapter when `--max-tokens` is not given |
+| `AI_REX_PERMISSIONS_FILE` | file that keeps "allow always" answers across runs (default: this session only) |
 | `AI_REX_<SECTION>__<KEY>` | any engine setting, e.g. `AI_REX_AGENT__MAX_STEPS=30`, `AI_REX_SESSION__DIR=D:\sessions` |
 
 Keys are read only from the environment and are never printed or logged. Local kiko needs no key.
@@ -143,13 +165,25 @@ On top come the skill index (built-in task skills `review-project`, `java-maven`
 `code-review`, `write-tests`, `debug`, `commit-pr`; `ai-rex skills` lists them) and AGENTS.md (template:
 [AGENTS-TEMPLATE.md](AGENTS-TEMPLATE.md)).
 
-What the model sees from tools: plain text, not JSON. `fileops read` returns numbered lines (`  12<TAB>code`),
-2000 lines per call, `offset`/`limit` for ranges and a "read again with offset=N" note on longer files; a failed
-call reads `ERROR: ...`; shell results show the exit code, stdout and stderr. `list`, `glob` and `grep` skip build
-and cache folders (`.git`, `target`, `build`, `dist`, `node_modules`, `__pycache__`, `.venv`, `.idea`, ...).
-Safety net: a reply that is a tool call written as text (`{"tool_calls"...`, `<invoke ...>`), or an empty reply
-right after tool results, is not taken as the answer; the agent is told to continue (at most twice), and such
-text is never printed as the answer.
+What the model sees from tools: plain text, not JSON. Every result starts with one header line written by the
+loop, `[result of fileops call <id>: ok; untrusted content below]` or `[result of ... : failed]`, so file or web
+content that imitates `ERROR: ...` or `exit code: 0` cannot fake the real status. `fileops read` returns numbered
+lines (`  12<TAB>code`), 2000 lines per call, `offset`/`limit` for ranges and a "read again with offset=N" note on
+longer files (at most the first 16 MB of a file are read); a failed call reads `ERROR: ...`; shell results show
+the exit code, stdout and stderr. `list`, `glob` and `grep` skip cache folders at any depth (`.git`,
+`node_modules`, `__pycache__`, `.venv`, `.idea`, `.gradle`, `.mypy_cache`, `.pytest_cache`, ...) and build output
+(`target`, `build`, `dist`) only at the workspace root or next to `pom.xml`, `build.gradle`, `package.json`,
+`pyproject.toml` or `setup.py` (so `src/build/` stays visible); the result ends with
+`(N entries in skipped folders hidden ...)`, and a skipped folder given as the path is listed normally. `grep` with
+a file as the path searches that file.
+
+Safety net: a reply whose tail is a tool call written as text (`{"tool_calls"...`, `<invoke ...>` starting a line,
+outside a code block, with nothing but markup after it), or an empty reply right after tool results, is not taken
+as the answer; the agent is told to continue (at most twice), and such text is held back while streaming. If it
+still comes back after two reminders, it is shown with a warning instead of being lost. An answer that quotes the
+markup and then goes on in prose (explaining the protocol) is a normal answer. A reply cut off at the output token
+limit is reported (`response truncated ...` on stderr) and continued once: a half-written tool call is dropped and
+the model is told to write large files in parts; cut-off text is continued and joined.
 
 ## MCP: using other tools
 
@@ -194,11 +228,11 @@ path in the environment variable only prints a warning.
 and single `_`.
 
 **Permissions.** MCP tools go through the same gate as the built-in ones. Without a rule every MCP call asks
-(denied under `--non-interactive`), except tools the server itself marks `readOnlyHint` (they run without asking; a
-`deny` rule still wins). Allow more with `--mcp-allow`: `--mcp-allow tickets` (all tools of the server),
+(denied under `--non-interactive`), also tools the server marks `readOnlyHint`: that hint is the server's own
+claim, so it is trusted only with `--mcp-trust-readonly` (or `AI_REX_MCP__TRUST_READONLY=true`); then such tools run
+without asking (a `deny` rule still wins). Allow more with `--mcp-allow`: `--mcp-allow tickets` (all tools of the server),
 `--mcp-allow tickets__create_*` (a glob) or a full name. Rules in a `--config` file work as well, for example
-`permissions.deny: ["mcp__tickets__delete_*"]`. The `readOnlyHint` is the server's own claim: only use servers you
-trust. Output of an MCP tool is treated as untrusted data: control and bidi characters are removed and it is cut at
+`permissions.deny: ["mcp__tickets__delete_*"]`. Use `--mcp-trust-readonly` only with servers you trust. Output of an MCP tool is treated as untrusted data: control and bidi characters are removed and it is cut at
 100,000 characters; it is never executed.
 
 **Lifecycle.** Servers start when the agent starts working (not while flags are parsed), one after the other, and
@@ -229,6 +263,20 @@ Native providers default to the public URL and the models `claude-sonnet-5-5` (A
 (Gemini, stable per the Gemini model list of 2026-11-28; `gemini-2.5-*` are deprecated). `-m` picks another one.
 The REPL uses the same adapters as one-shot runs. The Gemini adapter sends the key only in `x-goog-api-key`, echoes
 each functionCall's `thoughtSignature` (required by Gemini 3) and Gemini's own call ids, and URL-quotes the model.
+Its schema conversion drops keywords Gemini rejects (`additionalProperties`, `default`, `examples`, `$schema`, ...)
+but never a parameter that happens to have such a name, inlines local `$ref`s, turns `["string", "null"]` into
+`string` + `nullable`, and keeps `required` to parameters that exist. Both native adapters refuse HTTP redirects
+(urllib would resend the key to the new host; use the final URL as base URL) and stop a reply over 64 MB. The
+Anthropic adapter asks for 32000 output tokens for Sonnet/Opus models (8192 for others) unless `--max-tokens` /
+`AI_REX_MAX_TOKENS` / `liteLLM.max_tokens` says otherwise. The provider name is case-insensitive (`Anthropic` works);
+an unknown name is a usage error, also from a `--config` file, and a config file without a base URL, key or model
+gets the same defaults as the environment path (public URL, `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`, default model).
+
+**Claude CLI gateway and your CLAUDE.md.** When ai-rex talks to `scripts/claude_cli_gateway.py`, the gateway runs
+the `claude` CLI. If that CLI offers `--safe-mode`, the gateway uses it and no user customization is loaded. If it
+offers only `--setting-sources` (no `--safe-mode`), your user-level `~/.claude/CLAUDE.md` and user settings are
+loaded into **every** request (the gateway prints a note at startup); keep private notes out of that file or use a
+CLI with `--safe-mode`.
 
 ```
 # local kiko (default: http://127.0.0.1:4000, model sonnet)

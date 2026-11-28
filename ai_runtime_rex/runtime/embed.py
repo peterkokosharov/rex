@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-opus-4-8, claude-sonnet-5-5
+# LLM: claude-opus-4-8, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """Embed facade (moved from ``rex_runtime_lib``): a thin in-process ``Session`` over ``runtimelib.AgentLoop``,
 the ``GatewayLLM`` composition seam (any OpenAI chat callable, e.g. an in-process kiko gateway), and a one-call
@@ -168,7 +168,7 @@ class Session:
 
     def stream(self, message: str):
         """Send a user message and yield ``AgentEvent``s (tokens, tool start/end) as they happen, ending with a
-        'final' event (or 'error'). The loop runs on a worker thread; iterate to completion to join it."""
+        'final' event (or 'error'). The loop runs on a worker thread; leaving the iteration early interrupts it."""
         q: "queue.Queue[AgentEvent]" = queue.Queue()
         self._sink = q
         done: "queue.Queue[object]" = queue.Queue()
@@ -194,6 +194,10 @@ class Session:
                         finished = True
         finally:
             self._sink = None
+            if worker.is_alive() and done.empty():
+                # The caller stopped iterating (break, close, exception): stop the loop instead of waiting for
+                # the whole remaining task. It ends at the next streamed chunk or step.
+                self.loop.interrupt()
             worker.join()
 
     def interrupt(self) -> None:

@@ -37,7 +37,10 @@ from runtimelib.tools.git import GitTool
 
 
 def _tool_msg(text):
-    """Plain-text tool message -> {"success", "result", "error"} (failures start with "ERROR: ")."""
+    """Plain-text tool message -> {"success", "result", "error"} (the loop's "[result of ...]" header line first,
+    failures then start with "ERROR: ")."""
+    if text.startswith("[result of "):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
     if text.startswith("ERROR: "):
         return {"success": False, "result": None, "error": text[len("ERROR: "):]}
     return {"success": True, "result": text, "error": None}

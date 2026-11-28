@@ -20,6 +20,7 @@ Keys travel only in request headers and are never put into URLs, errors or logs.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 import uuid
@@ -28,11 +29,33 @@ from collections.abc import Iterator
 from typing import Any, Optional
 
 ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_MAX_TOKENS = 8192
+DEFAULT_MAX_TOKENS = 8192  # output limit for models not listed below
+# Claude Sonnet / Opus write whole files through tool arguments; 8192 cut them off ("Invalid tool arguments").
+LARGE_OUTPUT_MODELS = ("sonnet", "opus")
+LARGE_MAX_TOKENS = 32000
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # one streamed model reply; more is a broken or hostile endpoint
 
 
 class ProviderError(RuntimeError):
     pass
+
+
+def model_max_tokens(model: str) -> int:
+    """Output token limit to ask for when the caller set none."""
+    name = (model or "").lower()
+    return LARGE_MAX_TOKENS if any(m in name for m in LARGE_OUTPUT_MODELS) else DEFAULT_MAX_TOKENS
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: urllib would resend the key headers (x-api-key, x-goog-api-key, Authorization) to
+    whatever host the Location names. An API endpoint that redirects is misconfigured; say so instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        raise ProviderError(f"HTTP {code} redirect from {urllib.request.urlparse(req.full_url).netloc} refused "
+                            f"(keys are never sent on); use the final URL as base URL")
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _open(url: str, headers: dict[str, str], body: dict, timeout: float):
@@ -40,7 +63,7 @@ def _open(url: str, headers: dict[str, str], body: dict, timeout: float):
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": "application/json", "Accept": "text/event-stream", **headers})
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return _OPENER.open(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
         try:
             detail = exc.read(600).decode("utf-8", "replace").strip()
@@ -52,9 +75,13 @@ def _open(url: str, headers: dict[str, str], body: dict, timeout: float):
 
 
 def _sse(resp: Any) -> Iterator[tuple[str, str]]:
-    """Yield (event, data) from a Server-Sent-Events body."""
+    """Yield (event, data) from a Server-Sent-Events body (at most ``MAX_RESPONSE_BYTES``)."""
     event, data = "", []
+    total = 0
     for raw in resp:
+        total += len(raw)
+        if total > MAX_RESPONSE_BYTES:
+            raise ProviderError(f"model response too large (over {MAX_RESPONSE_BYTES} bytes)")
         line = raw.decode("utf-8", "replace").rstrip("\r\n")
         if not line:
             if data:
@@ -125,7 +152,7 @@ def aggregate(chunks: Iterator[dict]) -> dict:
 
 
 # ---------------------------------------------------------------- Anthropic
-def anthropic_request(body: dict) -> dict:
+def anthropic_request(body: dict, default_max_tokens: Optional[int] = None) -> dict:
     system, messages = [], []
     pending_results: list[dict] = []
 
@@ -157,7 +184,8 @@ def anthropic_request(body: dict) -> dict:
             messages.append({"role": "user", "content": _text(m.get("content"))})
     flush()
     req: dict[str, Any] = {"model": body["model"], "messages": messages, "stream": True,
-                           "max_tokens": body.get("max_tokens") or DEFAULT_MAX_TOKENS}
+                           "max_tokens": body.get("max_tokens") or default_max_tokens
+                           or model_max_tokens(body["model"])}
     if system:
         req["system"] = "\n\n".join(s for s in system if s)
     if body.get("temperature") is not None:
@@ -206,12 +234,12 @@ def anthropic_events(events: Iterator[tuple[str, str]], model: str = "") -> Iter
     yield _chunk({}, finish=finish, usage=usage, model=model)
 
 
-def anthropic_chat(base_url: str, api_key: str, timeout: float = 600.0):
+def anthropic_chat(base_url: str, api_key: str, timeout: float = 600.0, default_max_tokens: Optional[int] = None):
     url = base_url.rstrip("/").removesuffix("/v1") + "/v1/messages"
 
     def chat(body: dict):
         resp = _open(url, {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION},
-                     anthropic_request(body), timeout)
+                     anthropic_request(body, default_max_tokens), timeout)
         stream = anthropic_events(_sse(resp), body.get("model", ""))
         return stream if body.get("stream") else aggregate(stream)
 
@@ -219,15 +247,55 @@ def anthropic_chat(base_url: str, api_key: str, timeout: float = 600.0):
 
 
 # ------------------------------------------------------------------- Gemini
+# JSON-Schema keywords Gemini's OpenAPI subset rejects. Dropped as KEYWORDS only, never as property names.
 _DROP = {"additionalProperties", "$schema", "$id", "$ref", "definitions", "$defs", "default", "examples"}
+_REF_DEPTH = 8  # a recursive $ref is inlined this deep, then becomes a plain object
 
 
-def _gemini_schema(node: Any) -> Any:
-    if isinstance(node, dict):
-        return {k: _gemini_schema(v) for k, v in node.items() if k not in _DROP}
+def _resolve_ref(ref: str, root: dict) -> Any:
+    """A local ``#/$defs/X`` or ``#/definitions/X`` reference, or None."""
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+    node: Any = root
+    for part in ref[2:].split("/"):
+        part = part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, dict) else None
+
+
+def _gemini_schema(node: Any, root: Any = None, depth: int = 0) -> Any:
+    """JSON Schema -> Gemini schema: drop unsupported keywords (not property names), inline local ``$ref``,
+    collapse ``["T", "null"]`` to ``T`` + ``nullable``, keep ``required`` to the properties that exist."""
+    root = node if root is None else root
     if isinstance(node, list):
-        return [_gemini_schema(v) for v in node]
-    return node
+        return [_gemini_schema(v, root, depth) for v in node]
+    if not isinstance(node, dict):
+        return node
+    if "$ref" in node:
+        target = _resolve_ref(node["$ref"], root) if depth < _REF_DEPTH else None
+        merged = {**(target or {"type": "object"}), **{k: v for k, v in node.items() if k != "$ref"}}
+        return _gemini_schema(merged, root, depth + 1)
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _DROP:
+            continue
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {name: _gemini_schema(sub, root, depth) for name, sub in value.items()}
+        elif key == "type" and isinstance(value, list):
+            kinds = [t for t in value if t != "null"]
+            out[key] = kinds[0] if len(kinds) == 1 else (kinds or ["string"])[0]
+            if "null" in value:
+                out["nullable"] = True
+        else:
+            out[key] = _gemini_schema(value, root, depth)
+    if isinstance(out.get("required"), list):
+        props = out.get("properties") if isinstance(out.get("properties"), dict) else {}
+        out["required"] = [r for r in out["required"] if r in props]
+        if not out["required"]:
+            del out["required"]
+    return out
 
 
 def gemini_request(body: dict, signatures: Optional[dict[str, Optional[str]]] = None) -> dict:
@@ -350,13 +418,39 @@ def gemini_chat(base_url: str, api_key: str, timeout: float = 600.0):
 
 
 def make_llm(config: Any) -> Any:
-    """None for ``openai`` (the engine builds its own client); a ``GatewayLLM`` for anthropic / gemini."""
+    """None for ``openai`` (the engine builds its own client); a ``GatewayLLM`` for anthropic / gemini.
+
+    Works for every config source (environment, ``--config``, ``--env-file``): the provider name is normalised
+    (``Anthropic`` = ``anthropic``, ``auto`` follows the base URL), an unknown one is a ValueError, and a missing
+    base URL, key or model is filled like ``envconfig.resolve_endpoint`` does, or reported as a ValueError.
+    """
+    from ai_runtime_rex.runtime.envconfig import KEY_ENV, PUBLIC_MODEL, PUBLIC_URL, detect_provider
+
     lite = config.get("liteLLM", {}) or {}
-    kind = lite.get("provider", "openai")
+    if not isinstance(lite, dict):
+        raise ValueError("liteLLM settings must be a mapping")
+    raw = str(lite.get("provider") or "openai").strip().lower()
+    kind = detect_provider(raw, lite.get("base_url")) if raw == "auto" else raw
     if kind == "openai":
         return None
+    if kind not in ("anthropic", "gemini"):
+        raise ValueError(f"unknown provider {lite.get('provider')!r} (use auto, openai, anthropic or gemini)")
     from ai_runtime_rex.runtime.embed import GatewayLLM
 
-    timeout = float(lite.get("timeout", 600.0))
-    maker = anthropic_chat if kind == "anthropic" else gemini_chat
-    return GatewayLLM(maker(lite["base_url"], lite["api_key"], timeout), lite["model"])
+    base_url = lite.get("base_url") or PUBLIC_URL[kind]
+    api_key = (lite.get("api_key") or os.environ.get("AI_REX_API_KEY") or os.environ.get(KEY_ENV[kind])
+               or os.environ.get("LITELLM_API_KEY"))
+    if not api_key or api_key == "none":
+        raise ValueError(f"provider {kind} needs an API key: set {KEY_ENV[kind]} (or use --api-key-env NAME)")
+    model = lite.get("model") or PUBLIC_MODEL[kind]
+    try:
+        timeout = float(lite.get("timeout") or 600.0)
+        raw_max = lite.get("max_tokens") or os.environ.get("AI_REX_MAX_TOKENS")
+        max_tokens = int(raw_max) if raw_max not in (None, "") else None
+    except (TypeError, ValueError):
+        raise ValueError("liteLLM.timeout and max_tokens (AI_REX_MAX_TOKENS) must be numbers") from None
+    if kind == "anthropic":
+        chat = anthropic_chat(base_url, api_key, timeout, default_max_tokens=max_tokens)
+    else:
+        chat = gemini_chat(base_url, api_key, timeout)
+    return GatewayLLM(chat, model)

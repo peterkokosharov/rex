@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -98,7 +99,7 @@ def main() -> int:
     set_quiet(protocol_mode)  # deprecation notes only in REPL / one-shot mode
     env_only = not (protocol_mode or any(a in ("--config", "--env-file") for a in argv)
                     or (argv and argv[0] in ("acp", "skills", "profile")))
-    if not env_only:
+    if not env_only and not (argv and argv[0] in ("skills", "profile")):
         migrate_legacy_config()  # one-time copy ~/.config/runtime -> ~/.config/ai-rex (old dir is kept)
     # `ai-rex acp ...` is the form used in editor configs. Keep the old flat CLI
     # intact; this only takes over when "acp" is the very first argument.
@@ -146,6 +147,10 @@ def main() -> int:
         config.set("liteLLM.base_url", args.base_url or f"http://127.0.0.1:{args.port}")
     if args.profile:
         config.set("agent.profile", ",".join(args.profile))
+    if args.max_tokens:
+        config.set("liteLLM.max_tokens", args.max_tokens)  # the native adapters' output limit, also in the REPL
+    if env_only:
+        apply_permission_store(config)
     config.set("cli.json", bool(args.json))
     config.set("cli.no_stream", bool(args.no_stream))
     config.set("cli.verbose", bool(args.verbose))
@@ -242,6 +247,18 @@ def apply_tool_mode(config: Config, flag: bool, env_only: bool, docker: Optional
         return None
     config.set("cli.unsafe_local_tools", True)
     return "tools: local (Docker not found) - reads allowed, every write or command asks first"
+
+
+def apply_permission_store(config: Config, environ: Any = None) -> None:
+    """Env-only mode writes nothing outside the workspace: "allow always" answers last for the session, unless
+    ``AI_REX_PERMISSIONS_FILE`` names a file that keeps them (an explicit ``permissions.persist`` is kept)."""
+    env = os.environ if environ is None else environ
+    path = env.get("AI_REX_PERMISSIONS_FILE")
+    if path:
+        config.set("permissions.store_file", path)
+        config.set("permissions.persist", True)
+    elif config.get("permissions.persist") is None:
+        config.set("permissions.persist", False)
 
 
 def _llm_factory(config: Config) -> Any:
@@ -402,16 +419,54 @@ def _on_context(status: dict[str, Any], quiet: bool = False) -> None:
 
 _LAUNCH_NAMES = ("ai-rex", "ai-rex.cmd", "ai-rex.exe", "ai-rex.bat", "ai-rex.sh")
 LAUNCH_HINT = ("You are already inside ai-rex; this line was not sent to the model. To change the HTTP timeout "
-               "use /timeout N, to change the model /model NAME; other flags need a restart.")
+               "use /timeout N, to change the model /model NAME; other flags need a restart. To send the line "
+               "anyway, start it with a space or with /say.")
 CONTINUE_NOTE = "the conversation is kept, type to continue"
 
 
-def looks_like_launch_line(line: str) -> bool:
-    """True for a REPL line that is an ai-rex command line (``...\\ai-rex.cmd --timeout 600``) or starts with ``--``."""
+_FLAG_ARITY: dict[str, int] = {}
+
+
+def _flag_arity() -> dict[str, int]:
+    """ai-rex option string -> number of values it takes (0 for switches)."""
+    if not _FLAG_ARITY:
+        for action in create_parser()._actions:
+            takes = 0 if action.nargs == 0 else 1
+            for opt in action.option_strings:
+                _FLAG_ARITY[opt] = takes
+    return _FLAG_ARITY
+
+
+def _only_flags(words: list[str]) -> bool:
+    """True when ``words`` are nothing but known ai-rex flags and their values (``--timeout 600 -m haiku``)."""
+    arity = _flag_arity()
+    i = 0
+    while i < len(words):
+        word = words[i]
+        name = word.split("=", 1)[0]
+        if name not in arity:
+            return False
+        i += 1 if "=" in word or arity[name] == 0 else 2
+    return bool(words) and i == len(words)
+
+
+def forced_text(line: str) -> Optional[str]:
+    """The text of a ``/say TEXT`` line (sent to the model as it is), else None."""
     text = line.strip()
-    if text.startswith("--"):
-        return True
+    if text == "/say" or text.startswith(("/say ", "/say\t")):
+        return text[4:].strip()
+    return None
+
+
+def looks_like_launch_line(line: str) -> bool:
+    """True for a REPL line that is an ai-rex command line (``...\\ai-rex.cmd --timeout 600``) or consists only
+    of known ai-rex flags (``--timeout 600``). A line typed with a leading space is always sent."""
+    if line[:1] in (" ", "\t"):
+        return False
+    text = line.strip()
     words = text.split()
+    if text.startswith("-"):
+        return _only_flags(words)
     first = words[0].strip("\"'") if words else ""
     name = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if name not in _LAUNCH_NAMES:
@@ -447,7 +502,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             return 0
         try:
             seconds = float(value)
-            if seconds <= 0:
+            if not math.isfinite(seconds) or seconds <= 0:
                 raise ValueError
         except (TypeError, ValueError):
             print("Usage: /timeout N   (seconds, > 0)")
@@ -484,27 +539,30 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             print(json.dumps(config.to_safe_dict(), indent=2, ensure_ascii=False))
             return 0
 
-        if "show" in args:
-            key = args["show"]
-            from runtimelib.config.config import mask_value
+        from runtimelib.config.config import mask_value
+        verb = args.get("_0")
+        if verb == "show" or "show" in args:
+            key = args.get("_1") if verb == "show" else args["show"]
+            if not key:
+                print("Usage: /config show KEY")
+                return 1
             value = mask_value(key, config.get(key))
             print(f"{key} = {json.dumps(value, ensure_ascii=False)}")
             return 0
 
-        if "set" in args:
-            # Format: set key=value
-            for pair in args.values():
-                if "=" in pair:
-                    key, value = pair.split("=", 1)
-                    try:
-                        parsed = json.loads(value)
-                    except json.JSONDecodeError:
-                        parsed = value
-                    from runtimelib.config.config import mask_value
-                    print(f"Set {key} = {mask_value(key, parsed)} (this session only)")
+        if verb == "set":
+            # /config set KEY=VALUE [KEY=VALUE ...]; values are already parsed (numbers, true/false, JSON-ish)
+            pairs = {k: v for k, v in args.items() if not k.startswith("_")}
+            if not pairs:
+                print("Usage: /config set KEY=VALUE")
+                return 1
+            for key, value in pairs.items():
+                config.set(key, value)
+                print(f"Set {key} = {json.dumps(mask_value(key, value), ensure_ascii=False)} (this session only)")
             return 0
 
-        return 0
+        print("Usage: /config [show KEY | set KEY=VALUE]")
+        return 1
 
     @registry.register("models", "List the models of the gateway")
     def cmd_models(args: dict[str, Any]) -> int:
@@ -797,7 +855,8 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
     while True:
         try:
             prompt = ansi.cyan("ai-rex") + ansi.gray(" › ")
-            line = interface.read(prompt).strip()
+            raw = interface.read(prompt)
+            line = raw.strip()
         except EOFError:
             print()
             break
@@ -808,7 +867,18 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
         if not line:
             continue
 
-        if looks_like_launch_line(line):
+        said = forced_text(line)
+        if said is not None:
+            if said:
+                try:
+                    registry.execute("chat", {"prompt": said})
+                except KeyboardInterrupt:
+                    print()
+                except Exception as e:
+                    print(ansi.red(f"Error: {e}"))
+            continue
+
+        if looks_like_launch_line(raw):
             print(ansi.yellow(LAUNCH_HINT))
             continue
 
