@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """MCP servers from the ``ai-rex`` command line, the environment and ``mcpServers`` JSON files.
@@ -15,7 +15,14 @@ File format (the one Claude Code and other clients use)::
     {"mcpServers": {"name": {"command": "prog", "args": ["a"], "env": {"K": "v"}},
                     "web":  {"type": "http", "url": "https://host/mcp", "headers": {"Authorization": "..."}}}}
 
-``${VAR}`` and ``${VAR:-default}`` inside strings are expanded from the environment. Nothing runs through a shell.
+``${VAR}`` and ``${VAR:-default}`` inside strings are expanded from the environment (an unset ``${VAR}`` without a
+default becomes "" with one warning on stderr). Nothing runs through a shell.
+
+Server names: letters, digits, '-' and '_', but no '__' and no '_' at either end, so ``mcp__<server>__<tool>`` splits
+one way only (an allow rule for server ``x`` must never cover a server ``x_``).
+
+``--mcp-trust-readonly`` sets ``mcp.trust_readonly`` (default false): only then may the agent loop run tools that a
+server itself annotates ``readOnlyHint`` without asking.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -39,14 +47,39 @@ class McpConfigError(ValueError):
     """A bad --mcp / --mcp-config argument (one line, for the user)."""
 
 
-def _expand(value: Any, environ: Mapping[str, str]) -> Any:
+def _stderr_warn(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _expand(value: Any, environ: Mapping[str, str], unset: set[str] | None = None) -> Any:
+    """Expand ${VAR} / ${VAR:-default}; names of unset variables without a default go into ``unset``."""
     if isinstance(value, str):
-        return _VAR.sub(lambda m: environ.get(m.group(1), m.group(2) if m.group(2) is not None else ""), value)
+        def one(m: re.Match[str]) -> str:
+            name, default = m.group(1), m.group(2)
+            if name in environ:
+                return environ[name]
+            if default is None and unset is not None:
+                unset.add(name)
+            return default if default is not None else ""
+        return _VAR.sub(one, value)
     if isinstance(value, list):
-        return [_expand(v, environ) for v in value]
+        return [_expand(v, environ, unset) for v in value]
     if isinstance(value, dict):
-        return {k: _expand(v, environ) for k, v in value.items()}
+        return {k: _expand(v, environ, unset) for k, v in value.items()}
     return value
+
+
+def valid_server_name(name: str) -> bool:
+    """Letters, digits, '-', '_'; no '__' and no '_' at either end (``mcp__<server>__<tool>`` must split once)."""
+    return (isinstance(name, str) and bool(_NAME.match(name)) and "__" not in name
+            and not name.startswith("_") and not name.endswith("_"))
+
+
+def add_cli_flags(parser: Any) -> None:
+    """Add the flags this module owns beyond the existing --mcp* ones (for runtime.__main__)."""
+    parser.add_argument("--mcp-trust-readonly", action="store_true", dest="mcp_trust_readonly",
+                        help="Run MCP tools that their server annotates readOnlyHint without asking "
+                             "(the server's own claim; off by default)")
 
 
 def split_command(text: str) -> list[str]:
@@ -66,8 +99,8 @@ def parse_inline(spec: str) -> tuple[str, dict[str, Any]]:
     name, rest = name.strip(), rest.strip()
     if not sep or not name or not rest:
         raise McpConfigError(f"--mcp expects NAME=COMMAND [ARGS...], got {spec!r}")
-    if not _NAME.match(name) or "__" in name:
-        raise McpConfigError(f"--mcp: bad server name {name!r} (letters, digits, '-' and single '_' only)")
+    if not valid_server_name(name):
+        raise McpConfigError(f"--mcp: bad server name {name!r} (letters, digits, '-' and single '_' inside only)")
     if re.match(r"^https?://\S+$", rest, re.IGNORECASE):
         return name, {"type": "http", "url": rest}
     words = split_command(rest)
@@ -76,9 +109,16 @@ def parse_inline(spec: str) -> tuple[str, dict[str, Any]]:
     return name, {"command": words}
 
 
-def parse_file(path: str | os.PathLike[str], environ: Mapping[str, str] | None = None) -> dict[str, dict[str, Any]]:
-    """Read a ``{"mcpServers": {...}}`` file into ``mcp.servers`` entries."""
+def parse_file(path: str | os.PathLike[str], environ: Mapping[str, str] | None = None,
+               warn: Any = None, warned: set[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Read a ``{"mcpServers": {...}}`` file into ``mcp.servers`` entries.
+
+    An unset ``${VAR}`` without a default is reported once per name (``warn``, else stderr; ``warned`` holds the
+    names already reported across files).
+    """
     env = os.environ if environ is None else environ
+    warn = warn or _stderr_warn
+    warned = set() if warned is None else warned
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except OSError as exc:
@@ -92,7 +132,14 @@ def parse_file(path: str | os.PathLike[str], environ: Mapping[str, str] | None =
     for name, raw in servers.items():
         if not isinstance(raw, dict):
             raise McpConfigError(f"MCP config {path}: server {name!r} is not an object")
-        raw = _expand(raw, env)
+        if not valid_server_name(str(name)):
+            raise McpConfigError(f"MCP config {path}: bad server name {name!r} "
+                                 "(letters, digits, '-' and single '_' inside only)")
+        unset: set[str] = set()
+        raw = _expand(raw, env, unset)
+        for var in sorted(unset - warned):
+            warned.add(var)
+            warn(f"ai-rex: MCP config {path}: server {name!r}: ${{{var}}} is not set; using an empty value")
         entry: dict[str, Any] = {}
         kind = str(raw.get("type") or raw.get("transport") or "").lower()
         if kind in ("sse", "websocket", "ws"):
@@ -140,32 +187,40 @@ def allow_rule(pattern: str) -> str:
         raise McpConfigError("--mcp-allow: empty pattern")
     if not p.startswith("mcp__"):
         p = "mcp__" + p
-    if p.count("__") < 2 and not p.endswith("*"):
+    server, sep, _tool = p[len("mcp__"):].partition("__")
+    if not sep and not p.endswith("*"):
         p += "__*"  # a bare server name allows all of its tools
+    # The server part must be a valid name (a glob only when it is the whole rest, e.g. mcp__*): with names
+    # that cannot start or end with '_', mcp__x__* never matches a tool of another server such as "x_".
+    if not (valid_server_name(server) or server == "*" or (server.endswith("*") and valid_server_name(server[:-1]))):
+        raise McpConfigError(f"--mcp-allow: bad server name in {pattern!r} "
+                             "(letters, digits, '-' and single '_' inside only)")
     return p
 
 
 def apply(config: Any, mcp_configs: Sequence[str] = (), inline: Sequence[str] = (), no_mcp: bool = False,
           allow: Sequence[str] = (), environ: Mapping[str, str] | None = None,
-          warn: Any = None) -> list[str]:
+          warn: Any = None, trust_readonly: bool = False) -> list[str]:
     """Write the effective MCP servers into ``config``; returns the server names that will be started.
 
     Raises :class:`McpConfigError` for a bad flag. Unreadable files named by the environment only warn.
     """
     env = os.environ if environ is None else environ
+    config.set("mcp.trust_readonly", bool(trust_readonly) or config.get("mcp.trust_readonly", False) is True)
     if no_mcp:
         config.set("mcp.servers", {})
         return []
+    warned: set[str] = set()
     existing = config.get("mcp.servers", {})
     servers: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
     for path in env_paths(env):
         try:
-            servers.update(parse_file(path, env))
+            servers.update(parse_file(path, env, warn, warned))
         except McpConfigError as exc:
             if warn:
                 warn(f"ai-rex: {ENV_CONFIG}: {exc}")
     for path in mcp_configs:
-        servers.update(parse_file(path, env))
+        servers.update(parse_file(path, env, warn, warned))
     for spec in inline:
         name, raw = parse_inline(spec)
         servers[name] = raw

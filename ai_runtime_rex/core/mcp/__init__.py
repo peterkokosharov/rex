@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra, claude-sonnet-5-5
+# AI models: nvidia nemotron ultra, claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """MCP (Model Context Protocol) client integration."""
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -21,6 +22,30 @@ from typing import Any, AsyncIterator, Iterator, Optional
 from .. import procutil
 
 MAX_PAGES = 100  # safety bound for cursor paging
+MAX_HTTP_REPLY = 8 * 1024 * 1024  # bytes of one HTTP reply
+MAX_STDERR_TAIL = 2000  # characters of a server's stderr shown in an error (and so in logs)
+_UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
+def clean_tail(text: str, limit: int = MAX_STDERR_TAIL) -> str:
+    """Server output for messages: no control/bidi characters (ANSI escapes lose their ESC), last ``limit`` chars."""
+    text = _UNSAFE_CHARS.sub("", text or "")
+    return text if len(text) <= limit else "..." + text[-limit:]
+
+
+class _NoRedirect:
+    """urllib redirect handler that refuses every redirect: a redirect to another host would carry the
+    configured headers (Authorization) along."""
+
+    @staticmethod
+    def opener() -> Any:
+        import urllib.request
+
+        class Refuse(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+                return None  # urllib then raises HTTPError with the 3xx code
+
+        return urllib.request.build_opener(Refuse)
 
 
 @dataclass
@@ -181,7 +206,7 @@ class StdioTransport(MCPTransport):
     # -- public API -----------------------------------------------------------
 
     def stderr_tail(self) -> str:
-        """The last lines the server wrote to stderr (up to 50)."""
+        """The last lines the server wrote to stderr (up to 50, raw; callers that show it use clean_tail)."""
         return "\n".join(self._stderr)
 
     @property
@@ -233,7 +258,7 @@ class StdioTransport(MCPTransport):
                 self._pending.pop(req_id, None)
 
     def _gone_message(self) -> str:
-        tail = self.stderr_tail()
+        tail = clean_tail(self.stderr_tail())
         msg = "MCP server exited"
         return f"{msg}; stderr: {tail}" if tail else msg
 
@@ -271,6 +296,7 @@ class HttpTransport(MCPTransport):
         self._session: str | None = None
         self._request_id = 0
         self._lock = threading.Lock()
+        self._opener = _NoRedirect.opener()
 
     alive = True
 
@@ -287,11 +313,17 @@ class HttpTransport(MCPTransport):
         req = urllib.request.Request(self._url, data=json.dumps(message).encode("utf-8"),
                                      headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - user-configured URL
+            with self._opener.open(req, timeout=timeout) as resp:  # user-configured URL; redirects refused
                 self._session = resp.headers.get("Mcp-Session-Id") or self._session
                 ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-                body = resp.read().decode("utf-8", errors="replace")
+                raw = resp.read(MAX_HTTP_REPLY + 1)
+                if len(raw) > MAX_HTTP_REPLY:
+                    raise RuntimeError(f"MCP http reply larger than {MAX_HTTP_REPLY // (1024 * 1024)} MB; refused")
+                body = raw.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise RuntimeError(f"MCP http error {exc.code}: redirects are not followed "
+                                   "(configure the final URL)") from exc
             raise RuntimeError(f"MCP http error {exc.code}") from exc
         except (urllib.error.URLError, OSError) as exc:
             if "timed out" in str(exc):
@@ -346,7 +378,7 @@ class HttpTransport(MCPTransport):
         req = urllib.request.Request(self._url, headers={**self._headers, "Mcp-Session-Id": self._session},
                                      method="DELETE")
         try:
-            urllib.request.urlopen(req, timeout=3).close()  # noqa: S310
+            self._opener.open(req, timeout=3).close()
         except Exception:
             pass
         self._session = None
@@ -490,7 +522,7 @@ class MCPClientManager:
         try:
             client.initialize()
         except Exception as exc:
-            tail = transport.stderr_tail() if hasattr(transport, "stderr_tail") else ""
+            tail = clean_tail(transport.stderr_tail()) if hasattr(transport, "stderr_tail") else ""
             if isinstance(transport, StdioTransport):
                 transport.close(grace=0.5)  # it never answered: do not wait long for a polite exit
             else:

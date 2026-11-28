@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5, claude-opus-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Tools backed by MCP servers (stdio), named ``mcp__<server>__<tool>``.
@@ -23,10 +23,12 @@ from typing import Any
 
 from .base import Tool, ToolSchema
 from ..mcp import MCPClient, MCPClientManager, MCPServerConfig, tool_result_text
+from ..mcp.cliconfig import valid_server_name
 
 MAX_NAME = 64
 INTERNAL_ARGS = ("_role", "_agent_id")
 MAX_OUTPUT = 100_000  # characters of one MCP result handed to the model
+MAX_DESCRIPTION = 2000  # characters of one tool description (it goes into the system prompt)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
@@ -53,7 +55,11 @@ class McpTool(Tool):
         if params.get("type") != "object":
             params = {"type": "object", "properties": params.get("properties", {})}
         local = mcp_tool_name(server, name)
-        text = f"[MCP {server}] {description}".strip()
+        # The description comes from the server and lands in the system prompt: cleaned and bounded.
+        desc = _CONTROL.sub("", str(description or ""))
+        if len(desc) > MAX_DESCRIPTION:
+            desc = desc[:MAX_DESCRIPTION] + " ... (description truncated)"
+        text = f"[MCP {server}] {desc}".strip()
         super().__init__(local, text, ToolSchema(local, text, params))
 
     def execute(self, **kwargs: Any) -> Any:
@@ -107,9 +113,10 @@ def load_mcp_tools(config: Any, workspace: str | None = None) -> tuple[list[Tool
     seen: set[str] = set()
     for name, raw in servers.items():
         try:
-            if "__" in _safe(str(name)):
-                # mcp__<server>__<tool> must split unambiguously (rules, hooks, UIs).
-                raise ValueError("server names must not contain '__'")
+            if not valid_server_name(_safe(str(name))):
+                # mcp__<server>__<tool> must split unambiguously (rules, hooks, UIs): an allow rule
+                # mcp__x__* must never reach a server "x_".
+                raise ValueError("bad server name (no '__', no '_' at either end)")
             cfg = _server_config(str(name), raw)
             if cfg is None:
                 continue
