@@ -1,0 +1,271 @@
+# SPDX-License-Identifier: MIT
+
+# Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
+# LLM: claude-opus-5-5
+# Licensed under MIT License
+
+"""Gateway tool mode: Claude's native XML call syntax in a plain-text reply, and the per-turn reminder.
+
+Tag strings are built from pieces (``tag``) so this file never holds the raw markup on one line.
+"""
+
+import importlib.util
+import json
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+_PATH = Path(__file__).resolve().parent.parent / "scripts" / "claude_cli_gateway.py"
+_spec = importlib.util.spec_from_file_location("claude_cli_gateway_native", _PATH)
+gw = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gw)
+
+LT = "<"
+NS = "antml" + ":"
+
+
+def tag(name, attr=None, close=False, ns=""):
+    a = f' name="{attr}"' if attr is not None else ""
+    return f"{LT}{'/' if close else ''}{ns}{name}{a}>"
+
+
+def inv(name, params, ns="", sep="\n"):
+    body = "".join(tag("parameter", k, ns=ns) + v + tag("parameter", close=True, ns=ns) + sep for k, v in params)
+    return tag("invoke", name, ns=ns) + sep + body + tag("invoke", close=True, ns=ns)
+
+
+def wrap(body, w="function_calls", ns=""):
+    return tag(w, ns=ns) + "\n" + body + "\n" + tag(w, close=True, ns=ns)
+
+
+# Recorded 2026-11-28 (ai-rex, sonnet, turn 2 after a tool result): native markup as plain text,
+# no opening wrapper and a stray closing tool_calls tag.
+RECORDED = inv("fileops", [("operation", "read"), ("path", "pom.xml")]) + "\n" + tag("tool_calls", close=True)
+assert RECORDED == ('\x3cinvoke name="fileops">\n\x3cparameter name="operation">read\x3c/parameter>\n'
+                    '\x3cparameter name="path">pom.xml\x3c/parameter>\n\x3c/invoke>\n\x3c/tool_calls>')
+
+FILEOPS = {"type": "function", "function": {
+    "name": "fileops", "description": "Read or write a file.",
+    "parameters": {"type": "object", "properties": {
+        "operation": {"type": "string", "enum": ["list", "read", "write"]},
+        "path": {"type": "string"},
+        "content": {"type": "string"}},
+        "required": ["operation", "path"], "additionalProperties": False}}}
+LISTER = {"type": "function", "function": {
+    "name": "lister", "description": "List.",
+    "parameters": {"type": "object", "properties": {
+        "path": {"type": "string"}, "depth": {"type": "integer"}, "recursive": {"type": "boolean"},
+        "filter": {"type": "object"}, "names": {"type": "array", "items": {"type": "string"}},
+        "label": {"type": "string"}, "free": {}},
+        "required": ["path"], "additionalProperties": False}}}
+TOOLS = [FILEOPS, LISTER]
+READ_POM = ("fileops", {"operation": "read", "path": "pom.xml"})
+
+
+def spec(**req):
+    req.setdefault("tools", TOOLS)
+    return gw.tool_spec(req)
+
+
+def interp(text, **req):
+    return gw.interpret_reply({"text": text}, spec(**req))
+
+
+# ---------------------------------------------------------------- parsing
+
+def test_recorded_reply_is_a_tool_call():
+    content, calls = interp(RECORDED)
+    assert calls == [READ_POM]
+    assert not content
+
+
+@pytest.mark.parametrize("text", [
+    wrap(inv("fileops", [("operation", "read"), ("path", "pom.xml")])),
+    inv("fileops", [("operation", "read"), ("path", "pom.xml")], sep=""),
+    wrap(inv("fileops", [("operation", "read"), ("path", "pom.xml")], ns=NS), ns=NS),
+    inv("fileops", [("operation", "read"), ("path", "pom.xml")], ns=NS),
+    wrap(inv("fileops", [("operation", "read"), ("path", "pom.xml")]), w="tool_calls"),
+    tag("function_calls") + "\n" + inv("fileops", [("operation", "read"), ("path", "pom.xml")]),
+    "  \n" + RECORDED + "\n\n",
+])
+def test_native_variants(text):
+    assert interp(text)[1] == [READ_POM]
+
+
+def test_multiple_invokes_in_order():
+    text = wrap(inv("fileops", [("operation", "list"), ("path", ".")]) + "\n"
+                + inv("fileops", [("operation", "read"), ("path", "pom.xml")]))
+    assert interp(text)[1] == [("fileops", {"operation": "list", "path": "."}), READ_POM]
+
+
+def test_values_follow_the_schema():
+    text = inv("lister", [("path", "42"), ("depth", "2"), ("recursive", "true"), ("filter", '{"ext": [".py"]}'),
+                          ("names", '["a", "b"]'), ("label", "123"), ("free", "[1]")])
+    (call,) = interp(text)[1]
+    assert call == ("lister", {"path": "42", "depth": 2, "recursive": True, "filter": {"ext": [".py"]},
+                               "names": ["a", "b"], "label": "123", "free": [1]})
+
+
+def test_string_values_are_kept_exactly():
+    content = '  line 1\n<b>x</b> & "q"\n'
+    (call,) = interp(inv("fileops", [("operation", "write"), ("path", "a.txt"), ("content", content)]))[1]
+    assert call[1]["content"] == content
+
+
+def test_leading_prose_becomes_content():
+    content, calls = interp("I'll read the POM next.\n\n" + RECORDED)
+    assert content == "I'll read the POM next." and calls == [READ_POM]
+
+
+@pytest.mark.parametrize("text, reason", [
+    (inv("bash", [("command", "rm -rf /")]), "unknown tool"),
+    (inv("fileops", [("operation", "delete"), ("path", "a")]), "allowed values"),
+    (inv("fileops", [("operation", "read")]), "path is required"),
+    (inv("fileops", [("operation", "read"), ("path", "a"), ("mode", "x")]), "unexpected property"),
+    (inv("fileops", [("operation", "read"), ("path", "a"), ("path", "b")]), "duplicate parameter"),
+    (inv("lister", [("path", "a"), ("depth", "two")]), "type integer"),
+    (inv("x/y", [("a", "b")]), "unknown tool"),
+])
+def test_native_calls_are_validated_like_envelopes(text, reason):
+    with pytest.raises(gw.ProtocolError, match=reason):
+        interp(text)
+
+
+def test_native_respects_parallel_and_forced():
+    two = inv("fileops", [("operation", "read"), ("path", "a")]) + "\n" + inv("lister", [("path", ".")])
+    with pytest.raises(gw.ProtocolError, match="only one tool call"):
+        interp(two, parallel_tool_calls=False)
+    with pytest.raises(gw.ProtocolError, match="only the tool lister"):
+        interp(RECORDED, tool_choice={"type": "function", "function": {"name": "lister"}})
+    assert interp(RECORDED, tool_choice="required")[1] == [READ_POM]
+
+
+@pytest.mark.parametrize("text", [
+    "Claude writes calls like this:\n```xml\n" + RECORDED + "\n```\nThat is all.",
+    "Example:\n```\n" + RECORDED + "\n```",
+    "Example:\n```xml\n" + RECORDED,
+    "Use " + inv("fileops", [("operation", "read"), ("path", "a")], sep="") + " to read it.",
+    RECORDED + "\nThen I will summarise.",
+    "The tag " + tag("invoke", "fileops") + " is native syntax.",
+])
+def test_prose_that_mentions_markup_is_not_a_call(text):
+    content, calls = interp(text)
+    assert calls == [] and content == text
+
+
+def test_malformed_native_is_prose_but_worth_a_nudge():
+    broken = tag("invoke", "fileops") + "\n" + tag("parameter", "path") + "pom.xml"
+    content, calls = interp(broken)
+    assert calls == [] and gw.wants_nudge(content)
+    assert gw.wants_nudge(RECORDED + "\nThen I will summarise.")
+    assert not gw.wants_nudge("Claude writes calls like this:\n```xml\n" + RECORDED + "\n```\nThat is all.")
+    assert not gw.wants_nudge("The project is a Maven build with three modules.")
+
+
+# ---------------------------------------------------------------- prompt: reminder on every turn
+
+def _history():
+    return [
+        {"role": "system", "content": "You are rex."},
+        {"role": "user", "content": "look at the project's code and say how it is"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "fileops", "arguments": '{"operation":"list","path":"."}'}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "pom.xml\nsrc/"},
+    ]
+
+
+def test_every_prompt_forbids_native_markup():
+    first = gw.render_tool_prompt(_history()[:2], spec())
+    assert "XML" in first and "function_calls" in first
+
+
+def test_follow_up_turn_repeats_the_envelope_reminder_at_the_end():
+    p = gw.render_tool_prompt(_history(), spec())
+    reply = p[p.index("[Reply]"):]
+    assert "tool results" in reply.lower() and "XML" in reply
+    assert '{"tool_calls":' in reply and p.rstrip().endswith('{"content":"final answer"}.')
+    assert p.index("[Reply]") > p.index("</tool_result>")
+    first = gw.render_tool_prompt(_history()[:2], spec())
+    assert "tool results" not in first[first.index("[Reply]"):].lower()
+
+
+# ---------------------------------------------------------------- handler end to end (stub runner)
+
+class Script:
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def __call__(self, prompt, model, claude_bin, timeout, **kw):
+        self.calls.append(prompt)
+        reply = self.replies.pop(0)
+        return {"text": reply, "usage": {"input_tokens": 5, "output_tokens": 1}}
+
+
+@pytest.fixture
+def make_srv():
+    servers = []
+
+    def make(runner):
+        srv = gw.make_server(port=0, claude_bin="claude", runner=runner)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        servers.append(srv)
+        return srv
+
+    yield make
+    for srv in servers:
+        srv.shutdown()
+        srv.server_close()
+
+
+def post(srv, payload):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{srv.server_address[1]}/v1/chat/completions", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+REQ = {"model": "sonnet", "messages": _history(), "tools": TOOLS, "tool_choice": "auto"}
+ENVELOPE = '{"tool_calls":[{"name":"fileops","arguments":{"operation":"read","path":"pom.xml"}}]}'
+
+
+def _calls(body):
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    return [(c["function"]["name"], json.loads(c["function"]["arguments"])) for c in choice["message"]["tool_calls"]]
+
+
+def test_handler_turns_recorded_reply_into_tool_calls(make_srv, capsys):
+    runner = Script(RECORDED)
+    body = post(make_srv(runner), REQ)
+    assert _calls(body) == [READ_POM] and len(runner.calls) == 1
+    err = ""
+    for _ in range(100):
+        err += capsys.readouterr().err
+        if "status=" in err:
+            break
+        time.sleep(0.02)
+    assert "tools=2 calls=1 retry=0 form=native" in err and "pom.xml" not in err
+
+
+def test_handler_invalid_native_call_is_retried(make_srv):
+    runner = Script(inv("bash", [("command", "ls")]), ENVELOPE)
+    assert _calls(post(make_srv(runner), REQ)) == [READ_POM]
+    assert "unknown tool" in runner.calls[1]
+
+
+def test_handler_malformed_native_is_nudged_once(make_srv):
+    runner = Script(tag("invoke", "fileops") + "\n" + tag("parameter", "path") + "pom.xml", ENVELOPE)
+    assert _calls(post(make_srv(runner), REQ)) == [READ_POM] and len(runner.calls) == 2
+
+
+def test_handler_code_block_mention_is_plain_content(make_srv):
+    text = "Claude writes calls like this:\n```xml\n" + RECORDED + "\n```\nThat is all."
+    runner = Script(text)
+    body = post(make_srv(runner), REQ)
+    assert body["choices"][0]["message"]["content"] == text and len(runner.calls) == 1
