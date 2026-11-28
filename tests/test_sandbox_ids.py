@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Author: Peter Kokosharov
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 """SandboxManager: ids are path components (no traversal) and the singleton is created once."""
 
 import threading
@@ -10,7 +10,8 @@ import pytest
 
 from runtimelib.guard import sandbox as sb
 
-BAD = ["../evil", "a/b", "a\\b", "..", ".", "", "/abs", "x\x00y", "a b", "-rf"]
+BAD = ["../evil", "a/b", "a\\b", "..", ".", "", "/abs", "x\x00y", "a b", "-rf",
+       "abc.", "abc\n", "ägent", "x" * 129]  # trailing dot: Windows drops it (abc. == abc)
 
 
 @pytest.fixture

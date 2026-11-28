@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """SandboxManager - git worktrees, Docker mounts, merge locks."""
@@ -21,7 +21,8 @@ from . import GuardClient, get_guard_client
 from ..config import Config
 
 
-_SAFE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+# ASCII only, max 128 chars, no leading dot/dash, no trailing dot (Windows drops it: "abc." == "abc").
+_SAFE_ID = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,126}[A-Za-z0-9_-])?")
 
 
 def _check_id(value: str, what: str = "id") -> str:
