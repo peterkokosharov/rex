@@ -481,10 +481,36 @@ def is_bare_json_answer(text: str, spec: ToolSpec) -> bool:
         return False
     if "content" in obj or "tool_calls" in obj:
         return False
-    name = obj.get("name")
-    if "arguments" in obj or "parameters" in obj or (isinstance(name, str) and name in spec.tools):
+    return not _call_shaped(obj, spec)
+
+
+_CALL_TYPES = ("function", "tool_use", "tool_call", "function_call")
+_CALL_WRAPPERS = ("function", "function_call", "tool_call", "tool_use", "invoke")
+_ARG_KEYS = ("arguments", "parameters", "input", "args", "tool_input")
+_TOOL_NAME_KEYS = ("name", "tool", "tool_name", "function")
+
+
+def _call_shaped(obj: Any, spec: ToolSpec) -> bool:
+    """A JSON object that looks like a tool call in some other format (OpenAI function, Anthropic tool_use,
+    {"tool": ..., "input": ...}, or names one of the tools, ignoring case): a malformed call, not an answer.
+
+    Plain data that merely has a key such as "input" or "tool" is still an answer: a call needs a call type,
+    a wrapper object, "arguments"/"parameters", a known tool name, or a name key together with an argument key.
+    """
+    if not isinstance(obj, dict):
         return False
-    return True
+    keys = {str(k).lower(): v for k, v in obj.items()}
+    if str(keys.get("type", "")).lower() in _CALL_TYPES:
+        return True
+    if any(isinstance(keys.get(k), dict) for k in _CALL_WRAPPERS):
+        return True
+    if "arguments" in keys or "parameters" in keys:
+        return True
+    tools = {t.lower() for t in spec.tools}
+    names = [keys[k] for k in _TOOL_NAME_KEYS if isinstance(keys.get(k), str)]
+    if any(n.lower() in tools for n in names):
+        return True
+    return bool(names) and any(k in keys for k in _ARG_KEYS)
 
 
 def _type_ok(value: Any, name: str) -> bool:

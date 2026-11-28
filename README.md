@@ -192,11 +192,14 @@ cli:
   The token comes from `--token-file F` (file content, whitespace stripped), else `--token T`, else the
   `AI_REX_GATEWAY_TOKEN` environment variable (the old name `REX_GATEWAY_TOKEN` still works as a fallback). `--token` works but prints a warning: command-line
   arguments are visible to other users in the process list.
-- Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6`.
+- Models: `haiku` (default), `sonnet`, `opus`, or a full id such as `claude-sonnet-4-6` (`claude-` followed by a
+  letter or digit; no `..`, no trailing `.` or `-`, brackets only as a suffix such as `[1m]`; else 400).
 - Tools are emulated and always run in rex, never in `claude`: the CLI keeps `--tools ""`, `--strict-mcp-config`
   and `--safe-mode`, and never gets `--mcp-config`. When a request has `tools` and `tool_choice` is not
   `"none"`, the gateway lists the tools once in the prompt, shows earlier calls as JSON and earlier results as
-  `<tool_result ... untrusted="true">` blocks (the model is told never to follow instructions found there), and
+  `<tool_result ... untrusted="true">` blocks (the model is told never to follow instructions found there; user
+  messages, tool results and tool descriptions are neutralised: tool_result tags are escaped and a line that looks
+  like a gateway section header or label such as `[Reply]` or `User:` gets a `| ` prefix), and
   asks for one JSON object: `{"tool_calls":[{"name":...,"arguments":{...}}]}` or `{"content":"..."}`.
   It checks each call (known tool name, the forced tool for `tool_choice` with a function name, at most one call
   with `parallel_tool_calls:false`, at most 16 calls, arguments a JSON object that matches the tool's
@@ -206,7 +209,16 @@ cli:
 - A plain-text reply under `tool_choice:"auto"` is returned as the answer. A broken envelope, an invalid call,
   or no call under `"required"`/a forced tool gets one retry; a second failure is HTTP 502
   `tool_protocol_error` (a half-valid set of calls is never passed on). One `--timeout` deadline covers both
-  attempts; with less than 10 s left the retry is skipped (504). `usage` adds up both attempts.
+  attempts; with less than 10 s left the retry is skipped (504). `usage` adds up both attempts. A retry whose
+  reply again holds a call that cannot be read is also 502; it is never passed on as the answer.
+- Under `"auto"` a reply that is one JSON object without `content`/`tool_calls` is the answer text (the answer
+  happens to be JSON), unless it is call-shaped: a call `type` (`function`, `tool_use`, ...), a wrapper object
+  (`function`, `function_call`, `tool_use`, ...), `arguments`/`parameters`, a tool's name (any case), or a name
+  key (`name`, `tool`, ...) together with an argument key (`input`, `args`, ...); that is a broken call and gets
+  the retry. Plain data such as `{"input": "a", "output": "b"}` stays an answer.
+- Call markup counts as an attempted call only when it starts a line outside code (fenced, indented or
+  `` `inline` ``), or is a complete `{"tool_calls":[...]}` object; prose that merely quotes a tag or the
+  `"tool_calls"` key is returned as content.
 - Tool mode passes a one-line `--system-prompt` and reads the envelope from the CLI's plain text reply.
   `--json-schema` (a fixed envelope schema) is opt-in only: with it the CLI forces its own StructuredOutput
   tool and the model can lose the call (seen 2026-11-28, CLI 2.1.332). Two harmless shapes are repaired

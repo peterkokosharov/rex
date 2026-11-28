@@ -135,3 +135,25 @@ def test_bad_model_names(name):
                                   "sonnet"])
 def test_good_model_names(name):
     assert gw.valid_model(name)
+
+
+@pytest.mark.parametrize("text", [
+    '{"type": "function", "function": {"name": "read_file", "arguments": "{}"}}',
+    '{"tool": "bash", "input": {"command": "ls"}}',
+    '{"name": "ECHO", "input": {}}',
+    '{"type": "tool_use", "id": "x", "name": "other"}',
+    '{"function_call": {"name": "echo"}}',
+])
+def test_other_call_formats_are_not_answers(text):
+    with pytest.raises(gw.ProtocolError):
+        gw.interpret_reply({"text": text}, spec())
+
+
+@pytest.mark.parametrize("text", [
+    '{"status": "ok", "count": 3}',
+    '{"input": "a.txt", "output": "b.txt"}',
+    '{"tool": "maven", "version": "3.9"}',
+    '{"function": "parse", "lines": 12}',
+])
+def test_plain_json_data_is_still_an_answer(text):
+    assert gw.interpret_reply({"text": text}, spec()) == (text, [])

@@ -72,6 +72,18 @@ behind the permission gate: reads are allowed, every write or command asks first
 `AI_REX_CLI__UNSAFE_LOCAL_TOOLS=false` forces the guard (tool calls then fail without Docker). Do not point it at
 an untrusted repository in local mode.
 
+**Which shell runs commands.** The tool is called `bash`, but `--shell` / `AI_REX_SHELL` / config `tools.shell`
+pick the shell (flag beats environment, environment beats the config file): `auto` (default), `bash`,
+`powershell` or `cmd`. PowerShell gets the command as `-EncodedCommand` with `-NoProfile -NonInteractive`,
+UTF-8 output and the native program's exit code; `cmd` runs `cmd.exe /d /s /c`. In Git Bash, `cmd /c ...` and
+`cmd.exe /c ...` work (Git Bash would otherwise turn a lone `/c` into `C:/`). `!` commands in the REPL and
+`ai-rex "!..."` use the same shell and runner (not scrubbed: it is your own command). Rules for every command:
+stdin is empty; the call ends when the shell ends, so a launched program (`start "" app`, `start msedge x.html`,
+`xdg-open`, `server &`) keeps running and does not block the agent (its late output is collected for 1 s); a
+timeout kills the command's whole process tree (on Windows a job object, so background children are included);
+Ctrl+C in the REPL ends a running command at once (exit 130, `[interrupted]`). An unknown `AI_REX_SHELL` /
+`tools.shell` value means `auto`; a named shell that is not installed fails the call with a clear message.
+
 ## Modes
 
 | Situation | Mode |
@@ -103,11 +115,12 @@ always beats the environment, so `--port 4001` wins over `AI_REX_BASE_URL`.
 | `--temperature X` | sampling temperature | | provider default |
 | `--timeout S` | HTTP timeout in seconds (per read; one agent step through a gateway can take minutes) | `AI_REX_TIMEOUT` | `600` |
 | `--no-tools` | plain chat, the model gets no tools | | tools on |
+| `--shell S` | shell for the `bash` tool and `!` commands: `auto`, `bash`, `powershell`, `cmd`. `auto` = Git Bash on Windows (PATH, then the Git for Windows folders), else PowerShell (`pwsh`, then Windows PowerShell 5.1), else `cmd.exe`; bash/sh on Linux and macOS. The banner, `/context`, the tool description and every result name the shell, so the model writes its syntax | `AI_REX_SHELL`, config `tools.shell` | `auto` |
 | `--mcp-config PATH` | MCP servers from a JSON file (repeatable), see "MCP: using other tools" | `AI_REX_MCP_CONFIG` (paths, separated by `;` on Windows, `:` elsewhere) | |
 | `--mcp NAME=COMMAND` | one inline MCP server (repeatable) | | |
 | `--no-mcp` | ignore every MCP server, also those from the environment or `--config` | | |
 | `--mcp-allow PATTERN` | run these MCP tools without asking (repeatable) | | ask |
-| `--mcp-trust-readonly` | run MCP tools the server marks `readOnlyHint` without asking | `AI_REX_MCP__TRUST_READONLY=true` | ask |
+| `--mcp-trust-readonly` | run MCP tools the server marks `readOnlyHint` without asking (sets `mcp.trust_readonly`) | `AI_REX_MCP__TRUST_READONLY=true`, config `mcp.trust_readonly` (`true`/`1`/`yes`/`on`) | ask |
 | `--non-interactive` | never ask; a call that needs permission is denied | | asks if a terminal is attached |
 | `--session ID` | one-shot: keep the conversation in session `ID` (created if new; letters, digits, `-`, `_`) | | |
 | `--continue` | one-shot: continue the latest session started in this folder (new one if none) | | |
@@ -225,7 +238,8 @@ Order, later wins per server name: servers from `--config`, the environment, `--
 path in the environment variable only prints a warning.
 
 **Names.** A tool `ping` of server `tickets` is called `mcp__tickets__ping`. Server names use letters, digits, `-`
-and single `_`.
+and single `_` inside the name: no `__` and no `_` at either end (so `--mcp-allow x` can never cover a server `x_`).
+The same check applies to `--mcp`, config files and `--mcp-allow` patterns; a bad name is a usage error.
 
 **Permissions.** MCP tools go through the same gate as the built-in ones. Without a rule every MCP call asks
 (denied under `--non-interactive`), also tools the server marks `readOnlyHint`: that hint is the server's own
@@ -233,7 +247,10 @@ claim, so it is trusted only with `--mcp-trust-readonly` (or `AI_REX_MCP__TRUST_
 without asking (a `deny` rule still wins). Allow more with `--mcp-allow`: `--mcp-allow tickets` (all tools of the server),
 `--mcp-allow tickets__create_*` (a glob) or a full name. Rules in a `--config` file work as well, for example
 `permissions.deny: ["mcp__tickets__delete_*"]`. Use `--mcp-trust-readonly` only with servers you trust. Output of an MCP tool is treated as untrusted data: control and bidi characters are removed and it is cut at
-100,000 characters; it is never executed.
+100,000 characters; it is never executed. Tool descriptions from a server are cleaned the same way and cut at 2000
+characters (they go into the system prompt). HTTP servers: redirects are refused (urllib would send the configured
+`Authorization` header to the new host; configure the final URL) and a reply over 8 MB is refused. An unset `${VAR}`
+without a default prints one warning and becomes an empty value.
 
 **Lifecycle.** Servers start when the agent starts working (not while flags are parsed), one after the other, and
 are stopped at exit (the whole process tree on Windows). A server that is missing, slow or crashing prints one line
@@ -276,7 +293,8 @@ gets the same defaults as the environment path (public URL, `ANTHROPIC_API_KEY` 
 the `claude` CLI. If that CLI offers `--safe-mode`, the gateway uses it and no user customization is loaded. If it
 offers only `--setting-sources` (no `--safe-mode`), your user-level `~/.claude/CLAUDE.md` and user settings are
 loaded into **every** request (the gateway prints a note at startup); keep private notes out of that file or use a
-CLI with `--safe-mode`.
+CLI with `--safe-mode`. How the gateway emulates tool calls (retry, bare JSON answers, quoted markup, untrusted
+text, model names) is described in the README, section on `scripts/claude_cli_gateway.py`.
 
 ```
 # local kiko (default: http://127.0.0.1:4000, model sonnet)
