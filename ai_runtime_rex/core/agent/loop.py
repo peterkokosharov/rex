@@ -310,7 +310,7 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.hook_engine.trigger(HookEvent.AGENT_ERROR,
             session_id=self.session_manager.session_id, agent_id=self.agent_id,
             role=self.role, metadata={"error": "Interrupted by user"})
-        print("\n[Прекъснато]", file=sys.stderr)
+        print("\n[Interrupted]", file=sys.stderr)
 
     def interrupt_requested(self) -> bool:
         """True once ``interrupt()`` was called for the current request."""
@@ -411,12 +411,12 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
         self.state.messages = ensure_tool_results(self.state.messages)
 
         if self.state.interrupted:
-            text = "[Изпълнението е прекъснато от потребителя]"
+            text = "[Interrupted by the user]"
             self.state.messages.append(ChatMessage(role="assistant", content=text))
             return text
 
         if self.state.step >= self.state.max_steps:
-            text = f"[Достигнат е максимум от {self.state.max_steps} стъпки]"
+            text = f"[Reached the maximum of {self.state.max_steps} steps]"
             self.state.messages.append(ChatMessage(role="assistant", content=text))
             self.hook_engine.trigger(HookEvent.AGENT_END,
                 session_id=self.session_manager.session_id, agent_id=self.agent_id,

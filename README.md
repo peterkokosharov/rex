@@ -1,6 +1,6 @@
 <!--
 Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-LLM: nvidia nemotron ultra
+LLM: nvidia nemotron ultra, claude-opus-5-5
 Licensed under MIT License
 -->
 
@@ -239,7 +239,8 @@ python3 scripts/claude_cli_gateway.py --port 4000 --default-model haiku
 AI_REX_LITELLM__BASE_URL=http://127.0.0.1:4000 AI_REX_LITELLM__API_KEY=dummy AI_REX_LITELLM__MODEL=haiku python3 -m runtime
 ```
 
-Or copy `scripts/ai-rex-claude-cli.example.yaml` to `~/.config/ai-rex/config.yaml`.
+Or copy `scripts/ai-rex-claude-cli.example.yaml` to `~/.config/ai-rex/config.yaml` and start with
+`--config ~/.config/ai-rex/config.yaml` (plain `ai-rex` reads the environment only, see `docs/AI-REX.md`).
 
 ### JSON-lines bridge for external UIs (`--jsonl`)
 
@@ -506,6 +507,10 @@ I write to you in Bulgarian. Always answer me in Russian.
 ## Configuration
 
 ### Global Config (optional)
+Since 2026-11-28 the plain REPL and one-shot runs read **flags and environment variables only** and ignore this
+file; pass `--config ~/.config/ai-rex/config.yaml` to use it (also for the permission rules below). `--jsonl`,
+`--acp` and `ai-rex skills` still read it. See `docs/AI-REX.md`.
+
 `~/.config/ai-rex/config.yaml`:
 ```yaml
 liteLLM:

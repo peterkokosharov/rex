@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """Contract tests for the Anthropic and Gemini adapters: recorded-shape SSE fixtures, no real network."""
 import json
@@ -168,3 +168,53 @@ def test_auto_detects_native_urls():
     assert detect_provider(None, "https://generativelanguage.googleapis.com") == "gemini"
     assert detect_provider("auto", "http://127.0.0.1:4000") == "openai"
     assert detect_provider("openai", "https://api.anthropic.com") == "openai"
+
+
+GEMINI3_TOOL = (
+    'data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":'
+    '{"name":"fileops","args":{"path":"a.txt"}},"thoughtSignature":"SIG-A"}]},"finishReason":"STOP"}]}\n\n'
+)
+
+
+def test_gemini_thought_signature_round_trip_and_unique_ids(server, monkeypatch):
+    """Gemini 3 rejects a follow-up request whose functionCall part lost its thoughtSignature."""
+    H, port, seen = server
+    chat = pv.gemini_chat(f"http://127.0.0.1:{port}", "k")
+    H.reply = GEMINI3_TOOL
+    first = chat({"model": "g", "messages": [{"role": "user", "content": "read"}]})
+    call = first["choices"][0]["message"]["tool_calls"][0]
+    second = pv.aggregate(chat({"model": "g", "stream": True, "messages": [{"role": "user", "content": "x"}]}))
+    assert second["choices"][0]["message"]["tool_calls"][0]["id"] != call["id"]  # ids never repeat across turns
+    H.reply = GEMINI_TEXT
+    chat({"model": "g", "messages": [
+        {"role": "user", "content": "read"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": call["id"], "content": "file text"}]})
+    parts = seen[-1]["body"]["contents"][1]["parts"]
+    assert parts[0]["thoughtSignature"] == "SIG-A" and parts[0]["functionCall"]["name"] == "fileops"
+
+
+def test_gemini_function_call_id_is_echoed():
+    events = [("", json.dumps({"candidates": [{"content": {"parts": [
+        {"functionCall": {"id": "fc-9", "name": "fileops", "args": {}}}]}}]}))]
+    sigs = {}
+    call = pv.aggregate(pv.gemini_events(iter(events), signatures=sigs))["choices"][0]["message"]["tool_calls"][0]
+    assert call["id"] == "fc-9" and sigs == {"fc-9": None}
+    r = pv.gemini_request({"model": "g", "messages": [
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "fc-9", "content": "ok"}]}, sigs)
+    assert "thoughtSignature" not in r["contents"][0]["parts"][0]
+    assert r["contents"][0]["parts"][0]["functionCall"]["id"] == "fc-9"
+    assert r["contents"][1]["parts"][0]["functionResponse"]["id"] == "fc-9"
+
+
+def test_gemini_model_name_cannot_inject_into_the_url(server):
+    H, port, seen = server
+    H.reply = GEMINI_TEXT
+    pv.gemini_chat(f"http://127.0.0.1:{port}", "k")({"model": "models/g x?key=1", "messages": []})
+    assert seen[-1]["path"] == "/v1beta/models/g%20x%3Fkey%3D1:streamGenerateContent?alt=sse"
+
+
+def test_native_default_models_are_current():
+    from ai_runtime_rex.runtime.envconfig import PUBLIC_MODEL
+    assert PUBLIC_MODEL == {"anthropic": "claude-sonnet-5-5", "gemini": "gemini-3.8-flash"}

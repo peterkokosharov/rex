@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """``ai-rex`` one-shot mode: prompt from -i / -f / stdin, answer to stdout or a file, logs to stderr.
 
@@ -40,6 +40,8 @@ class Options:
     verbosity: int = 0                    # -v count (-q = -1)
     log_file: Optional[str] = None
     log_format: str = "text"
+    session: Optional[str] = None         # --session ID
+    continue_last: bool = False           # --continue
 
 
 class _JsonFormatter(logging.Formatter):
@@ -77,6 +79,52 @@ class _Tuned:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._llm, name)
+
+
+class _LazyFile:
+    """Text sink that opens its file on the first write (UTF-8, no newline translation)."""
+
+    def __init__(self, path: str, mode: str) -> None:
+        self._path, self._mode, self._fh = path, mode, None
+
+    def write(self, text: str) -> int:
+        if self._fh is None:
+            self._fh = open(self._path, self._mode, encoding="utf-8", newline="")
+        return self._fh.write(text)
+
+    def flush(self) -> None:
+        if self._fh is not None:
+            self._fh.flush()
+
+    def close(self) -> None:
+        if self._fh is not None:
+            self._fh.close()
+
+
+def open_session(config: Any, session: Optional[str], continue_last: bool) -> Any:
+    """The ``SessionStore`` for --session / --continue, else None. Directory: ``session.dir`` from the
+    (env-only) config, default ``~/.config/ai-rex/sessions``."""
+    if not session and not continue_last:
+        return None
+    from runtimelib.session import SessionStore, validate_session_id
+
+    directory = Path(str(config.get("session.dir", "~/.config/ai-rex/sessions"))).expanduser()
+    if session:
+        validate_session_id(session)
+    else:
+        latest = SessionStore.latest_for_cwd(directory)
+        session = latest.id if latest is not None else None  # nothing to continue: start a new one
+    return SessionStore(directory, session_id=session, model=str(config.get("liteLLM.model", "")))
+
+
+def save_session(store: Any, loaded: list, messages: list) -> None:
+    """Append what this run added; after a compaction (the loaded prefix changed) store a snapshot."""
+    n = len(loaded)
+    if len(messages) >= n and all(a is b for a, b in zip(messages[:n], loaded)):
+        for msg in messages[n:]:
+            store.append_message(msg)
+    else:
+        store.append_compact(list(messages))
 
 
 def read_text_arg(value: str) -> str:
@@ -126,18 +174,35 @@ def run_oneshot(config: Any, opts: Options, *, llm_factory: Any = None, stdin: A
     except OSError as exc:
         LOG.error("cannot read input: %s", exc)
         return EXIT_USAGE
+    except UnicodeDecodeError as exc:
+        LOG.error("cannot read input: not UTF-8 text (%s)", exc.reason)
+        return EXIT_USAGE
+    try:
+        store = open_session(config, opts.session, opts.continue_last)
+    except (ValueError, OSError) as exc:
+        LOG.error("%s", exc)
+        return EXIT_USAGE
     prompt = build_prompt(opts.text, attached)
     if not prompt:
         LOG.error("nothing to do: give -i TEXT, -f FILE, or pipe text on stdin")
         return EXIT_USAGE
 
+    if stdout is sys.stdout:
+        try:  # the answer is data: '\n' stays '\n' on Windows too (like the -o file)
+            stdout.reconfigure(newline="\n")
+        except (AttributeError, ValueError, OSError):
+            pass
     sink: Any = stdout
     if opts.output != "-":
+        # Opened on the first write: a run that fails before any answer never creates or truncates the file.
         try:
-            sink = open(opts.output, "a" if opts.append else "w", encoding="utf-8", newline="")
+            target = Path(opts.output)
+            if target.is_dir() or not target.parent.is_dir():
+                raise OSError(f"{opts.output}: not a writable file path")
         except OSError as exc:
             LOG.error("cannot open output file: %s", exc)
             return EXIT_USAGE
+        sink = _LazyFile(opts.output, "a" if opts.append else "w")
     live = not opts.buffered and not opts.as_json
     written: list[str] = []
     denied: list[str] = []
@@ -177,7 +242,14 @@ def run_oneshot(config: Any, opts: Options, *, llm_factory: Any = None, stdin: A
         if system:
             loop.system_prompt += "\n\n" + system
             loop.system_prompt_no_tools += "\n\n" + system
-        response = loop.run(prompt) or ""
+        loaded = store.load_messages() if store is not None else []
+        if loaded:
+            loop.state.messages = list(loaded)
+        try:
+            response = loop.run(prompt) or ""
+        finally:
+            if store is not None:
+                save_session(store, loaded, loop.state.messages)
     except KeyboardInterrupt:
         code = EXIT_INTERRUPTED
     except Exception as exc:  # noqa: BLE001 - one line for the user, not a traceback
@@ -189,6 +261,7 @@ def run_oneshot(config: Any, opts: Options, *, llm_factory: Any = None, stdin: A
         if opts.as_json:
             sink.write(json.dumps({"ok": code == EXIT_OK, "model": config.get("liteLLM.model"), "response": text,
                                    "tools": tools_used, "denied": denied, "error": error,
+                                   "session": store.id if store is not None else None,
                                    "seconds": round(time.monotonic() - started, 3)}, ensure_ascii=False) + "\n")
         elif code != EXIT_ERROR or text:
             if not live:
@@ -198,6 +271,9 @@ def run_oneshot(config: Any, opts: Options, *, llm_factory: Any = None, stdin: A
             if text and not text.endswith("\n"):
                 sink.write("\n")
         sink.flush()
+    except OSError as exc:
+        LOG.error("cannot write output: %s", exc)
+        code = EXIT_USAGE if code == EXIT_OK else code
     finally:
         if sink is not stdout:
             sink.close()

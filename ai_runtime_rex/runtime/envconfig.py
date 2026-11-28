@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """Environment-only configuration of the ``ai-rex`` command and of the embeddable ``Agent``.
 
 No file is read or written. Precedence: flag/argument > environment > default. Variables (all optional):
 
-- ``AI_REX_MODEL``     model name, default ``sonnet`` (``claude-sonnet-4-5`` / ``gemini-2.5-flash`` for the native providers)
+- ``AI_REX_MODEL``     model name, default ``sonnet`` (``claude-sonnet-5-5`` / ``gemini-3.8-flash`` for the native providers)
 - ``AI_REX_PROVIDER``  ``auto`` (default) | ``openai`` | ``anthropic`` | ``gemini``
 - ``AI_REX_BASE_URL``  gateway base URL (``LITELLM_BASE_URL`` is the fallback); wins over the port
 - ``AI_REX_PORT``      port of the local gateway, default ``4000``
@@ -32,7 +32,7 @@ DEFAULT_PORT = 4000
 NO_KEY = "none"  # the HTTP client insists on a key; local kiko ignores it
 PROVIDERS = ("auto", "openai", "anthropic", "gemini")
 PUBLIC_URL = {"anthropic": "https://api.anthropic.com", "gemini": "https://generativelanguage.googleapis.com"}
-PUBLIC_MODEL = {"anthropic": "claude-sonnet-4-5", "gemini": "gemini-2.5-flash"}
+PUBLIC_MODEL = {"anthropic": "claude-sonnet-5-5", "gemini": "gemini-3.8-flash"}
 KEY_ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY"}
 
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """``ai-rex -i`` one-shot and the embeddable ``Agent``, against a stub OpenAI server (no real network)."""
 import json
@@ -217,3 +217,33 @@ def test_api_key_env_name_missing_is_usage_error(stub, tmp_path):
     port, _ = stub
     r = _cli(["-i", "x", "--api-key-env", "NOPE_KEY"], port, cwd=tmp_path)
     assert r.returncode == 2 and "NOPE_KEY" in r.stderr
+
+
+def test_stdout_answer_keeps_lf_and_utf8(stub, tmp_path):
+    """The answer is data: UTF-8 and '\n' line ends even on a Windows cp1252 console pipe."""
+    port, _ = stub
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("AI_REX_", "RUNTIME_", "LITELLM_", "PYTHONUTF8", "PYTHONIOENCODING"))}
+    env.update(PYTHONPATH=str(ROOT), AI_REX_PORT=str(port))
+    r = subprocess.run([sys.executable, "-P", "-m", "runtime", "-i", "café", "--no-tools"],
+                       capture_output=True, env=env, cwd=tmp_path, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "ECHO[sonnet]: café\n".encode("utf-8")
+
+
+def test_session_and_continue_keep_the_conversation(stub, tmp_path):
+    port, bodies = stub
+    home = tmp_path / "h"
+    home.mkdir()
+    env = {"HOME": str(home), "USERPROFILE": str(home)}
+    r = _cli(["-i", "first", "--no-tools", "--session", "work-1"], port, extra_env=env, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    r = _cli(["-i", "second", "--no-tools", "--session", "work-1", "--json"], port, extra_env=env, cwd=tmp_path)
+    assert json.loads(r.stdout)["session"] == "work-1"
+    sent = [m["content"] for m in bodies[-1]["messages"] if m["role"] != "system"]
+    assert sent[0] == "first" and sent[-1] == "second" and any("ECHO" in s for s in sent)
+    r = _cli(["-i", "third", "--no-tools", "--continue"], port, extra_env=env, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    sent = [m["content"] for m in bodies[-1]["messages"] if m["role"] != "system"]
+    assert sent[0] == "first" and "second" in sent and sent[-1] == "third"
+    assert _cli(["-i", "x", "--session", "../evil"], port, extra_env=env, cwd=tmp_path).returncode == 2

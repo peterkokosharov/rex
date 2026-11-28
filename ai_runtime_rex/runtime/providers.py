@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """Native provider adapters (stdlib HTTP only) behind the OpenAI-shaped ``chat(body)`` seam of ``GatewayLLM``.
 
@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+import uuid
+from urllib.parse import quote
 from collections.abc import Iterator
 from typing import Any, Optional
 
@@ -228,7 +230,15 @@ def _gemini_schema(node: Any) -> Any:
     return node
 
 
-def gemini_request(body: dict) -> dict:
+def gemini_request(body: dict, signatures: Optional[dict[str, Optional[str]]] = None) -> dict:
+    """``signatures``: tool call id -> the ``thoughtSignature`` Gemini attached to that functionCall part (None when
+    it had none). Gemini 3 rejects a follow-up turn whose functionCall part comes back without its signature. Ids
+    Gemini issued itself (not ``call_*``) are echoed in functionCall / functionResponse."""
+    signatures = signatures or {}
+
+    def native(call_id: str) -> bool:
+        return call_id in signatures and not call_id.startswith("call_")
+
     system, contents = [], []
     names: dict[str, str] = {}
     pending: list[dict] = []
@@ -243,8 +253,11 @@ def gemini_request(body: dict) -> dict:
         if role == "system":
             system.append(_text(m.get("content")))
         elif role == "tool":
-            name = names.get(m.get("tool_call_id", ""), "tool")
-            pending.append({"functionResponse": {"name": name, "response": {"result": _text(m.get("content"))}}})
+            call_id = m.get("tool_call_id", "")
+            resp: dict[str, Any] = {"name": names.get(call_id, "tool"), "response": {"result": _text(m.get("content"))}}
+            if native(call_id):
+                resp["id"] = call_id
+            pending.append({"functionResponse": resp})
         elif role == "assistant":
             flush()
             parts: list[dict] = []
@@ -252,8 +265,15 @@ def gemini_request(body: dict) -> dict:
                 parts.append({"text": _text(m.get("content"))})
             for tc in m.get("tool_calls") or []:
                 fn = tc.get("function", {})
-                names[tc.get("id", "")] = fn.get("name", "")
-                parts.append({"functionCall": {"name": fn.get("name", ""), "args": _loads(fn.get("arguments"))}})
+                call_id = tc.get("id", "")
+                names[call_id] = fn.get("name", "")
+                fc: dict[str, Any] = {"name": fn.get("name", ""), "args": _loads(fn.get("arguments"))}
+                if native(call_id):
+                    fc["id"] = call_id
+                part: dict[str, Any] = {"functionCall": fc}
+                if signatures.get(call_id):
+                    part["thoughtSignature"] = signatures[call_id]
+                parts.append(part)
             if parts:
                 contents.append({"role": "model", "parts": parts})
         else:
@@ -280,7 +300,9 @@ def gemini_request(body: dict) -> dict:
     return req
 
 
-def gemini_events(events: Iterator[tuple[str, str]], model: str = "") -> Iterator[dict]:
+def gemini_events(events: Iterator[tuple[str, str]], model: str = "",
+                  signatures: Optional[dict[str, Optional[str]]] = None) -> Iterator[dict]:
+    """``signatures`` (optional) collects tool call id -> thoughtSignature (or None) for the next request."""
     n_calls, finish, usage = 0, None, None
     for _event, data in events:
         if not data or data == "[DONE]":
@@ -294,7 +316,11 @@ def gemini_events(events: Iterator[tuple[str, str]], model: str = "") -> Iterato
                     yield _chunk({"content": part["text"]}, model=model)
                 elif "functionCall" in part:
                     fc = part["functionCall"]
-                    yield _chunk({"tool_calls": [{"index": n_calls, "id": f"call_{n_calls}", "type": "function",
+                    # Gemini's own id when it sends one, else unique across turns (the loop keys results on it)
+                    call_id = str(fc.get("id") or f"call_{uuid.uuid4().hex[:12]}")
+                    if signatures is not None:
+                        signatures[call_id] = part.get("thoughtSignature")
+                    yield _chunk({"tool_calls": [{"index": n_calls, "id": call_id, "type": "function",
                                                   "function": {"name": fc.get("name", ""),
                                                                "arguments": json.dumps(fc.get("args") or {})}}]},
                                  model=model)
@@ -310,12 +336,14 @@ def gemini_events(events: Iterator[tuple[str, str]], model: str = "") -> Iterato
 
 def gemini_chat(base_url: str, api_key: str, timeout: float = 60.0):
     root = base_url.rstrip("/")
+    signatures: dict[str, Optional[str]] = {}  # per client: thoughtSignature of each functionCall it returned
 
     def chat(body: dict):
         model = body.get("model", "")
-        url = f"{root}/v1beta/models/{model}:streamGenerateContent?alt=sse"
-        resp = _open(url, {"x-goog-api-key": api_key}, gemini_request(body), timeout)
-        stream = gemini_events(_sse(resp), model)
+        name = quote(model.removeprefix("models/"), safe="-._")  # a model name never adds path or query parts
+        url = f"{root}/v1beta/models/{name}:streamGenerateContent?alt=sse"
+        resp = _open(url, {"x-goog-api-key": api_key}, gemini_request(body, signatures), timeout)
+        stream = gemini_events(_sse(resp), model, signatures)
         return stream if body.get("stream") else aggregate(stream)
 
     return chat

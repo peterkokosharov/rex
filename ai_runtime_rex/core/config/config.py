@@ -84,9 +84,8 @@ class Config:
                 "LITELLM": "liteLLM",
                 "DOCKER_GUARD": "docker_guard",
             }
-            first = parts[0]
-            if first in known_prefixes:
-                first = known_prefixes[first]
+            # Unknown sections are lowercased like the rest: AI_REX_AGENT__MAX_STEPS -> agent.max_steps
+            first = known_prefixes.get(parts[0], parts[0].lower())
             # Rest of parts: lowercase to match YAML conventions
             rest = [p.lower() for p in parts[1:]]
             return [first] + rest

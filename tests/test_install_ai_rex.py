@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 """The portable install script: one folder, runnable launcher, safe uninstall."""
 import os
@@ -35,3 +35,28 @@ def test_refuses_foreign_folders(tmp_path):
     assert _run(str(tmp_path)).returncode != 0
     assert _run("--uninstall", str(tmp_path)).returncode != 0
     assert (tmp_path / "keep.txt").exists()
+
+
+def test_uninstall_scripts_check_the_marker(tmp_path):
+    dest = tmp_path / "x"
+    assert _run(str(dest)).returncode == 0
+    assert ".ai-rex-install" in (dest / "uninstall.cmd").read_text()
+    assert ".ai-rex-install" in (dest / "uninstall.sh").read_text()
+    assert b"\r\n" not in (dest / "ai-rex").read_bytes() and b"\r\n" in (dest / "ai-rex.cmd").read_bytes()
+
+
+def test_install_onto_a_file_is_refused(tmp_path):
+    f = tmp_path / "file.txt"
+    f.write_text("x")
+    r = _run(str(f))
+    assert r.returncode != 0 and "Traceback" not in r.stderr and f.read_text() == "x"
+
+
+def test_gitattributes_keep_launcher_line_ends():
+    import shutil
+    if shutil.which("git") is None or not (ROOT / ".git").exists():
+        import pytest
+        pytest.skip("no git checkout")
+    out = subprocess.run(["git", "check-attr", "eol", "ai-rex", "deploy.sh", "ai-rex.cmd"], cwd=ROOT,
+                         capture_output=True, text=True).stdout
+    assert "ai-rex: eol: lf" in out and "deploy.sh: eol: lf" in out and "ai-rex.cmd: eol: crlf" in out

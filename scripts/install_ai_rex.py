@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Author: Peter Kokosharov <peter.kokosharov@gmail.com>
-# AI models: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 """Portable install of ai-rex into ONE folder; delete the folder to uninstall. Python standard library only.
 
     python scripts/install_ai_rex.py DEST               install (or update) into DEST
@@ -41,11 +41,13 @@ UNINSTALL_CMD = """@echo off
 REM Removes this ai-rex install: deletes the folder this file is in.
 setlocal
 set "D=%~dp0"
+if not exist "%D%.ai-rex-install" (echo refusing: %D% holds no ai-rex install & exit /b 1)
 echo Deleting %D%
 start "" /b cmd /c "ping -n 2 127.0.0.1 >nul & rd /s /q "%D%""
 """
 UNINSTALL_SH = """#!/bin/sh
 here="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$here/.ai-rex-install" ] || { echo "refusing: $here holds no ai-rex install" >&2; exit 1; }
 echo "Deleting $here"
 rm -rf "$here"
 """
@@ -53,6 +55,8 @@ rm -rf "$here"
 
 def install(dest: Path) -> Path:
     dest = dest.resolve()
+    if dest.exists() and not dest.is_dir():
+        raise SystemExit(f"refusing: {dest} is not a folder")
     if dest.exists() and any(dest.iterdir()) and not (dest / MARKER).exists():
         raise SystemExit(f"refusing: {dest} is not empty and not an ai-rex install")
     lib = dest / "lib"

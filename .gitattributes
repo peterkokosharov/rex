@@ -1,3 +1,8 @@
 vendor/kikolib/** text eol=lf
 # pkgkit is a pinned, unmodified copy (kiko-src, tag pkgkit-v0.1.0): LF so SHA256SUMS holds on every OS.
 packaging/vendor/pkgkit/** text eol=lf
+# Launchers: shell scripts must keep LF (a CR breaks "#!/bin/sh"), cmd scripts CRLF (cmd.exe labels/goto).
+ai-rex text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

@@ -14,6 +14,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, Optional
 
 import runtimelib
 from runtimelib import Config, get_config
@@ -56,6 +57,10 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", type=float, default=None, help="Sampling temperature")
     parser.add_argument("--timeout", type=float, default=None, help="HTTP timeout in seconds (env AI_REX_TIMEOUT, default 60)")
     parser.add_argument("--no-tools", action="store_true", help="One-shot without any tools (plain chat)")
+    parser.add_argument("--session", default=None, metavar="ID",
+                        help="One-shot: keep the conversation in session ID (created if new; letters, digits, - _)")
+    parser.add_argument("--continue", action="store_true", dest="continue_last",
+                        help="One-shot: continue the latest session started in this folder")
     parser.add_argument("--non-interactive", action="store_true",
                         help="Never ask: a tool call that would need permission is denied (exit 3)")
     parser.add_argument("--cwd", "--workspace", default=None, dest="cwd", metavar="DIR", help="Run in DIR (the workspace)")
@@ -127,7 +132,7 @@ def main() -> int:
     config.set("cli.no_stream", bool(args.no_stream))
     config.set("cli.verbose", bool(args.verbose))
     config.set("cli.quiet", bool(args.quiet))
-    config.set("cli.unsafe_local_tools", bool(args.unsafe_local_tools))
+    tool_note = apply_tool_mode(config, flag=bool(args.unsafe_local_tools), env_only=env_only)
     if args.unsafe_local_tools and not (args.jsonl or args.acp):
         print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
 
@@ -149,12 +154,12 @@ def main() -> int:
                 or (not args.prompt and not _isatty(sys.stdin)))
     if one_shot:
         from runtime.oneshot import Options, run_oneshot
-        asker = None if args.non_interactive else one_shot_asker(False)
+        asker = None if args.non_interactive else one_shot_asker(bool(args.json))
         opts = Options(text=args.input_text, input_file=args.input_file, output=args.output, append=args.append,
                        system=args.system, as_json=bool(args.json), buffered=bool(args.no_stream),
                        max_tokens=args.max_tokens, temperature=args.temperature, no_tools=args.no_tools, asker=asker,
                        verbosity=-1 if args.quiet else args.verbose, log_file=args.log_file,
-                       log_format=args.log_format)
+                       log_format=args.log_format, session=args.session, continue_last=args.continue_last)
         return run_oneshot(config, opts, llm_factory=_llm_factory(config))
 
     # Register commands
@@ -184,7 +189,34 @@ def main() -> int:
         _ASKER = one_shot_asker(bool(args.json))
         return registry.execute("chat", {"prompt": prompt})
 
-    return run_interactive(registry, config)
+    return run_interactive(registry, config, tool_note=tool_note)
+
+
+def apply_tool_mode(config: Config, flag: bool, env_only: bool, docker: Optional[bool] = None) -> Optional[str]:
+    """Decide where tools run; returns a one-line note when the Docker-less fallback was taken.
+
+    ``--local-tools`` -> local. An explicit ``cli.unsafe_local_tools`` (env ``AI_REX_CLI__UNSAFE_LOCAL_TOOLS``) or
+    ``permissions.mode`` is kept. Otherwise, in the env-only modes (plain REPL, one-shot) without a ``docker``
+    command, tools run locally behind the permission gate: reads are allowed, every write or command asks
+    (and is denied when nobody can answer). Without this fallback every tool call failed on the missing guard.
+    """
+    if flag:
+        config.set("cli.unsafe_local_tools", True)
+        return None
+    explicit = config.get("cli.unsafe_local_tools")
+    if explicit is not None:
+        config.set("cli.unsafe_local_tools", explicit is True or str(explicit).lower() in ("1", "true", "yes", "on"))
+        return None
+    config.set("cli.unsafe_local_tools", False)
+    if not env_only or config.get("permissions.mode"):
+        return None
+    if docker is None:
+        import shutil
+        docker = shutil.which("docker") is not None
+    if docker:
+        return None
+    config.set("cli.unsafe_local_tools", True)
+    return "tools: local (Docker not found) - reads allowed, every write or command asks first"
 
 
 def _llm_factory(config: Config) -> Any:
@@ -228,9 +260,18 @@ class TerminalAsker:
     """
 
     def __init__(self, input_fn: Any = None, out: Any = None, on_interrupt: Any = None) -> None:
-        self._input = input_fn or input
         self._out = out if out is not None else sys.stderr
+        # input() would print the question on stdout, which may be the answer file of a one-shot run.
+        self._input = input_fn or self._read_line
         self._on_interrupt = on_interrupt
+
+    def _read_line(self, prompt: str) -> str:
+        self._out.write(prompt)
+        self._out.flush()
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        return line.rstrip("\r\n")
 
     def _read(self, prompt: str) -> str:
         """Read the answer; Ctrl+C raises KeyboardInterrupt even under the loop's SIGINT handler."""
@@ -322,14 +363,14 @@ def _on_context(status: dict[str, Any], quiet: bool = False) -> None:
     if status.get("source") == "default" and model not in _DEFAULT_WINDOW_HINTED:
         _DEFAULT_WINDOW_HINTED.add(model)
         print(
-            f"Размерът на контекста на модел {model} е неизвестен (по подразбиране {_fmt_tokens(status['limit'])}); "
-            f"задай models.{model}.context_window в конфигурацията.",
+            f"Context size of model {model} is unknown (default {_fmt_tokens(status['limit'])}); "
+            f"set models.{model}.context_window in the configuration.",
             file=sys.stderr,
         )
     if status.get("warning"):
         print(
-            f"Контекст {status['percent']}% от {_fmt_tokens(status['limit'])} (модел {model}). "
-            "Ако работата е важна, смени с модел с по-голям контекст: /model",
+            f"Context {status['percent']}% of {_fmt_tokens(status['limit'])} (model {model}). "
+            "If the work matters, switch to a model with a larger context: /model",
             file=sys.stderr,
         )
 
@@ -337,26 +378,26 @@ def _on_context(status: dict[str, Any], quiet: bool = False) -> None:
 def register_core_commands(registry: CommandRegistry, config: Config) -> None:
     """Register core slash commands."""
 
-    @registry.register("help", "Покажи помощ за команди")
+    @registry.register("help", "Show help for commands")
     def cmd_help(args: dict[str, Any]) -> int:
         if args:
             cmd = args.get("_0", "") or args.get("command", "")
             if cmd in registry._help:
                 print(f"/{cmd} — {registry._help[cmd]}")
             else:
-                print(f"Незната команда: /{cmd}")
+                print(f"Unknown command: /{cmd}")
             return 0
 
-        print("Налични команди:")
+        print("Available commands:")
         for name in registry.list_commands():
             print(f"  /{name:<20} — {registry._help[name]}")
         return 0
 
-    @registry.register("config", "Покажи или промени конфигурация")
+    @registry.register("config", "Show or change the configuration")
     def cmd_config(args: dict[str, Any]) -> int:
         import json
         if not args:
-            print("Текуща конфигурация:")
+            print("Current configuration:")
             print(json.dumps(config.to_safe_dict(), indent=2, ensure_ascii=False))
             return 0
 
@@ -377,22 +418,22 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
                     except json.JSONDecodeError:
                         parsed = value
                     from runtimelib.config.config import mask_value
-                    print(f"Ще зададе {key} = {mask_value(key, parsed)} (само за тази сесия)")
+                    print(f"Set {key} = {mask_value(key, parsed)} (this session only)")
             return 0
 
         return 0
 
-    @registry.register("models", "Покажи налични модели от LiteLLM proxy")
+    @registry.register("models", "List the models of the gateway")
     def cmd_models(args: dict[str, Any]) -> int:
         from runtimelib.llm import LiteLLMClient
         client = LiteLLMClient.from_config(config)
         try:
             models = client.list_models()
         except Exception as e:
-            print(f"Грешка: {e}")
+            print(f"Error: {e}")
             return 1
         if not models:
-            print("Няма налични модели")
+            print("No models available")
             return 0
         current = config.get("liteLLM.model", "")
         for m in models:
@@ -401,31 +442,31 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             print(f"{mark} {mid}")
         return 0
 
-    @registry.register("model", "Покажи или смени активния модел")
+    @registry.register("model", "Show or change the active model")
     def cmd_model(args: dict[str, Any]) -> int:
         name = args.get("_0", "") or args.get("name", "")
         if not name:
-            print(config.get("liteLLM.model", "(не е зададен)"))
+            print(config.get("liteLLM.model", "(not set)"))
             return 0
         config.set("liteLLM.model", name)
         global _REPL_LOOP
         if _REPL_LOOP is not None and hasattr(_REPL_LOOP, "llm"):
             _REPL_LOOP.llm.default_model = name
-        print(f"Модел: {name}")
+        print(f"Model: {name}")
         if _REPL_LOOP is not None and hasattr(_REPL_LOOP, "report_context"):
             # The new model has its own window: recompute the status at once.
             status = _REPL_LOOP.report_context()
-            print(f"Контекст {status['percent']}% от {_fmt_tokens(status['limit'])} ({status['source']})")
+            print(f"Context {status['percent']}% of {_fmt_tokens(status['limit'])} ({status['source']})")
         return 0
 
-    @registry.register("clear", "Изчисти екрана")
+    @registry.register("clear", "Clear the screen")
     def cmd_clear(args: dict[str, Any]) -> int:
         import sys
         if sys.stdout.isatty():
             print("\033[2J\033[H", end="")
         return 0
 
-    @registry.register("verbose", "Включи/изключи verbose изход")
+    @registry.register("verbose", "Toggle verbose output")
     def cmd_verbose(args: dict[str, Any]) -> int:
         cur = bool(config.get("cli.verbose", False))
         new = not cur
@@ -436,7 +477,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         print(f"verbose: {'on' if new else 'off'}")
         return 0
 
-    @registry.register("local", "DEV: включи/изключи локални tools без Docker guard")
+    @registry.register("local", "Toggle local tools (on the host, without the Docker guard)")
     def cmd_local(args: dict[str, Any]) -> int:
         cur = bool(config.get("cli.unsafe_local_tools", False))
         new = not cur
@@ -450,19 +491,19 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             print("local tools: off (Docker guard)")
         return 0
 
-    @registry.register("reset", "Нова сесия/контекст (изчиства текущия разговор)")
+    @registry.register("reset", "New session/context (clears the current conversation)")
     def cmd_reset(args: dict[str, Any]) -> int:
         # Keep the loop: dropping it would leak its MCP server processes.
         if _REPL_LOOP is not None:
             _REPL_LOOP.reset_context()
-        print("Контекстът е изчистен.")
+        print("Context cleared.")
         return 0
 
-    @registry.register("context", "Покажи размер на текущия контекст")
+    @registry.register("context", "Show the size of the current context")
     def cmd_context(args: dict[str, Any]) -> int:
         loop = _REPL_LOOP
         if loop is None:
-            print("Няма активен контекст.")
+            print("No active context.")
             return 0
         usage = loop.context_usage()
         pct = usage["used"] * 100 // max(1, usage["window"])
@@ -473,31 +514,31 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         )
         return 0
 
-    @registry.register("shell", "Изпълни локална shell команда (еквивалентно на ! <команда>)")
+    @registry.register("shell", "Run a local shell command (same as ! <command>)")
     def cmd_shell(args: dict[str, Any]) -> int:
         command = args.get("command", "") or " ".join(
             str(v) for k, v in sorted(args.items()) if k.startswith("_")
         )
         if not command:
-            print("Използване: /shell <команда> или ! <команда>")
+            print("Usage: /shell <command> or ! <command>")
             return 1
         result = run_shell(shell_command("!" + command), timeout=config.get("cli.shell_timeout", 120))
         return print_shell_result(result)
 
-    @registry.register("doctor", "Проверете състоянието на системата")
+    @registry.register("doctor", "Check the system state")
     def cmd_doctor(args: dict[str, Any]) -> int:
         print("🏥 Doctor Check")
         print("─" * 40)
 
         # Check config
-        print(f"✓ Config: {config.get('liteLLM.base_url', 'не зададен')}")
+        print(f"✓ Config: {config.get('liteLLM.base_url', 'not set')}")
 
         # Check LiteLLM
         from runtimelib.llm import LiteLLMClient
         try:
             client = LiteLLMClient.from_config(config)
             models = client.list_models()
-            print(f"✓ LiteLLM: {len(models)} модела достъпни")
+            print(f"✓ LiteLLM: {len(models)} models available")
         except Exception as e:
             print(f"✗ LiteLLM: {e}")
 
@@ -506,26 +547,26 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         try:
             result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
             if result.returncode == 0:
-                print("✓ Docker: достъпен")
+                print("✓ Docker: available")
             else:
-                print("✗ Docker: не работи")
+                print("✗ Docker: not running")
         except Exception:
-            print("✗ Docker: не е инсталиран")
+            print("✗ Docker: not installed")
 
         # Check kiko.db
         kiko_db = Path.home() / ".kiko" / "kiko.db"
         if kiko_db.exists():
             print(f"✓ kiko.db: {kiko_db}")
         else:
-            print(f"✗ kiko.db: не е намерен ({kiko_db})")
+            print(f"✗ kiko.db: not found ({kiko_db})")
 
         return 0
 
-    @registry.register("chat", "Изпрати съобщение към агента")
+    @registry.register("chat", "Send a message to the agent")
     def cmd_chat(args: dict[str, Any]) -> int:
         prompt = args.get("prompt", "") or args.get("_0", "")
         if not prompt:
-            print("Използване: /chat <prompt> или /chat prompt=...")
+            print("Usage: /chat <prompt> or /chat prompt=...")
             return 1
 
         import json
@@ -558,6 +599,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         if _REPL_LOOP is None:
             _REPL_LOOP = create_agent_loop(
                 config,
+                llm_client=_llm_factory(config)(),  # None = OpenAI-compatible; else the anthropic/gemini adapter
                 on_token=on_token,
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
@@ -578,7 +620,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             if as_json:
                 print(json.dumps({"ok": False, "error": "interrupted", "events": events}, ensure_ascii=False))
             else:
-                renderer.error("прекъснато")
+                renderer.error("interrupted")
             return 130
         except Exception as e:
             if as_json:
@@ -602,23 +644,23 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
                 renderer.final(response)
         return 0
 
-    @registry.register("exit", "Изход от runtime", aliases=["quit", "q"])
+    @registry.register("exit", "Exit ai-rex", aliases=["quit", "q"])
     def cmd_exit(args: dict[str, Any]) -> int:
-        print("Изход...")
+        print("Bye.")
         sys.exit(0)
 
-    @registry.register("skills", "Управление на skills")
+    @registry.register("skills", "Manage skills")
     def cmd_skills(args: dict[str, Any]) -> int:
         from runtimelib.skills.cli import run_skills
         return run_skills([str(args[k]) for k in sorted(args) if k.startswith("_")], config)
 
-    @registry.register("session", "Управление на сесии")
+    @registry.register("session", "Manage sessions")
     def cmd_session(args: dict[str, Any]) -> int:
-        print("Session система — не е имплементирана още")
+        print("Sessions: not implemented yet")
         return 0
 
 
-def run_interactive(registry: CommandRegistry, config: Config) -> int:
+def run_interactive(registry: CommandRegistry, config: Config, tool_note: Optional[str] = None) -> int:
     """Run interactive REPL with readline support."""
     from runtimelib.cli import ansi
 
@@ -632,7 +674,9 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
     model = config.get("liteLLM.model", "?")
     base = config.get("liteLLM.base_url", "?")
     print(ansi.bold("ai-rex") + ansi.gray(f"  model={model}  endpoint={base}"))
-    print(ansi.gray("Команди: /help /model /models /context /reset /shell /doctor /exit  |  ! <команда> изпълнява локално  |  Ctrl+C прекъсва, Ctrl+D изход"))
+    if tool_note:
+        print(ansi.gray(tool_note))
+    print(ansi.gray("Commands: /help /model /models /context /reset /shell /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:
@@ -654,7 +698,7 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
                 result = run_shell(shell_command(line), timeout=config.get("cli.shell_timeout", 120))
                 print_shell_result(result)
             except Exception as e:
-                print(ansi.red(f"Грешка: {e}"))
+                print(ansi.red(f"Error: {e}"))
             continue
 
         if line.startswith("/"):
@@ -667,14 +711,14 @@ def run_interactive(registry: CommandRegistry, config: Config) -> int:
             except KeyboardInterrupt:
                 print()
             except Exception as e:
-                print(ansi.red(f"Грешка: {e}"))
+                print(ansi.red(f"Error: {e}"))
         else:
             try:
                 registry.execute("chat", {"prompt": line})
             except KeyboardInterrupt:
                 print()
             except Exception as e:
-                print(ansi.red(f"Грешка: {e}"))
+                print(ansi.red(f"Error: {e}"))
 
     return 0
 

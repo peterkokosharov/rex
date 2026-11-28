@@ -167,9 +167,9 @@ class LiteLLMClient:
         timeout = lite_cfg.get("timeout", 60.0)
 
         if not base_url:
-            raise ValueError("liteLLM.base_url не е зададен в конфигурацията")
+            raise ValueError("liteLLM.base_url is not set in the configuration")
         if not api_key:
-            raise ValueError("liteLLM.api_key не е зададен в конфигурацията")
+            raise ValueError("liteLLM.api_key is not set in the configuration")
 
         return cls(base_url, api_key, model, timeout)
 

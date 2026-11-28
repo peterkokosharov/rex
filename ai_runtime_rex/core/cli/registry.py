@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# LLM: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Command registry with decorator-based registration."""
@@ -39,7 +39,7 @@ class CommandRegistry:
         # Resolve alias
         actual_name = self._aliases.get(name, name)
         if actual_name not in self._commands:
-            raise ValueError(f"Незната команда: /{name}. Използвайте /help")
+            raise ValueError(f"Unknown command: /{name}. Use /help")
         return self._commands[actual_name](args)
 
     def list_commands(self) -> list[str]:
@@ -47,7 +47,7 @@ class CommandRegistry:
 
     def get_help(self, name: str) -> str:
         actual_name = self._aliases.get(name, name)
-        return self._help.get(actual_name, "Няма описание")
+        return self._help.get(actual_name, "No description")
 
     def has_command(self, name: str) -> bool:
         actual_name = self._aliases.get(name, name)
