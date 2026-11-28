@@ -198,7 +198,7 @@ def test_bash_local_uses_bash_not_a_shell(monkeypatch):
     with mock.patch("subprocess.Popen", fake_popen):
         BashTool(LOCAL).execute(command="echo 'a & b'", description="t")
     if os.name == "nt":  # the text travels in the environment, argv is constant
-        assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", 'eval "$REX_COMMAND"']
+        assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", 'eval "$REX_PRELUDE"; eval "$REX_COMMAND"']
     else:
         assert seen["cmd"] == ["C:/Git/bin/bash.exe", "-c", "echo 'a & b'"]
     assert not seen["shell"]
@@ -207,11 +207,16 @@ def test_bash_local_uses_bash_not_a_shell(monkeypatch):
 def test_bash_local_without_bash_is_a_clear_error(monkeypatch):
     from runtimelib.tools import bash as bash_mod
     monkeypatch.setattr(bash_mod, "find_bash", lambda: None)
-    with mock.patch("subprocess.run") as run:
-        out = BashTool(LOCAL).execute(command="echo hi", description="t")
-    run.assert_not_called()
+    only_bash = Config({"cli": {"unsafe_local_tools": True}, "tools": {"shell": "bash"}})
+    with mock.patch("subprocess.Popen") as popen:
+        out = BashTool(only_bash).execute(command="echo hi", description="t")
+    popen.assert_not_called()
     assert out["exit_code"] != 0
-    assert "ai-rex needs Git Bash on Windows: install Git for Windows from https://git-scm.com/download/win" in out["stderr"]
+    if os.name == "nt":
+        assert ("ai-rex needs Git Bash on Windows: install Git for Windows from https://git-scm.com/download/win"
+                in out["stderr"])
+    else:
+        assert "not found" in out["stderr"]
 
 
 def test_find_bash_on_windows_skips_wsl_launcher(monkeypatch):
@@ -259,22 +264,21 @@ class _SlowProc:
         pass
 
 
-def test_bash_timeout_decodes_bytes(monkeypatch):
+def test_bash_timeout_decodes_bytes():
+    """Output is read as bytes and decoded without ever failing (the timeout itself: test_bash_tree_timeout)."""
     from runtimelib.tools import bash as bash_mod
-    monkeypatch.setattr(bash_mod, "kill_tree", lambda proc: None)
-    monkeypatch.setattr(bash_mod._WinJob, "create", classmethod(lambda cls: None))
-    with mock.patch("subprocess.Popen", _SlowProc):
-        out = BashTool(LOCAL).execute(command="sleep 9", description="t", timeout=1)
-    assert out["exit_code"] == 124
-    assert out["stdout"] == "partial \u00e9"
-    assert out["stderr"].startswith("err") and "Timeout after 1s" in out["stderr"]
+    assert bash_mod._decode(b"partial \xc3\xa9", "utf-8") == "partial \u00e9"
+    assert bash_mod._decode(b"err\xff\r\nx", "utf-8").startswith("err") and "\r" not in bash_mod._decode(b"a\r\nb")
+    assert bash_mod._decode(b"x", "no-such-codec") == "x"
 
 
-def test_shell_timeout_decodes_bytes():
-    with mock.patch("subprocess.run", _raise_timeout_bytes):
-        res = run_shell("sleep 9", timeout=1)
+def test_shell_timeout_ends_the_command(tmp_path, monkeypatch):
+    from runtimelib.tools.bash import resolve_shell
+    if resolve_shell("auto") is None:
+        pytest.skip("no shell")
+    monkeypatch.chdir(tmp_path)
+    res = run_shell("sleep 9", timeout=1)
     assert res.exit_code == 124
-    assert res.stdout == "partial \u00e9"
     assert "timed out" in res.stderr
 
 

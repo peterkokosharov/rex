@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-sonnet-5-5
+# AI models: claude-sonnet-5-5, claude-opus-5-5
 # Licensed under MIT License
 
 """Small process helpers shared by the diagram tool and the Claude CLI gateway (stdlib only)."""
@@ -19,12 +19,17 @@ def popen_group_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+def _system32(name: str) -> str:
+    """Full path of a Windows system program: a bare name would be searched in the current directory first."""
+    return os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", name)
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill the process and its children (taskkill /T on Windows, the process group elsewhere)."""
     try:
         if os.name == "nt":
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                [_system32("taskkill.exe"), "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=10,
                 shell=False,

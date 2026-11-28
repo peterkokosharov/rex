@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: nvidia nemotron ultra
+# AI models: nvidia nemotron ultra, claude-opus-5-5
 # Licensed under MIT License
 
 """Explicit shell escape for the CLI: a prompt starting with ``!`` runs locally.
@@ -57,26 +57,29 @@ def shell_command(line: str) -> str:
     return command
 
 
-def run_shell(command: str, cwd: Optional[Path] = None, timeout: Optional[float] = None) -> ShellResult:
-    """Run ``command`` with the system shell in ``cwd``."""
+def run_shell(command: str, cwd: Optional[Path] = None, timeout: Optional[float] = None,
+              config: object = None) -> ShellResult:
+    """Run ``command`` in ``cwd`` with the same shell as the bash tool (config tools.shell / env AI_REX_SHELL).
+
+    Same rules as the tool: stdin is empty, a launched program (start msedge x.html) does not block the
+    prompt, a timeout or Ctrl+C ends the command's own process tree.
+    """
     if not command.strip():
         return ShellResult(command=command, stderr="[shell: empty command]", exit_code=1)
+    import os
+    from ..tools.bash import resolve_shell, run_tree, shell_choice
+    shell = resolve_shell(shell_choice(config))
+    if shell is None:
+        return ShellResult(command, "", f"[shell: no shell found for '{shell_choice(config)}']", 1)
+    env = dict(os.environ)  # the user's own command: nothing is scrubbed
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(cwd or Path.cwd()),
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-        )
-        return ShellResult(command, proc.stdout, proc.stderr, proc.returncode)
-    except subprocess.TimeoutExpired as exc:
-        stderr = _to_text(exc.stderr) + f"\n[shell: timed out after {timeout}s]"
-        return ShellResult(command, _to_text(exc.stdout), stderr, 124)
+        code, out, err, ended = run_tree(shell.command_line(command, env), cwd=str(cwd or Path.cwd()), env=env,
+                                         timeout=timeout or 24 * 3600, encoding=shell.encoding)
     except OSError as exc:
         return ShellResult(command, "", str(exc), 1)
+    if ended:
+        return ShellResult(command, out, err + f"\n[shell: timed out after {timeout}s]", 124)
+    return ShellResult(command, out, err, code)
 
 
 def _to_text(value: object) -> str:

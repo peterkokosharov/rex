@@ -85,6 +85,11 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-mcp", action="store_true", help="Ignore all MCP servers (also those from env or --config)")
     parser.add_argument("--mcp-allow", action="append", default=[], metavar="PATTERN",
                         help="Allow MCP tools without asking: SERVER, SERVER__TOOL or a glob such as 'demo__read_*' (repeatable)")
+    from ai_runtime_rex.core.mcp.cliconfig import add_cli_flags as add_mcp_flags
+    add_mcp_flags(parser)  # --mcp-trust-readonly
+    parser.add_argument("--shell", choices=("auto", "bash", "powershell", "cmd"), default=None,
+                        help="Shell for the bash tool and ! commands (default auto: Git Bash on Windows, else "
+                             "PowerShell, else cmd; bash elsewhere; env AI_REX_SHELL, config tools.shell)")
     parser.add_argument("--unsafe-local-tools", "--local-tools", action="store_true", dest="unsafe_local_tools", help="DEV ONLY: run tools locally without Docker guard")
     parser.add_argument("prompt", nargs="*", help="Prompt to send to the agent (if omitted, starts interactive mode)")
     return parser
@@ -158,10 +163,15 @@ def main() -> int:
     try:
         from ai_runtime_rex.core.mcp.cliconfig import McpConfigError, apply as apply_mcp
         apply_mcp(config, args.mcp_config, args.mcp, args.no_mcp, args.mcp_allow,
-                  warn=lambda m: print(m, file=sys.stderr))
+                  warn=lambda m: print(m, file=sys.stderr),
+                  trust_readonly=bool(getattr(args, "mcp_trust_readonly", False)))
     except McpConfigError as exc:
         print(f"ai-rex: {exc}", file=sys.stderr)
         return 2
+    if args.shell:  # flag > env AI_REX_SHELL > config file
+        config.set("tools.shell", args.shell)
+    elif os.environ.get("AI_REX_SHELL"):
+        config.set("tools.shell", os.environ["AI_REX_SHELL"])
     tool_note = apply_tool_mode(config, flag=bool(args.unsafe_local_tools), env_only=env_only)
     if args.unsafe_local_tools and not (args.jsonl or args.acp):
         print("WARNING: --unsafe-local-tools enabled. Tools run on host without Docker guard.", file=sys.stderr)
@@ -202,7 +212,7 @@ def main() -> int:
     if args.prompt:
         prompt = " ".join(args.prompt)
         if is_shell_line(prompt):
-            result = run_shell(shell_command(prompt), timeout=config.get("cli.shell_timeout", 120))
+            result = run_shell(shell_command(prompt), timeout=config.get("cli.shell_timeout", 120), config=config)
             if args.json:
                 print(json.dumps({
                     "ok": result.ok,
@@ -654,6 +664,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             f"turn: {usage['turn']}  model: {config.get('liteLLM.model')}  "
             f"timeout: {float(config.get('liteLLM.timeout') or 600):g} s"
         )
+        print(shell_banner(config))
         return 0
 
     @registry.register("mcp", "List the MCP servers and their tools")
@@ -670,7 +681,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         if not command:
             print("Usage: /shell <command> or ! <command>")
             return 1
-        result = run_shell(shell_command("!" + command), timeout=config.get("cli.shell_timeout", 120))
+        result = run_shell(shell_command("!" + command), timeout=config.get("cli.shell_timeout", 120), config=config)
         return print_shell_result(result)
 
     @registry.register("doctor", "Check the system state")
@@ -833,6 +844,16 @@ def mcp_status_lines(config: Config, loop: Any) -> list[str]:
     return lines
 
 
+def shell_banner(config: Config) -> str:
+    """One line: which shell runs the bash tool and ! commands."""
+    from ai_runtime_rex.core.tools.bash import resolve_shell, shell_choice
+    choice = shell_choice(config)
+    shell = resolve_shell(choice)
+    if shell is None:
+        return f"shell: {choice} - not found"
+    return f"shell: {shell.label} ({shell.path})" + ("" if choice == "auto" else f"  [--shell {choice}]")
+
+
 def run_interactive(registry: CommandRegistry, config: Config, tool_note: Optional[str] = None) -> int:
     """Run interactive REPL with readline support."""
     from runtimelib.cli import ansi
@@ -849,6 +870,7 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
     print(ansi.bold("ai-rex") + ansi.gray(f"  model={model}  endpoint={base}"))
     if tool_note:
         print(ansi.gray(tool_note))
+    print(ansi.gray(shell_banner(config)))
     print(ansi.gray("Commands: /help /model /models /timeout /context /reset /shell /mcp /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
@@ -884,7 +906,7 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
 
         if is_shell_line(line):
             try:
-                result = run_shell(shell_command(line), timeout=config.get("cli.shell_timeout", 120))
+                result = run_shell(shell_command(line), timeout=config.get("cli.shell_timeout", 120), config=config)
                 print_shell_result(result)
             except Exception as e:
                 print(ansi.red(f"Error: {e}"))

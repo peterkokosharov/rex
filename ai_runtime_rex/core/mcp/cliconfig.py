@@ -206,7 +206,9 @@ def apply(config: Any, mcp_configs: Sequence[str] = (), inline: Sequence[str] = 
     Raises :class:`McpConfigError` for a bad flag. Unreadable files named by the environment only warn.
     """
     env = os.environ if environ is None else environ
-    config.set("mcp.trust_readonly", bool(trust_readonly) or config.get("mcp.trust_readonly", False) is True)
+    current = config.get("mcp.trust_readonly", False)
+    from_config = current is True or str(current).strip().lower() in ("1", "true", "yes", "on")
+    config.set("mcp.trust_readonly", bool(trust_readonly) or from_config)
     if no_mcp:
         config.set("mcp.servers", {})
         return []

@@ -331,7 +331,7 @@ Tool use:
 - Batch independent calls (for example several reads) in one reply.
 - Read a file before editing it; the edit tool refuses files that were not read in this session.
 {diagram_block}- Maximum steps: {self.state.max_steps}
-{skills_block}
+{skills_block}{self._shell_line()}
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 {self._instructions.section()}"""
         else:
@@ -339,6 +339,12 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 {self._instructions.section()}"""
+
+    def _shell_line(self) -> str:
+        """The bash tool's active shell and syntax (e.g. PowerShell on Windows), one line; empty otherwise."""
+        shell = getattr(self.tools.get("bash"), "shell", None) if isinstance(getattr(self, "tools", None), dict) else None
+        note = getattr(shell, "note", None)
+        return ("Shell: " + note() + "\n") if callable(note) else ""
 
     def interrupt(self) -> None:
         """Request interruption of the current request (safe from another thread)."""
@@ -766,6 +772,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
                         )
                     else:
                         # Execute tool
+                        if hasattr(tool, "cancel_event"):
+                            tool.cancel_event = self._interrupt_event  # Ctrl+C ends a running command
                         result_data = tool.execute(**args)
                         result = ToolResult(
                             tool_name=tool_name,
@@ -872,7 +880,8 @@ def format_tool_result(result: Any) -> str:
     if isinstance(value, str):
         return value if value else "(empty output)"
     if isinstance(value, dict) and {"stdout", "stderr"} <= set(value) and "exit_code" in value:
-        parts = [f"exit code: {value.get('exit_code')}"]
+        parts = [f"exit code: {value.get('exit_code')}"
+                 + (f" (shell: {value['shell']})" if value.get("shell") else "")]
         for key in ("stdout", "stderr"):
             text = value.get(key) or ""
             if text:

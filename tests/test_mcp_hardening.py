@@ -234,3 +234,11 @@ def test_http_reply_size_is_capped(monkeypatch):
             t.call("initialize", {}, timeout=5)
     finally:
         srv.shutdown()
+
+
+@pytest.mark.parametrize("value, expected", [("true", True), ("1", True), ("on", True), ("no", False), (False, False)])
+def test_trust_readonly_string_values(value, expected):
+    c = cfg()
+    c.set("mcp.trust_readonly", value)
+    apply(c, environ={})
+    assert c.get("mcp.trust_readonly") is expected
