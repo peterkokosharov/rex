@@ -539,7 +539,7 @@ def dynamic_command_word(command: str, subjects: list[str] | None = None) -> boo
     Heuristic over :func:`deny_subjects` (wrappers, reserved words, grouping, ``sh -c``
     bodies and substitution bodies already unpacked): the command word of a subject
     contains ``$`` or a backtick, a glob character (``* ? [``), starts with a redirection
-    (``>f cmd`` hides ``cmd``), or is ``eval`` / ``xargs``. ``echo $(pwd)`` is not dynamic:
+    (``>f cmd`` hides ``cmd``), or is ``eval`` / ``xargs``; ``case`` heads and patterns are skipped. ``echo $(pwd)`` is not dynamic:
     only the command word matters, not the arguments. Too deep nesting counts as dynamic."""
     too_deep = False
     if subjects is None:
@@ -550,7 +550,11 @@ def dynamic_command_word(command: str, subjects: list[str] | None = None) -> boo
         raw = _words(subject)
         if raw and _REDIRECT_WORD.match(raw[0]):
             return True
+        if raw[:1] == ["case"]:
+            raw = raw[3:]  # `case WORD in`: WORD is data, not a command
         words = _strip_wrappers(raw)
+        while len(words) > 1 and words[0].endswith(")") and not any(c in words[0] for c in "$`"):
+            words = _strip_wrappers(words[1:])  # case pattern `x)` / `*)` before the command
         word = words[0] if words else ""
         if word and (any(c in word for c in "$`*?[") or _REDIRECT_WORD.match(word)
                      or _basename(word) in _DYNAMIC_WORDS):

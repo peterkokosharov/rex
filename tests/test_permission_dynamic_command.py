@@ -31,6 +31,8 @@ DYNAMIC = [
     "for x in 1; do $(echo rm) -rf /; done",
     "bash -c '$(echo rm) -rf /'",
     "builtin $(echo rm) -rf /",
+    "case x in x) $(echo rm) -rf / ;; esac",
+    "case x in *) $(echo rm) -rf / ;; esac",
     # a glob or a leading redirection hides the command word as well
     "/bin/r? -rf /",
     "/usr/bin/r[m] -rf /",
@@ -60,6 +62,8 @@ def test_ask_rule_is_protected_too():
 
 @pytest.mark.parametrize("cmd", ["echo $(date)", "ls -la", "cd /tmp && ls", "git log --oneline -n 3",
                                  "X=1 make test", "grep -r 'a*b' src", "echo `date`"])
+# Known false positive (ASK, never DENY): `case $1 in a) ...;; *) ...;; esac` - the subjects lose
+# the case keyword, so `$1` / `*` look like command words. Accepted: ask is the safe side.
 def test_ordinary_commands_stay_allowed_in_guard_mode(cmd):
     rules = PermissionRules({"deny": ["bash(rm *)"]})
     assert rules.evaluate("bash", {"command": cmd}, mode="guard").decision == R.ALLOW
