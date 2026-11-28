@@ -256,7 +256,7 @@ class ACPServer:
 
     def child_command(self) -> list[str]:
         """Command line for one child rex session."""
-        cmd = [sys.executable, "-m", "runtime", "--jsonl"]
+        cmd = [sys.executable, "-P", "-m", "runtime", "--jsonl"]  # -P: never put the project cwd on sys.path
         if self.config_path:
             cmd.extend(["--config", str(self.config_path)])
         if self.env_file:
