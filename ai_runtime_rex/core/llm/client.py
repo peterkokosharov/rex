@@ -17,6 +17,9 @@ from ..config import Config
 from kikolib import http, retry
 from kikolib.http import HttpBackend, Response
 
+# Seconds per HTTP read. One agent step through a CLI gateway can take 20-80 s or more, so 60 s was too short.
+DEFAULT_TIMEOUT = 600.0
+
 # A LiteLLM ``max_tokens`` below this is taken as an output limit, not a window.
 MIN_MAX_TOKENS_WINDOW = 32768
 
@@ -143,7 +146,7 @@ class LiteLLMClient:
         base_url: str,
         api_key: str,
         model: str,
-        timeout: float = 60.0,
+        timeout: float = DEFAULT_TIMEOUT,
         http_backend: Optional[HttpBackend] = None,
     ) -> None:
         base_url = base_url.strip().rstrip("/")
@@ -164,7 +167,7 @@ class LiteLLMClient:
         base_url = lite_cfg.get("base_url") or os.environ.get("LITELLM_BASE_URL")
         api_key = lite_cfg.get("api_key") or os.environ.get("LITELLM_API_KEY")
         model = lite_cfg.get("model") or "gpt-4o"
-        timeout = lite_cfg.get("timeout", 60.0)
+        timeout = lite_cfg.get("timeout", DEFAULT_TIMEOUT)
 
         if not base_url:
             raise ValueError("liteLLM.base_url is not set in the configuration")

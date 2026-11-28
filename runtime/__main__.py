@@ -53,9 +53,12 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key-env", default=None, metavar="NAME",
                         help="Name of the environment variable that holds the API key (the key itself is never an argument)")
     parser.add_argument("--system", default=None, metavar="TEXT|@FILE", help="Extra system instructions")
+    parser.add_argument("--profile", action="append", default=[], metavar="LAYERS",
+                        help="Instruction layers, e.g. programming/java (repeatable or comma-separated; 'auto' = "
+                             "detect from the workspace (default), 'base' = base layer only; env AI_REX_PROFILE)")
     parser.add_argument("--max-tokens", type=int, default=None, help="Maximum answer tokens")
     parser.add_argument("--temperature", type=float, default=None, help="Sampling temperature")
-    parser.add_argument("--timeout", type=float, default=None, help="HTTP timeout in seconds (env AI_REX_TIMEOUT, default 60)")
+    parser.add_argument("--timeout", type=float, default=None, help="HTTP timeout in seconds (env AI_REX_TIMEOUT, default 600)")
     parser.add_argument("--no-tools", action="store_true", help="One-shot without any tools (plain chat)")
     parser.add_argument("--session", default=None, metavar="ID",
                         help="One-shot: keep the conversation in session ID (created if new; letters, digits, - _)")
@@ -94,7 +97,7 @@ def main() -> int:
     protocol_mode = bool(argv) and (argv[0] == "acp" or any(a in ("--jsonl", "--ui-jsonl", "--acp") for a in argv))
     set_quiet(protocol_mode)  # deprecation notes only in REPL / one-shot mode
     env_only = not (protocol_mode or any(a in ("--config", "--env-file") for a in argv)
-                    or (argv and argv[0] in ("acp", "skills")))
+                    or (argv and argv[0] in ("acp", "skills", "profile")))
     if not env_only:
         migrate_legacy_config()  # one-time copy ~/.config/runtime -> ~/.config/ai-rex (old dir is kept)
     # `ai-rex acp ...` is the form used in editor configs. Keep the old flat CLI
@@ -107,6 +110,11 @@ def main() -> int:
     if argv and argv[0] == "skills" and (len(argv) == 1 or argv[1] == "show"):
         from runtimelib.skills.cli import run_skills
         return run_skills(argv[1:], get_config())
+
+    # `ai-rex profile [show]` lists the instruction layers (active ones marked) or prints the composed text.
+    if argv and argv[0] == "profile" and (len(argv) == 1 or argv[1] == "show"):
+        from ai_runtime_rex.core.profiles.cli import run_profile
+        return run_profile(argv[1:], get_config())
 
     parser = create_parser()
     args = parser.parse_args(argv)
@@ -136,6 +144,8 @@ def main() -> int:
         config.set("liteLLM.model", args.model)
     if (args.port or args.base_url) and not env_only:
         config.set("liteLLM.base_url", args.base_url or f"http://127.0.0.1:{args.port}")
+    if args.profile:
+        config.set("agent.profile", ",".join(args.profile))
     config.set("cli.json", bool(args.json))
     config.set("cli.no_stream", bool(args.no_stream))
     config.set("cli.verbose", bool(args.verbose))

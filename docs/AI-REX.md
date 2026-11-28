@@ -79,8 +79,9 @@ Order of precedence everywhere: flag > environment variable > default.
 | `--provider P` | `auto`, `openai`, `anthropic`, `gemini` | `AI_REX_PROVIDER` | `auto` |
 | `--api-key-env NAME` | name of the env var that holds the key (a key value is never a flag) | | |
 | `--system TEXT` / `@FILE` | extra system instructions | | |
+| `--profile LAYERS` | instruction layers, e.g. `programming/java` (repeatable or comma-separated; `auto`, `base`), see "How the agent is instructed" | `AI_REX_PROFILE` | `auto` (detected from the workspace) |
 | `--max-tokens N`, `--temperature X` | sampling limits | | provider default |
-| `--timeout S` | HTTP timeout in seconds | `AI_REX_TIMEOUT` | `60` |
+| `--timeout S` | HTTP timeout in seconds (per read; one agent step through a gateway can take minutes) | `AI_REX_TIMEOUT` | `600` |
 | `--no-tools` | plain chat, the model gets no tools | | tools on |
 | `--mcp-config PATH` | MCP servers from a JSON file (repeatable), see "MCP: using other tools" | `AI_REX_MCP_CONFIG` (paths, separated by `;` on Windows, `:` elsewhere) | |
 | `--mcp NAME=COMMAND` | one inline MCP server (repeatable) | | |
@@ -122,9 +123,25 @@ printed), `130` interrupted.
 | `AI_REX_API_KEY` | key for any provider |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` | provider-specific keys (used when `AI_REX_API_KEY` is unset) |
 | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | older names, still honoured as fallbacks |
+| `AI_REX_PROFILE` | instruction layers when `--profile` is not given |
 | `AI_REX_<SECTION>__<KEY>` | any engine setting, e.g. `AI_REX_AGENT__MAX_STEPS=30`, `AI_REX_SESSION__DIR=D:\sessions` |
 
 Keys are read only from the environment and are never printed or logged. Local kiko needs no key.
+
+## How the agent is instructed
+
+The system prompt is built from layers, general to specific: a base layer (work loop explore -> plan -> act ->
+verify -> report, keep going until done, honesty, ask before destructive actions, answer in the user's
+language), then `programming` (exploring code, using each tool, builds, tests, review report format), then a
+stack leaf such as `programming/java` or `programming/python`. Layers are detected from the workspace root
+(`pom.xml` -> Java, `pyproject.toml` -> Python, ...), chosen with `--profile` / `AI_REX_PROFILE` / an
+`ai-rex-profile:` line in AGENTS.md, and you can add or override layers in `~/.config/ai-rex/agents/`, the install
+folder's `agents/` or a trusted project's `.ai-rex/agents/`. `ai-rex profile` shows the tree and what is active,
+`ai-rex profile show` the composed text. Details: [AGENT-PROFILES.md](AGENT-PROFILES.md).
+
+On top come the skill index (built-in task skills `review-project`, `java-maven`, `python-project`,
+`code-review`, `write-tests`, `debug`, `commit-pr`; `ai-rex skills` lists them) and AGENTS.md (template:
+[AGENTS-TEMPLATE.md](AGENTS-TEMPLATE.md)).
 
 ## MCP: using other tools
 

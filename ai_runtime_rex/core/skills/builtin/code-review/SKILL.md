@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Review a diff for correctness bugs, edge cases, security and risky changes. Use when asked to review code, a diff, a branch or a pull request, or to check a change before merge.
+description: Review a diff for correctness bugs, edge cases, security and risky changes. Use when asked to review a diff, a commit, a branch or a pull request, or to check a change before merge.
 ---
 
 Review the changed code for defects that would bite in production. Report problems, not praise.

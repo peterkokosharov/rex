@@ -30,6 +30,7 @@ from ..tools.skills import LoadSkillTool, ReadSkillFileTool
 from ..skills import discover_skills, skill_index
 from ..trust import trust_workspace
 from .instructions import Instructions, load_instructions
+from ..profiles import Profile, build_profile
 from ..tools.base import Tool, ToolResult
 from ..guard import get_guard_client
 from ..session import SessionManager, create_session_manager
@@ -91,6 +92,7 @@ class AgentLoop:
 
     _instructions = Instructions()
     instruction_paths: list = []
+    profile: Optional[Profile] = None
 
     def __init__(
         self,
@@ -193,6 +195,11 @@ class AgentLoop:
                 trusted=trust_workspace(self.config),
             )
         self.instruction_paths = list(self._instructions.paths)
+        self.profile = build_profile(Path.cwd(), self.config,
+                                     agents_md="\n".join((self._instructions.project, self._instructions.user)))
+        if not self._quiet:
+            for w in self.profile.warnings:
+                print(f"WARNING: {w}", file=sys.stderr)
         self.system_prompt = self._build_system_prompt(include_tools=True)
         self.system_prompt_no_tools = self._build_system_prompt(include_tools=False)
 
@@ -291,24 +298,25 @@ class AgentLoop:
                     "Never paste Mermaid source or ASCII-art instead of calling the tool.\n"
                 )
 
-            return f"""You are Runtime, a coding agent that helps users with software development tasks.
+            profile = getattr(self, "profile", None)
+            if profile is None:  # built without __init__ (tests)
+                profile = self.profile = build_profile(Path.cwd(), self.config)
+            return f"""{profile.text()}
+
+Active profile: {profile.label()}
 
 You have access to the following tools:
 {chr(10).join(tool_descs)}
 
-Guidelines:
-- Use tools to accomplish tasks. Think before acting.
-- For file operations, prefer reading before writing. Read a file before editing it; the edit tool refuses files that were not read in this session.
-- For bash commands, explain what you're doing.
-- Be concise in your responses.
-- If you need to use a tool, call it. Don't describe what you would do.
-- You can chain multiple tool calls in one response.
+Tool use:
+- If you need a tool, call it; you can chain several tool calls in one response.
+- Read a file before editing it; the edit tool refuses files that were not read in this session.
 {diagram_block}- Maximum steps: {self.state.max_steps}
 {skills_block}
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 {self._instructions.section()}"""
         else:
-            return f"""You are Runtime, a helpful assistant. Answer questions concisely and accurately.
+            return f"""You are ai-rex, a helpful assistant. Answer questions concisely and accurately, in the language the user writes in.
 
 Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or "README.md". Never pass absolute paths like "/home/user/project/..." - the tool sandbox rejects them.
 {self._instructions.section()}"""

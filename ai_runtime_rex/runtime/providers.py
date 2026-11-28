@@ -206,7 +206,7 @@ def anthropic_events(events: Iterator[tuple[str, str]], model: str = "") -> Iter
     yield _chunk({}, finish=finish, usage=usage, model=model)
 
 
-def anthropic_chat(base_url: str, api_key: str, timeout: float = 60.0):
+def anthropic_chat(base_url: str, api_key: str, timeout: float = 600.0):
     url = base_url.rstrip("/").removesuffix("/v1") + "/v1/messages"
 
     def chat(body: dict):
@@ -334,7 +334,7 @@ def gemini_events(events: Iterator[tuple[str, str]], model: str = "",
     yield _chunk({}, finish=reason, usage=usage, model=model)
 
 
-def gemini_chat(base_url: str, api_key: str, timeout: float = 60.0):
+def gemini_chat(base_url: str, api_key: str, timeout: float = 600.0):
     root = base_url.rstrip("/")
     signatures: dict[str, Optional[str]] = {}  # per client: thoughtSignature of each functionCall it returned
 
@@ -357,6 +357,6 @@ def make_llm(config: Any) -> Any:
         return None
     from ai_runtime_rex.runtime.embed import GatewayLLM
 
-    timeout = float(lite.get("timeout", 60.0))
+    timeout = float(lite.get("timeout", 600.0))
     maker = anthropic_chat if kind == "anthropic" else gemini_chat
     return GatewayLLM(maker(lite["base_url"], lite["api_key"], timeout), lite["model"])

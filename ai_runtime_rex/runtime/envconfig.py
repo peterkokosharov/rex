@@ -12,7 +12,7 @@ No file is read or written. Precedence: flag/argument > environment > default. V
 - ``AI_REX_PORT``      port of the local gateway, default ``4000``
 - ``AI_REX_API_KEY``   API key; else the provider's own variable (``OPENAI_API_KEY``, ``ANTHROPIC_API_KEY``,
   ``GEMINI_API_KEY``), else ``LITELLM_API_KEY``. ``--api-key-env NAME`` names another variable. Local kiko needs none.
-- ``AI_REX_TIMEOUT``   HTTP timeout in seconds, default 60
+- ``AI_REX_TIMEOUT``   HTTP timeout in seconds, default 600 (one model step through a gateway can take minutes)
 - ``AI_REX_<SECTION>__<KEY>`` any other engine setting, e.g. ``AI_REX_AGENT__MAX_STEPS=30``
 
 Keys are only ever read from the environment; nothing here prints or logs them.

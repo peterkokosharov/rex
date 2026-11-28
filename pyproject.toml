@@ -25,6 +25,8 @@ include = ["ai_runtime_rex", "ai_runtime_rex.*", "runtime", "runtime.*", "runtim
 [tool.setuptools.package-data]
 # Built-in skills ship as data inside the package so they load by default from an installed wheel.
 "ai_runtime_rex.core.skills" = ["builtin/*/SKILL.md", "builtin/*/references/*"]
+# Built-in instruction layers (agents/ tree, see docs/AGENT-PROFILES.md).
+"ai_runtime_rex.core.profiles" = ["agents/LAYER.md", "agents/*/LAYER.md", "agents/*/*/LAYER.md", "agents/*/*/*/LAYER.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

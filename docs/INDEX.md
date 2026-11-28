@@ -26,6 +26,8 @@ All documentation except `README.md`, `RELEASE.md` and `AGENTS.md` (repository r
 | `docs/architecture/gemini-review-procedure.md` | How to run `scripts/review_architecture.py` (LLM review of the architecture doc) | current |
 | `docs/plans/2026-11-23-rex-gaps.md` | Plan and design record: permissions, hooks, edit, MCP, sessions, webfetch, context warning | current (mostly implemented, sessions wiring open) |
 | `docs/plans/2026-11-23-gateway-tool-calling.md` | Plan and status notes: tool calling through `scripts/claude_cli_gateway.py` | current (implemented, live run pending) |
+| `docs/AGENT-PROFILES.md` | Layered agent instructions (profiles): tree, selection, own layers, task skills | current |
+| `docs/AGENTS-TEMPLATE.md` | AGENTS.md template a project can drop in | current |
 | `docs/RENAME-AI-REX.md` | rex -> ai-rex rename: old/new names, migration, upgrade | current |
 | `docs/guard-docker.md` | Run the guard in Docker on Linux: build, docker group, uid, network | current |
 | `docs/history/original-task.md` | The original task statement | historical |
