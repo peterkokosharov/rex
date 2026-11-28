@@ -13,6 +13,7 @@ import importlib.util
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -269,3 +270,123 @@ def test_handler_code_block_mention_is_plain_content(make_srv):
     runner = Script(text)
     body = post(make_srv(runner), REQ)
     assert body["choices"][0]["message"]["content"] == text and len(runner.calls) == 1
+
+
+# ---------------------------------------------------------------- review: indented code blocks stay prose
+
+@pytest.mark.parametrize("text", [
+    "Here is how you call it, for example:\n\n" + "\n".join(
+        "    " + ln for ln in inv("fileops", [("operation", "read"), ("path", "pom.xml")]).split("\n")),
+    "\n".join("    " + ln for ln in RECORDED.split("\n")),
+    "Example:\n\t" + inv("fileops", [("operation", "read"), ("path", "pom.xml")], sep=""),
+])
+def test_markup_in_an_indented_code_block_is_prose(text):
+    content, calls = interp(text)
+    assert calls == [] and content == text
+    assert not gw.looks_like_native_call(text)
+
+
+def test_small_indent_is_still_a_call():
+    assert interp("  " + RECORDED)[1] == [READ_POM]
+
+
+# ---------------------------------------------------------------- salvage of a trailing envelope
+#
+# Recorded 2026-11-28 by the architect (deployed gateway, sonnet): a broken native stub, then a valid
+# envelope in a ```json fence. It was neither an envelope nor native markup, the nudge failed too and
+# the text went back as a normal answer (finish_reason stop), so rex ended the turn.
+
+LOAD_SKILL = {"type": "function", "function": {
+    "name": "load_skill", "description": "Load a skill.",
+    "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}}
+FENCE = "`" * 3
+TRACE = (tag("invoke", "load_skill") + "\n" + tag("invoke", close=True) + "\n" + tag("invoke", close=True)
+         + "\n\n" + FENCE + "json\n"
+         + '{"tool_calls":[{"name":"load_skill","arguments":{"name":"code-review"}}]}\n' + FENCE)
+assert TRACE == ('\x3cinvoke name="load_skill">\n\x3c/invoke>\n\x3c/invoke>\n\n```json\n'
+                 '{"tool_calls":[{"name":"load_skill","arguments":{"name":"code-review"}}]}\n```')
+SKILL_CALL = ("load_skill", {"name": "code-review"})
+ENV_SKILL = '{"tool_calls":[{"name":"load_skill","arguments":{"name":"code-review"}}]}'
+
+
+def test_trace_is_salvaged_without_the_broken_stub():
+    content, calls = interp(TRACE, tools=TOOLS + [LOAD_SKILL])
+    assert calls == [SKILL_CALL] and not content
+
+
+@pytest.mark.parametrize("text, content", [
+    ("I'll load the skill.\n" + ENV_SKILL, "I'll load the skill."),
+    ("I'll load the skill.\n\n" + FENCE + "\n" + ENV_SKILL + "\n" + FENCE + "\n", "I'll load the skill."),
+    (FENCE + "json\n" + ENV_SKILL + "\n" + FENCE, None),
+    ("Loading.\n" + '{"content":"note","tool_calls":[{"name":"load_skill","arguments":{"name":"code-review"}}]}',
+     "note"),
+])
+def test_trailing_envelope_is_salvaged(text, content):
+    got, calls = interp(text, tools=TOOLS + [LOAD_SKILL])
+    assert calls == [SKILL_CALL] and (got or None) == content
+
+
+@pytest.mark.parametrize("text", [
+    "Sure: " + ENV_SKILL,                                            # not at a line start
+    "Example:\n" + ENV_SKILL + "\nThat is the format.",              # text after it
+    "Example:\n" + FENCE + "json\n" + ENV_SKILL + "\n" + FENCE + "\nThat is the format.",
+    "Note:\n" + ENV_SKILL[:-1],                                      # broken JSON
+    "First:\n" + ENV_SKILL + "\nor:\n" + ENV_SKILL,                  # more than one envelope
+    "Two:\n" + FENCE + "\n" + ENV_SKILL + "\n" + FENCE + "\n" + FENCE + "\n" + ENV_SKILL + "\n" + FENCE,
+    "Done:\n" + '{"content":"only text"}',                           # no tool calls
+])
+def test_not_salvaged(text):
+    content, calls = interp(text, tools=TOOLS + [LOAD_SKILL])
+    assert calls == [] and content == text
+
+
+def test_salvaged_envelope_is_validated():
+    with pytest.raises(gw.ProtocolError, match="unknown tool"):
+        interp("Running it.\n" + '{"tool_calls":[{"name":"bash","arguments":{"command":"ls"}}]}')
+    with pytest.raises(gw.ProtocolError, match="required"):
+        interp("Loading.\n" + '{"tool_calls":[{"name":"load_skill","arguments":{}}]}', tools=TOOLS + [LOAD_SKILL])
+
+
+# ---------------------------------------------------------------- a failed nudge after an attempted call is an error
+
+BROKEN = tag("invoke", "load_skill") + "\n" + tag("invoke", close=True) + "\n" + tag("invoke", close=True)
+
+
+def test_handler_trace_gives_tool_calls(make_srv):
+    runner = Script(TRACE)
+    body = post(make_srv(runner), {**REQ, "tools": TOOLS + [LOAD_SKILL]})
+    assert _calls(body) == [SKILL_CALL] and len(runner.calls) == 1
+
+
+def test_handler_broken_call_twice_is_502_not_stop(make_srv):
+    runner = Script(BROKEN, BROKEN)
+    srv = make_srv(runner)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{srv.server_address[1]}/v1/chat/completions",
+        data=json.dumps({**REQ, "tools": TOOLS + [LOAD_SKILL]}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        urllib.request.urlopen(req, timeout=20)
+    assert ei.value.code == 502
+    err = json.loads(ei.value.read())["error"]
+    assert err["type"] == "tool_protocol_error" and "could not be read" in err["message"]
+    assert len(runner.calls) == 2
+
+
+def test_broken_call_without_time_to_nudge_is_504():
+    now = [0.0]
+
+    def runner(prompt, model, binary, timeout):
+        now[0] += 295
+        return {"text": BROKEN, "usage": {}}
+
+    with pytest.raises(gw.GatewayError) as ei:
+        gw.run_tool_turn(runner, "P", "sonnet", "claude", 300, spec(tools=TOOLS + [LOAD_SKILL]),
+                         clock=lambda: now[0])
+    assert ei.value.status == 504
+
+
+def test_refusal_prose_still_keeps_the_first_answer_when_the_nudge_fails(make_srv):
+    runner = Script("No such tool available: bash", "Still no.")
+    body = post(make_srv(runner), REQ)
+    assert body["choices"][0]["message"]["content"] == "No such tool available: bash"

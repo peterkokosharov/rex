@@ -213,8 +213,16 @@ def test_string_arguments_holding_an_object_are_accepted():
         gw.validate_envelope({"tool_calls": [{"name": "bash", "arguments": "ls"}]}, s)
 
 
-def test_prose_wrapping_an_envelope_is_nudged_once(fake, base):
-    fake.script("I'll read the file first.\n" + REC_READ, REC_READ)
+def test_prose_then_envelope_on_its_own_line_is_salvaged(fake, base):
+    fake.script("I'll read the file first.\n" + REC_READ)
+    body = post(base(), {"model": "haiku", "messages": [USER], "tools": TOOLS})
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    assert body["choices"][0]["message"]["content"] == "I'll read the file first."
+    assert len(fake.calls()) == 1
+
+
+def test_prose_wrapping_an_envelope_inline_is_nudged_once(fake, base):
+    fake.script("I'll read the file first: " + REC_READ, REC_READ)
     body = post(base(), {"model": "haiku", "messages": [USER], "tools": TOOLS})
     assert body["choices"][0]["finish_reason"] == "tool_calls"
     calls = fake.calls()

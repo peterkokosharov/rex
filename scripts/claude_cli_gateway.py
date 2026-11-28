@@ -635,6 +635,15 @@ _NATIVE_NAME_RE = re.compile(r'\s+name\s*=\s*"([^"]*)"\s*')
 _NATIVE_HINT_RE = re.compile(r"<\s*(?:" + _NATIVE_NS + r")?(?:function_calls\s*>|invoke\s+name\s*=)")
 _FENCED_BLOCK_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 _WRAPPERS = ("function_calls", "tool_calls")
+_LEADING_BLANK_LINES_RE = re.compile(r"\A(?:[ \t]*\r?\n)+")
+_TOOL_CALLS_KEY_RE = re.compile(r'"tool_calls"\s*:')
+_LINE_BRACE_RE = re.compile(r"^[ \t]*(\{)", re.MULTILINE)
+_INDENTED_LINE_RE = re.compile(r"^(?: {4}|[ ]{0,3}\t).*$", re.MULTILINE)
+
+
+def _code_indent(indent: str) -> bool:
+    """Leading whitespace that makes a Markdown indented code block (4+ spaces or a tab)."""
+    return "\t" in indent or len(indent) >= 4
 
 
 def _native_value(raw: str, schema: Any) -> Any:
@@ -657,15 +666,15 @@ def parse_native(text: str, spec: ToolSpec) -> dict[str, Any] | None:
     Raises ProtocolError for a duplicate parameter. Names and arguments are checked later by
     validate_envelope, exactly as for an envelope.
     """
-    s = (text or "").strip()
+    s = _LEADING_BLANK_LINES_RE.sub("", (text or "").rstrip())  # keep the first line's indentation
     start = None
     for m in _NATIVE_TAG_RE.finditer(s):
         if m.group(1) or m.group(2) == "parameter":
             continue
-        before = s[:m.start()].rstrip(" \t")
-        if not before or before.endswith("\n"):
+        indent = s[s.rfind("\n", 0, m.start()) + 1:m.start()]
+        if not indent.strip() and not _code_indent(indent):
             start = m
-        break
+        break  # the first opening tag decides: inline, or in an indented code block -> prose
     if start is None:
         return None
     prose = s[:start.start()].strip()
@@ -730,8 +739,55 @@ def parse_native(text: str, spec: ToolSpec) -> dict[str, Any] | None:
 
 
 def looks_like_native_call(text: str) -> bool:
-    """Native call markup outside ``` code blocks (that did not parse as the reply's tool part)."""
-    return bool(_NATIVE_HINT_RE.search(_FENCED_BLOCK_RE.sub("", text or "")))
+    """Native call markup outside code blocks (``` fenced or indented); used when it did not parse."""
+    return bool(_NATIVE_HINT_RE.search(_INDENTED_LINE_RE.sub("", _FENCED_BLOCK_RE.sub("", text or ""))))
+
+
+def looks_like_attempted_call(text: str) -> bool:
+    """Unparsed native markup or an envelope inside prose: the model tried to call a tool."""
+    return looks_like_native_call(text) or bool(_EMBEDDED_ENVELOPE_RE.search(text or ""))
+
+
+def salvage_envelope(text: str) -> dict[str, Any] | None:
+    """A single valid-looking envelope that ends the reply, fenced or bare, with prose before it.
+
+    Seen 2026-11-28: a broken native stub followed by a correct envelope in a ```json block. The
+    envelope must be the only one in the reply, start on its own line (an opening fence or the '{'
+    itself, not in an indented or open code block), parse strictly (parse_envelope) and hold tool
+    calls; nothing may follow it. The prose before it becomes the content unless it is itself call
+    markup. The result still goes through validate_envelope.
+    """
+    s = (text or "").rstrip()
+    keys = list(_TOOL_CALLS_KEY_RE.finditer(s))
+    if len(keys) != 1:
+        return None
+    if s.endswith("```"):
+        close = len(s) - 3
+        open_ = s.rfind("```", 0, close)
+        header_end = s.find("\n", open_) if open_ >= 0 else -1
+        if header_end < 0 or header_end > close or s[open_ + 3:header_end].strip().lower() not in ("", "json"):
+            return None
+        start, body = open_, s[header_end + 1:close]
+    else:
+        braces = [m.start(1) for m in _LINE_BRACE_RE.finditer(s, 0, keys[0].start())]
+        if not braces:
+            return None
+        start = braces[-1]
+        body = s[start:]
+    indent = s[s.rfind("\n", 0, start) + 1:start]
+    prose = s[:start]
+    if indent.strip() or _code_indent(indent) or prose.count("```") % 2:
+        return None
+    try:
+        envelope = parse_envelope(body)
+    except ProtocolError:
+        return None
+    if not envelope or not envelope.get("tool_calls"):
+        return None
+    prose = prose.strip()
+    if not envelope.get("content") and prose and not looks_like_native_call(prose):
+        envelope = {**envelope, "content": prose}
+    return envelope
 
 
 def build_command(claude_bin: str | list[str], model: str, setting_sources: bool = False,
@@ -960,6 +1016,10 @@ def interpret_reply(result: dict[str, Any], spec: ToolSpec,
         if envelope is not None:
             info["form"] = "native"
             return validate_envelope(envelope, spec)
+        envelope = salvage_envelope(text)
+        if envelope is not None:
+            info["form"] = "salvaged"
+            return validate_envelope(envelope, spec)
         info["form"] = "text"
         if not text.strip():
             raise ProtocolError("empty reply: give tool_calls or content")
@@ -1049,9 +1109,18 @@ def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout
             stats.update(content=content, calls=calls, form=info.get("form"))
             if (attempt == 1 and not calls and spec.choice == "auto" and content
                     and info.get("form") == "text" and wants_nudge(content)):
+                attempted = looks_like_attempted_call(content)
+                if attempted and deadline - clock() < MIN_RETRY_SECONDS:
+                    raise GatewayError(504, "the model wrote a tool call that could not be read and too little "
+                                       "time is left to ask again; nothing was run", "timeout",
+                                       "reason=unreadable tool call")
                 nudged = _nudge_once(runner, prompt, model, claude_bin, deadline - clock(), spec, run_kw, stats)
                 if nudged is not None:
                     return nudged
+                if attempted:  # never hand a broken call back as a normal final answer
+                    raise GatewayError(502, "the model wrote a tool call that could not be read, also after "
+                                       "one reminder; nothing was run", "tool_protocol_error",
+                                       "reason=unreadable tool call")
             return stats
         if attempt == 2:
             break
@@ -1238,11 +1307,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _tool_log(spec: ToolSpec | None, turn: dict[str, Any]) -> str:
-        """Counts only (never prompt or argument text): tools=N calls=K retry=0/1 [form=native]."""
+        """Counts only (never prompt or argument text): tools=N calls=K retry=0/1 [form=native|salvaged]."""
         if spec is None:
             return ""
         line = f"tools={len(spec.tools)} calls={len(turn.get('calls') or [])} retry={turn.get('retries', 0)}"
-        return line + " form=native" if turn.get("form") == "native" else line
+        form = turn.get("form")
+        return f"{line} form={form}" if form in ("native", "salvaged") else line
 
 
 class GatewayServer(ThreadingHTTPServer):

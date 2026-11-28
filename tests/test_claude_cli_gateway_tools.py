@@ -611,14 +611,14 @@ def test_forced_tool_not_used(make_srv):
     assert len(runner.calls) == 2
 
 
-def test_prose_before_brace_under_auto_is_content(make_srv):
-    """The embedded JSON is never extracted; one nudge asks for a clean envelope, prose is kept if it fails."""
+def test_prose_before_brace_is_nudged_then_502(make_srv):
+    """JSON inline in prose is never extracted; one nudge asks for a clean envelope. If that fails too,
+    the broken call is a protocol error (502), never a normal final answer (2026-11-28)."""
     text = 'Sure: {"tool_calls":[{"name":"fileops","arguments":{}}]}'
     runner = Script(text, text)
     srv = make_srv(runner)
-    with post(srv, REQ) as r:
-        msg = json.load(r)["choices"][0]["message"]
-    assert msg == {"role": "assistant", "content": text}
+    code, body = post_error(srv, REQ)
+    assert code == 502 and body["error"]["type"] == "tool_protocol_error"
     assert len(runner.calls) == 2
 
 
