@@ -413,6 +413,8 @@ Workspace: the current directory. Use RELATIVE paths such as "src/Main.java" or 
 
             # Check for tool calls
             if response.tool_calls:
+                if response.content and response.content.strip() and not response.content.endswith("\n"):
+                    self.on_token("\n\n")  # a progress note is not glued to the next step's text
                 self._execute_tool_calls(response.tool_calls)
                 ran_tools = True
                 continue

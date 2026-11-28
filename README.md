@@ -135,7 +135,7 @@ AI_REX_LITELLM__MODEL=gemini-lite \
 python3 -m runtime
 ```
 
-REPL commands: `/help`, `/model <name>`, `/models`, `/context`, `/reset`, `/clear`, `/verbose on|off`, `/local on|off`, `/doctor`, `/exit` (`/quit`, `/q`).
+REPL commands: `/help`, `/model <name>`, `/models`, `/timeout [N]` (HTTP timeout per model step, default 600 s), `/context`, `/reset`, `/clear`, `/verbose on|off`, `/local on|off`, `/doctor`, `/exit` (`/quit`, `/q`).
 
 #### Context between requests
 
@@ -143,7 +143,7 @@ The REPL keeps one `AgentLoop`, so every prompt sees the previous user and assis
 context; `/clear` only clears the screen. Step budgets and interrupt flags are per-request, so a long first task or a
 Ctrl+C cannot block the next prompt.
 
-Use `/context` to see the estimated token count, the selected model's window and the auto-compact threshold.
+A failed or timed-out step prints one error line and keeps the conversation; a line that looks like the `ai-rex` launch command (or starts with `--`) is not sent to the model. Use `/context` to see the estimated token count, the selected model's window and the auto-compact threshold.
 
 #### Shell escape in the prompt
 

@@ -400,8 +400,62 @@ def _on_context(status: dict[str, Any], quiet: bool = False) -> None:
         )
 
 
+_LAUNCH_NAMES = ("ai-rex", "ai-rex.cmd", "ai-rex.exe", "ai-rex.bat", "ai-rex.sh")
+LAUNCH_HINT = ("You are already inside ai-rex; this line was not sent to the model. To change the HTTP timeout "
+               "use /timeout N, to change the model /model NAME; other flags need a restart.")
+CONTINUE_NOTE = "the conversation is kept, type to continue"
+
+
+def looks_like_launch_line(line: str) -> bool:
+    """True for a REPL line that is an ai-rex command line (``...\\ai-rex.cmd --timeout 600``) or starts with ``--``."""
+    text = line.strip()
+    if text.startswith("--"):
+        return True
+    first = text.split()[0].strip("\"'") if text else ""
+    name = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name in _LAUNCH_NAMES
+
+
+def step_error_message(exc: BaseException, config: Any) -> str:
+    """One line for a failed model step; a timeout says how to raise the limit."""
+    from kikolib.http import HttpTimeout
+    text = str(exc) or exc.__class__.__name__
+    if isinstance(exc, (HttpTimeout, TimeoutError)) or "timed out" in text.lower():
+        seconds = config.get("liteLLM.timeout") or 600
+        return (f"model step timed out after {float(seconds):g} s (use /timeout N, or start with --timeout N / "
+                f"AI_REX_TIMEOUT); {CONTINUE_NOTE}")
+    return f"{text} ({CONTINUE_NOTE})"
+
+
+EMPTY_TURN_NOTE = ("the model ended the turn without an answer (no text after the tool steps); "
+                   f"{CONTINUE_NOTE}, e.g. 'continue'")
+
+
 def register_core_commands(registry: CommandRegistry, config: Config) -> None:
     """Register core slash commands."""
+
+    @registry.register("timeout", "Show or set the HTTP timeout per model step in seconds (/timeout 600)")
+    def cmd_timeout(args: dict[str, Any]) -> int:
+        value = args.get("_0") or args.get("seconds")
+        current = config.get("liteLLM.timeout") or 600
+        if not value:
+            print(f"timeout: {float(current):g} s")
+            return 0
+        try:
+            seconds = float(value)
+            if seconds <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            print("Usage: /timeout N   (seconds, > 0)")
+            return 1
+        config.set("liteLLM.timeout", seconds)
+        loop = _REPL_LOOP
+        if loop is not None:
+            # A new client picks the value up; the conversation stays.
+            from runtimelib.llm import LiteLLMClient
+            loop.llm = _llm_factory(config)() or LiteLLMClient.from_config(config)
+        print(f"timeout: {seconds:g} s")
+        return 0
 
     @registry.register("help", "Show help for commands")
     def cmd_help(args: dict[str, Any]) -> int:
@@ -535,7 +589,8 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
         print(
             f"messages: {usage['messages']}  tokens: ~{usage['used']} (overhead ~{usage['overhead']})  "
             f"window: {usage['window']}  auto-compact at: {usage['threshold']} ({pct}% used)  "
-            f"turn: {usage['turn']}  model: {config.get('liteLLM.model')}"
+            f"turn: {usage['turn']}  model: {config.get('liteLLM.model')}  "
+            f"timeout: {float(config.get('liteLLM.timeout') or 600):g} s"
         )
         return 0
 
@@ -657,7 +712,7 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
             if as_json:
                 print(json.dumps({"ok": False, "error": str(e), "events": events}, ensure_ascii=False))
             else:
-                renderer.error(str(e))
+                renderer.error(step_error_message(e, config))
             return 1
 
         if as_json:
@@ -673,6 +728,8 @@ def register_core_commands(registry: CommandRegistry, config: Config) -> None:
                     print(text)
             else:
                 renderer.final(response)
+            if not (response or "").strip():
+                renderer.warn(EMPTY_TURN_NOTE)  # never a silent stop
         return 0
 
     @registry.register("exit", "Exit ai-rex", aliases=["quit", "q"])
@@ -730,7 +787,7 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
     print(ansi.bold("ai-rex") + ansi.gray(f"  model={model}  endpoint={base}"))
     if tool_note:
         print(ansi.gray(tool_note))
-    print(ansi.gray("Commands: /help /model /models /context /reset /shell /mcp /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
+    print(ansi.gray("Commands: /help /model /models /timeout /context /reset /shell /mcp /doctor /exit  |  ! <command> runs locally  |  Ctrl+C interrupts, Ctrl+D exits"))
     print(ansi.gray("─" * min(80, ansi.term_width())))
 
     while True:
@@ -745,6 +802,10 @@ def run_interactive(registry: CommandRegistry, config: Config, tool_note: Option
             continue
 
         if not line:
+            continue
+
+        if looks_like_launch_line(line):
+            print(ansi.yellow(LAUNCH_HINT))
             continue
 
         if is_shell_line(line):
