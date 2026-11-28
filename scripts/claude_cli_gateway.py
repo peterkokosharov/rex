@@ -11,17 +11,21 @@ Lets rex (or any OpenAI-compatible client) use a Claude model through the
 locally logged-in `claude` CLI, without an API key.
 
 Tools are emulated, executed by the client: `claude` itself always runs with
-its own tools disabled (`--tools ""`). When a request has `tools` (and
+its own tools disabled (`--tools ""`, plus `--permission-mode dontAsk` and
+`--disable-slash-commands` when the CLI lists them), so the model can never act
+on the gateway machine by itself. When a request has `tools` (and
 tool_choice is not "none"), the gateway describes them in the prompt, asks for
 a JSON envelope {"tool_calls":[...]} or {"content":...}, checks the proposed
 calls against the tool schemas (one retry for a broken reply) and returns them
 as OpenAI `tool_calls` with finish_reason "tool_calls". The client runs the
 tools and sends the results back as role=tool messages, which the gateway
-shows to the model as untrusted data.
+shows to the model as untrusted data. The envelope is read from the CLI's plain
+text reply; `--json-schema` is not passed by default, because the CLI then forces
+its own StructuredOutput tool and the model can lose the call (2026-11-28).
 
 Usage:
     python scripts/claude_cli_gateway.py [--port 4000] [--default-model haiku] [--token-file F]
-                                         [--max-concurrent 4] [--allow-unsafe] [--no-json-schema]
+                                         [--max-concurrent 4] [--allow-unsafe] [--json-schema]
 
 The token comes from --token-file F, else --token T (visible in the process
 list, so a warning is printed), else the AI_REX_GATEWAY_TOKEN environment variable
@@ -62,8 +66,14 @@ from typing import Any
 
 
 def _load_procutil() -> Any:
-    """Load ai_runtime_rex/core/procutil.py by path (stdlib only; avoids importing the whole runtime package)."""
-    path = Path(__file__).resolve().parent.parent / "ai_runtime_rex" / "core" / "procutil.py"
+    """Load procutil.py by path (stdlib only; avoids importing the whole runtime package).
+
+    In the repo it is ai_runtime_rex/core/procutil.py; a portable install (kiko) puts it in
+    runtimelib/procutil.py next to scripts/.
+    """
+    root = Path(__file__).resolve().parent.parent
+    candidates = (root / "ai_runtime_rex" / "core" / "procutil.py", root / "runtimelib" / "procutil.py")
+    path = next((c for c in candidates if c.is_file()), candidates[0])
     spec = importlib.util.spec_from_file_location("_gateway_procutil", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -528,6 +538,28 @@ def coerce_integers(value: Any, schema: Any, _depth: int = 0) -> Any:
 _CALL_KEYS = frozenset({"name", "arguments", "id", "type"})
 
 
+def _normalise_call(call: dict[str, Any], i: int) -> dict[str, Any]:
+    """Repair two harmless shapes without a retry; everything is still validated afterwards.
+
+    * the OpenAI shape {"id", "type", "function": {"name", "arguments"}} -> {"name", "arguments"}
+    * arguments given as a JSON string that holds an object -> that object
+    """
+    if "function" in call and "name" not in call and isinstance(call["function"], dict):
+        fn = call["function"]
+        if set(call) - {"function", "id", "type"} or set(fn) - {"name", "arguments"}:
+            raise ProtocolError(f"tool call {i}: unknown keys; use only name and arguments")
+        call = {"name": fn.get("name"), "arguments": fn.get("arguments", {})}
+    args = call.get("arguments")
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args) if args.strip() else {}
+        except (ValueError, RecursionError):
+            parsed = None
+        if isinstance(parsed, dict):
+            call = {**call, "arguments": parsed}
+    return call
+
+
 def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | None, list[tuple[str, dict]]]:
     """Check an envelope against the request's tools; return (content, [(name, arguments)]).
 
@@ -549,6 +581,7 @@ def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | N
     for i, call in enumerate(raw_calls, 1):
         if not isinstance(call, dict):
             raise ProtocolError(f"tool call {i} must be an object")
+        call = _normalise_call(call, i)
         extra = sorted(set(call) - _CALL_KEYS)
         if extra:
             raise ProtocolError(f"tool call {i}: unknown key {json.dumps(extra[0][:64])}; "
@@ -578,8 +611,15 @@ def validate_envelope(envelope: dict[str, Any], spec: ToolSpec) -> tuple[str | N
 
 def build_command(claude_bin: str | list[str], model: str, setting_sources: bool = False,
                   safe_mode: bool = False, system_prompt: str | None = None,
-                  json_schema: dict[str, Any] | None = None) -> list[str]:
+                  json_schema: dict[str, Any] | None = None, dont_ask: bool = False,
+                  no_slash: bool = False) -> list[str]:
     """Argument list for one non-interactive, tool-less Claude call.
+
+    Built-in tools are always off (`--tools ""`, `--strict-mcp-config`, never `--mcp-config`).
+    ``dont_ask`` adds `--permission-mode dontAsk` (anything not pre-approved is denied; nothing is
+    pre-approved) and ``no_slash`` adds `--disable-slash-commands` (no skills); both are passed
+    when the startup probe lists the flag. Checked live with CLI 2.1.332: the session's init event
+    then reports tools [], mcp_servers [], skills [] and permissionMode dontAsk.
 
     ``safe_mode`` (`--safe-mode`) disables all customizations, including the
     user's global CLAUDE.md, memory, hooks and settings, while keeping the
@@ -604,6 +644,10 @@ def build_command(claude_bin: str | list[str], model: str, setting_sources: bool
         cmd += ["--setting-sources", "user"]
     if system_prompt:
         cmd += ["--system-prompt", system_prompt]
+    if dont_ask:
+        cmd += ["--permission-mode", "dontAsk"]
+    if no_slash:
+        cmd.append("--disable-slash-commands")
     if json_schema is not None:
         cmd += ["--json-schema", json.dumps(json_schema, separators=(",", ":"))]
     return cmd
@@ -648,7 +692,8 @@ def run_claude(prompt: str, model: str, claude_bin: str | list[str], timeout: fl
     """
     flags = flags or frozenset()
     cmd = build_command(claude_bin, model, "--setting-sources" in flags, "--safe-mode" in flags,
-                        system_prompt, json_schema)
+                        system_prompt, json_schema, dont_ask="--permission-mode" in flags,
+                        no_slash="--disable-slash-commands" in flags)
     workdir = tempfile.mkdtemp(prefix="claude-gw-")
     try:
         proc = subprocess.Popen(
@@ -808,6 +853,16 @@ def looks_like_tool_refusal(text: str) -> bool:
     return bool(_REFUSAL_RE.search(text[:600]))
 
 
+# An envelope written inside prose ("I'll read it: {"tool_calls": ...}"). It is never extracted (text
+# before the first '{' is not searched for calls); the model is asked once for a clean envelope.
+_EMBEDDED_ENVELOPE_RE = re.compile(r'\{\s*"tool_calls"\s*:')
+
+
+def wants_nudge(text: str) -> bool:
+    """Prose that refuses or announces a tool, or wraps an envelope: worth one nudge."""
+    return looks_like_tool_refusal(text) or bool(_EMBEDDED_ENVELOPE_RE.search(text))
+
+
 def _nudge_once(runner: Any, prompt: str, model: str, claude_bin: str, budget: float, spec: ToolSpec,
                 run_kw: dict[str, Any] | None, stats: dict[str, Any]) -> dict[str, Any] | None:
     """One retry with a short nudge after a prose refusal; None keeps the first (prose) answer."""
@@ -856,7 +911,7 @@ def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout
             if (attempt == 1 and not calls and spec.choice == "auto" and content
                     and not str(result.get("text") or "").lstrip().startswith("{")
                     and not isinstance(result.get("structured"), dict)
-                    and looks_like_tool_refusal(content)):
+                    and wants_nudge(content)):
                 nudged = _nudge_once(runner, prompt, model, claude_bin, deadline - clock(), spec, run_kw, stats)
                 if nudged is not None:
                     return nudged
@@ -1073,12 +1128,13 @@ def make_server(port: int = DEFAULT_PORT, default_model: str = DEFAULT_MODEL,
                 claude_bin: str | None = None, timeout: float = DEFAULT_TIMEOUT,
                 runner: Any = None, token: str | None = None, flags: Any = None,
                 max_concurrent: int = DEFAULT_MAX_CONCURRENT,
-                json_schema: bool = True) -> ThreadingHTTPServer:
+                json_schema: bool = False) -> ThreadingHTTPServer:
     """Create the server bound to 127.0.0.1 (never another interface).
 
     ``claude_bin`` may be a list (a fake CLI in tests). In tool mode the runner gets
-    ``tool_run_kw``: the short --system-prompt line and, unless ``json_schema`` is False,
-    the fixed envelope --json-schema, each only when the startup probe lists the flag.
+    ``tool_run_kw``: the short --system-prompt line and, only when ``json_schema`` is True
+    (off by default: the CLI's forced StructuredOutput tool can swallow the call), the fixed
+    envelope --json-schema, each only when the startup probe lists the flag.
     """
     server = GatewayServer((HOST, port), GatewayHandler)
     server.daemon_threads = True
@@ -1137,9 +1193,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="at most this many claude processes at once (default %(default)s)")
     parser.add_argument("--allow-unsafe", action="store_true",
                         help="start even when 'claude --help' cannot be probed (privacy flags unknown)")
-    parser.add_argument("--no-json-schema", action="store_true",
-                        help="in tool mode do not pass the fixed envelope schema with --json-schema "
-                             "(the reply is then parsed from plain text only)")
+    schema = parser.add_mutually_exclusive_group()
+    schema.add_argument("--json-schema", dest="json_schema", action="store_true", default=False,
+                        help="in tool mode also pass the fixed envelope schema with --json-schema "
+                             "(not recommended: the CLI then forces its StructuredOutput tool and the "
+                             "model can lose the tool call)")
+    schema.add_argument("--no-json-schema", dest="json_schema", action="store_false",
+                        help="the default: parse the envelope from the plain text reply only")
     args = parser.parse_args(argv)
     if args.max_concurrent < 1:
         parser.error("--max-concurrent must be at least 1")
@@ -1167,7 +1227,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server = make_server(args.port, args.default_model, claude_bin, args.timeout, token=token,
                              flags=flags, max_concurrent=args.max_concurrent,
-                             json_schema=not args.no_json_schema)
+                             json_schema=args.json_schema)
     except OSError as exc:
         winerror = getattr(exc, "winerror", None)
         if exc.errno in _ADDR_IN_USE or winerror == 10048:

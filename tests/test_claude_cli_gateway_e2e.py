@@ -136,7 +136,7 @@ def test_tool_mode_argv_stays_toolless(fake, gateway, flags):
         assert "--strict-mcp-config" in argv and "--safe-mode" in argv
         assert "--mcp-config" not in argv and "--setting-sources" not in argv
         assert not any(a.startswith("--allowed") or a.startswith("--permission") for a in argv)
-    assert ("--json-schema" in tool_call["argv"]) == ("--json-schema" in flags)
+    assert "--json-schema" not in tool_call["argv"]  # opt-in only since 2026-11-28
     assert ("--system-prompt" in tool_call["argv"]) == ("--system-prompt" in flags)
     assert "--json-schema" not in chat_call["argv"] and "--system-prompt" not in chat_call["argv"]
     if "--system-prompt" in flags:
@@ -241,7 +241,7 @@ def test_agent_loop_round_trip(fake, gateway, flags):
 
 @pytest.mark.skipif(os.environ.get("REX_LIVE_CLAUDE") != "1",
                     reason="live test: set REX_LIVE_CLAUDE=1 (uses the logged-in claude CLI, model haiku)")
-@pytest.mark.parametrize("use_schema", [True, False], ids=["json-schema", "plain-parser"])
+@pytest.mark.parametrize("use_schema", [False], ids=["plain-parser"])  # --json-schema: opt-in, known to lose calls
 def test_live_echo_round_trip(use_schema, monkeypatch):
     for key, value in _REAL_HOME.items():  # undo the conftest home isolation: the CLI needs its login
         monkeypatch.setenv(key, value)

@@ -252,3 +252,17 @@ Sources:
 - `tests/test_claude_cli_gateway.py`, test names and runner stub (read 2026-11-23)
 - `scripts/rex-claude-cli.example.yaml` (read 2026-11-23)
 - `claude --help`, Claude Code 2.1.328 (run 2026-11-23)
+
+**Fix (2026-11-28): `--json-schema` is off by default; built-ins locked harder.** Through kiko (rex ->
+kiko-lite :4000 -> gateway :4100) haiku and sonnet answered "the file-reading tool isn't available". A
+stream-json trace of the gateway's own argv showed why: under `--json-schema` the CLI's only tool is
+StructuredOutput. The model wrote a correct envelope as text; the CLI then injected
+"[structured-output-enforce] You MUST call the StructuredOutput tool" and the model answered through
+StructuredOutput with prose, so `structured_output` held `{"content": "...not available..."}` and the call was
+lost. Without `--json-schema` both models gave the clean envelope as text. Changes: `--json-schema` is opt-in
+(`--json-schema`; `--no-json-schema` is the default and still accepted); `--permission-mode dontAsk` and
+`--disable-slash-commands` are added when probed (live init event: tools [], mcp_servers [], skills [],
+permissionMode dontAsk); OpenAI-shaped calls and JSON-string arguments are repaired without a retry; prose
+that wraps an envelope gets the one nudge; procutil is found in `ai_runtime_rex/core/` or `runtimelib/` (kiko
+install layout). Tests: `tests/test_claude_cli_gateway_relay.py` (fake CLI with recorded replies, plus a live
+check of the CLI's tool list under `REX_LIVE_CLAUDE=1`).

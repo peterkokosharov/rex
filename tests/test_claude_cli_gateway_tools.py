@@ -308,7 +308,7 @@ def test_validate_missing_arguments_means_empty_object():
 @pytest.mark.parametrize("env, kw, reason", [
     ({"tool_calls": [{"name": "rm", "arguments": {}}]}, {}, "unknown tool"),
     ({"tool_calls": [{"arguments": {}}]}, {}, "no 'name'"),
-    ({"tool_calls": [{"name": "echo", "arguments": "{\"text\":\"x\"}"}]}, {}, "must be a JSON object"),
+    ({"tool_calls": [{"name": "echo", "arguments": "text=x"}]}, {}, "must be a JSON object"),
     ({"tool_calls": [{"name": "echo", "arguments": {}}]}, {}, "arguments.text is required"),
     ({"tool_calls": [{"name": "fileops", "arguments": {"operation": "delete", "path": "a"}}]}, {},
      "allowed values"),
@@ -612,13 +612,14 @@ def test_forced_tool_not_used(make_srv):
 
 
 def test_prose_before_brace_under_auto_is_content(make_srv):
+    """The embedded JSON is never extracted; one nudge asks for a clean envelope, prose is kept if it fails."""
     text = 'Sure: {"tool_calls":[{"name":"fileops","arguments":{}}]}'
-    runner = Script(text)
+    runner = Script(text, text)
     srv = make_srv(runner)
     with post(srv, REQ) as r:
         msg = json.load(r)["choices"][0]["message"]
     assert msg == {"role": "assistant", "content": text}
-    assert len(runner.calls) == 1
+    assert len(runner.calls) == 2
 
 
 def test_prose_under_required_is_retried(make_srv):
@@ -770,6 +771,8 @@ def test_main_no_json_schema_switch():
         assert gw.main(["--port", "4000", "--no-json-schema"]) == 0
         assert ms.call_args.kwargs["json_schema"] is False
         assert gw.main(["--port", "4000"]) == 0
+        assert ms.call_args.kwargs["json_schema"] is False  # off by default since 2026-11-28
+        assert gw.main(["--port", "4000", "--json-schema"]) == 0
         assert ms.call_args.kwargs["json_schema"] is True
 
 

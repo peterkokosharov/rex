@@ -207,9 +207,14 @@ cli:
   or no call under `"required"`/a forced tool gets one retry; a second failure is HTTP 502
   `tool_protocol_error` (a half-valid set of calls is never passed on). One `--timeout` deadline covers both
   attempts; with less than 10 s left the retry is skipped (504). `usage` adds up both attempts.
-- When the CLI lists `--json-schema`, tool mode also passes a fixed envelope schema (never the tools' own
-  schemas) and a one-line `--system-prompt`; the gateway still checks every call itself. `--no-json-schema`
-  turns the schema off.
+- Tool mode passes a one-line `--system-prompt` and reads the envelope from the CLI's plain text reply.
+  `--json-schema` (a fixed envelope schema) is opt-in only: with it the CLI forces its own StructuredOutput
+  tool and the model can lose the call (seen 2026-11-28, CLI 2.1.332). Two harmless shapes are repaired
+  without a retry: an OpenAI-style call (`{"function":{"name","arguments"}}`) and arguments given as a JSON
+  string holding an object. Prose that refuses or announces a tool, or wraps an envelope, gets one nudge.
+- The CLI's own tools are always off: `--tools ""`, `--strict-mcp-config`, and when the CLI lists them
+  `--permission-mode dontAsk` and `--disable-slash-commands` (the session then reports no tools, no MCP
+  servers, no skills). Only the client runs tools.
 - Caps: at most 64 tools, 16 KB per tool definition (else 413), a prompt of at most 1,000,000 characters
   (else 413; nothing is cut, rex's compaction owns the context size), 256 KB of arguments per call.
 - `stream: true` is answered as SSE after the CLI has finished: one content chunk, a stop chunk, `[DONE]`; on
