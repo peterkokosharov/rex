@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Copyright (c) 2026 Peter Kokosharov <peter.kokosharov@gmail.com>
-# LLM: claude-opus-5-5, nvidia-nemotron-super
+# AI models: claude-opus-5-5, nvidia-nemotron-super
 # Licensed under MIT License
 
 """Tiny OpenAI-compatible gateway in front of the local Claude Code CLI.
@@ -121,11 +121,17 @@ def _one_line(text: Any, limit: int = 160) -> str:
     return ""
 
 
+_MODEL_RE = re.compile(r"claude-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9]+\])?")
+
+
 def valid_model(name: str) -> bool:
-    """Accept CLI aliases and full ids like claude-sonnet-4-6."""
+    """Accept CLI aliases and full ids like claude-sonnet-4-6 (or claude-sonnet-4-5[1m]).
+
+    After "claude-" a letter or digit must follow; no "..", no trailing '.' or '-', brackets only as a suffix.
+    """
     if name in ALIASES:
         return True
-    return name.startswith("claude-") and all(c.isalnum() or c in "-._[]" for c in name)
+    return isinstance(name, str) and bool(_MODEL_RE.fullmatch(name)) and ".." not in name
 
 
 def _content_text(content: Any) -> str:
@@ -385,7 +391,7 @@ def render_tool_prompt(messages: list[dict[str, Any]], spec: ToolSpec) -> str:
             turns.append(f'<tool_result id="{_attr(call_id)}" name="{_attr(name)}" untrusted="true">\n'
                          f"{_neutralise(text)}\n</tool_result>")
         elif text.strip():
-            turns.append("User: " + _escape_result(text.strip()))
+            turns.append("User: " + _neutralise(text.strip()))  # pasted text may carry fake headers
 
     rules = [_PROTOCOL]
     if spec.choice == "required":
@@ -455,6 +461,30 @@ def parse_envelope(text: str) -> dict[str, Any] | None:
     if unknown:
         raise ProtocolError(f"unknown key {json.dumps(unknown[0][:64])}; use only content and tool_calls")
     return obj
+
+
+def is_bare_json_answer(text: str, spec: ToolSpec) -> bool:
+    """A reply that is one JSON object with neither "content" nor "tool_calls" and that does not look like a
+    bare call ({"name": <tool>, ...} or {"name": ..., "arguments": ...}): the model's final answer happens
+    to be JSON. Only used under tool_choice auto."""
+    s = (text or "").strip()
+    fenced = _FENCE_RE.match(s)
+    if fenced:
+        s = fenced.group(1).strip()
+    if not s.startswith("{"):
+        return False
+    try:
+        obj, end = json.JSONDecoder().raw_decode(s)
+    except (ValueError, RecursionError):
+        return False
+    if s[end:].strip() or not isinstance(obj, dict) or not obj:
+        return False
+    if "content" in obj or "tool_calls" in obj:
+        return False
+    name = obj.get("name")
+    if "arguments" in obj or "parameters" in obj or (isinstance(name, str) and name in spec.tools):
+        return False
+    return True
 
 
 def _type_ok(value: Any, name: str) -> bool:
@@ -634,6 +664,8 @@ _NATIVE_TAG_RE = re.compile(r"<\s*(/?)\s*(?:" + _NATIVE_NS + r")?(function_calls
 _NATIVE_NAME_RE = re.compile(r'\s+name\s*=\s*"([^"]*)"\s*')
 _NATIVE_HINT_RE = re.compile(r"<\s*(?:" + _NATIVE_NS + r")?(?:function_calls\s*>|invoke\s+name\s*=)")
 _FENCED_BLOCK_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_NATIVE_LINE_HINT_RE = re.compile(r"^[ ]{0,3}" + _NATIVE_HINT_RE.pattern, re.MULTILINE)
 _WRAPPERS = ("function_calls", "tool_calls")
 _LEADING_BLANK_LINES_RE = re.compile(r"\A(?:[ \t]*\r?\n)+")
 _TOOL_CALLS_KEY_RE = re.compile(r'"tool_calls"\s*:')
@@ -738,14 +770,36 @@ def parse_native(text: str, spec: ToolSpec) -> dict[str, Any] | None:
     return envelope
 
 
+def _unquoted(text: str) -> str:
+    """The text without ``` fenced blocks, indented code lines and `inline code` spans."""
+    return _INLINE_CODE_RE.sub("", _INDENTED_LINE_RE.sub("", _FENCED_BLOCK_RE.sub("", text or "")))
+
+
 def looks_like_native_call(text: str) -> bool:
-    """Native call markup outside code blocks (``` fenced or indented); used when it did not parse."""
-    return bool(_NATIVE_HINT_RE.search(_INDENTED_LINE_RE.sub("", _FENCED_BLOCK_RE.sub("", text or ""))))
+    """Native call markup that starts a line, outside code (fenced, indented, `inline`); used when it did not
+    parse. A tag merely quoted inside a sentence is prose."""
+    return bool(_NATIVE_LINE_HINT_RE.search(_unquoted(text)))
+
+
+def has_embedded_envelope(text: str) -> bool:
+    """An envelope written into prose: '{"tool_calls":' that starts a line, or a complete envelope object
+    (it parses and holds a tool_calls list) inside a sentence. A sentence that only quotes the key is prose."""
+    s = _unquoted(text)
+    for m in _EMBEDDED_ENVELOPE_RE.finditer(s):
+        if not s[s.rfind("\n", 0, m.start()) + 1:m.start()].strip():
+            return True
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(s, m.start())
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("tool_calls"), list):
+            return True
+    return False
 
 
 def looks_like_attempted_call(text: str) -> bool:
     """Unparsed native markup or an envelope inside prose: the model tried to call a tool."""
-    return looks_like_native_call(text) or bool(_EMBEDDED_ENVELOPE_RE.search(text or ""))
+    return looks_like_native_call(text) or has_embedded_envelope(text)
 
 
 def salvage_envelope(text: str) -> dict[str, Any] | None:
@@ -1009,6 +1063,9 @@ def interpret_reply(result: dict[str, Any], spec: ToolSpec,
     if isinstance(structured, dict):  # --json-schema result: already an object
         envelope = parse_envelope(json.dumps(structured))
     else:
+        if spec.choice == "auto" and is_bare_json_answer(text, spec):
+            info["form"] = "text"
+            return text, []
         envelope = parse_envelope(text)
     info["form"] = "envelope"
     if envelope is None:
@@ -1056,8 +1113,7 @@ _EMBEDDED_ENVELOPE_RE = re.compile(r'\{\s*"tool_calls"\s*:')
 def wants_nudge(text: str) -> bool:
     """Prose that refuses or announces a tool, wraps an envelope or holds native call markup that
     did not parse as a call: worth one nudge."""
-    return (looks_like_tool_refusal(text) or bool(_EMBEDDED_ENVELOPE_RE.search(text))
-            or looks_like_native_call(text))
+    return looks_like_tool_refusal(text) or looks_like_attempted_call(text)
 
 
 def _nudge_once(runner: Any, prompt: str, model: str, claude_bin: str, budget: float, spec: ToolSpec,
@@ -1107,8 +1163,12 @@ def run_tool_turn(runner: Any, prompt: str, model: str, claude_bin: str, timeout
             reason = str(exc)
         else:
             stats.update(content=content, calls=calls, form=info.get("form"))
-            if (attempt == 1 and not calls and spec.choice == "auto" and content
-                    and info.get("form") == "text" and wants_nudge(content)):
+            prose = not calls and spec.choice == "auto" and bool(content) and info.get("form") == "text"
+            if prose and attempt == 2 and looks_like_attempted_call(content):
+                # the retry after a protocol error is again a broken call: never pass it on as an answer
+                raise GatewayError(502, "the model wrote a tool call that could not be read, also after one "
+                                   "retry; nothing was run", "tool_protocol_error", "reason=unreadable tool call")
+            if prose and attempt == 1 and wants_nudge(content):
                 attempted = looks_like_attempted_call(content)
                 if attempted and deadline - clock() < MIN_RETRY_SECONDS:
                     raise GatewayError(504, "the model wrote a tool call that could not be read and too little "
